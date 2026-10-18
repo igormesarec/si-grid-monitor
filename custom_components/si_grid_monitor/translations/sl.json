@@ -14,6 +14,9 @@
         "description": "V0.4 v celoti podpira podpisan senzor moči v W ali kW. Drugi načini so še nedostopni.",
         "data": {
           "source_mode": "Način vira"
+        },
+        "data_description": {
+          "source_mode": "Izberite vrsto vira. V0.4 deluje le en senzor podpisane moči (W ali kW); drugi načini še niso na voljo."
         }
       },
       "meter": {
@@ -22,9 +25,22 @@
         "data": {
           "power_entity": "Senzor moči omrežja",
           "positive_means_import": "Pozitivna vrednost vira pomeni UVOZ"
+        },
+        "data_description": {
+          "power_entity": "Izberite senzor moči na priključku v omrežje (W ali kW), ne skupne porabe hiše ali proizvodnje elektrarne. Interno je uvoz pozitiven, izvoz negativen.",
+          "positive_means_import": "Vključite, če pozitivna surova vrednost pomeni uvoz iz omrežja. Izključite, če pozitivna vrednost pomeni izvoz (npr. nekateri senzorji SolarEdge). Preverite prikaz smeri."
         }
       },
-      "polarity_preview": {"title": "Preverite normalizirano smer", "description": "{preview} Če je smer napačna, se vrnite in obrnite izbiro predznaka.", "data": {"confirm": "Normalizirana smer je pravilna"}},
+      "polarity_preview": {
+        "title": "Preverite normalizirano smer",
+        "description": "{preview} Če je smer napačna, se vrnite in obrnite izbiro predznaka.",
+        "data": {
+          "confirm": "Normalizirana smer je pravilna"
+        },
+        "data_description": {
+          "confirm": "Potrdite prikaz smeri. Če je uvoz prikazan kot izvoz, se vrnite in popravite predznak; potrditev ne spreminja meritev."
+        }
+      },
       "contract": {
         "title": "Veljavnost dogovorjene moči",
         "description": "Datuma sta vključujoča lokalna datuma. Datum evidence in vir ohranita revizijsko sled.",
@@ -33,11 +49,52 @@
           "assignment_end_date": "Konec veljavnosti dogovorjene moči",
           "assignment_recorded_on": "Datum evidence/izdaje (neobvezno)",
           "assignment_provenance": "Vir oziroma izvor"
+        },
+        "data_description": {
+          "assignment_start_date": "Prvi lokalni datum veljavnosti teh dogovorjenih moči, vključno s tem dnem, npr. 2026-01-01.",
+          "assignment_end_date": "Zadnji lokalni datum veljavnosti, vključno s tem dnem. Vrednosti se samodejno ne podaljšajo v prihodnja leta.",
+          "assignment_recorded_on": "Neobvezni datum izdaje oziroma zapisa distributerjeve dodelitve. To ni datum začetka veljavnosti.",
+          "assignment_provenance": "Navedite vir dogovorjenih moči, npr. 'dodelitev distributerja'. Podatek se ohrani v zgodovini."
         }
       },
-      "target_mode": {"title": "Način dogovorjene moči", "description": "Dogovorjena meja je 15-minutno povprečje uvozne moči, ne trenutna zmogljivost varovalk ali faz.", "data": {"target_mode": "Način vnosa"}},
-      "shared_target": {"title": "Skupna meja B1-B5", "description": "Vrednost bo shranjena za vseh pet blokov v časovno omejeni dodelitvi.", "data": {"target_kw": "Dogovorjena moč za B1-B5"}},
-      "individual_targets": {"title": "Posamezne meje B1-B5", "description": "Vnesite distributerjevo dogovorjeno 15-minutno moč za vsak blok.", "data": {"target_b1_kw": "Dogovorjena moč B1", "target_b2_kw": "Dogovorjena moč B2", "target_b3_kw": "Dogovorjena moč B3", "target_b4_kw": "Dogovorjena moč B4", "target_b5_kw": "Dogovorjena moč B5"}},
+      "target_mode": {
+        "title": "Način dogovorjene moči",
+        "description": "Dogovorjena meja je 15-minutno povprečje uvozne moči, ne trenutna zmogljivost varovalk ali faz.",
+        "data": {
+          "target_mode": "Način vnosa"
+        },
+        "data_description": {
+          "target_mode": "Izberite skupno omejitev za B1–B5 ali pet ločenih vrednosti. Gre za 15-minutno povprečno uvozno moč, ne zmogljivost varovalk."
+        }
+      },
+      "shared_target": {
+        "title": "Skupna meja B1-B5",
+        "description": "Vrednost bo shranjena za vseh pet blokov v časovno omejeni dodelitvi.",
+        "data": {
+          "target_kw": "Dogovorjena moč za B1-B5"
+        },
+        "data_description": {
+          "target_kw": "Dogovorjena 15-minutna povprečna UVOZNA moč v kW. Skupna vrednost se uporabi za vseh pet blokov v izbranem obdobju."
+        }
+      },
+      "individual_targets": {
+        "title": "Posamezne meje B1-B5",
+        "description": "Vnesite distributerjevo dogovorjeno 15-minutno moč za vsak blok.",
+        "data": {
+          "target_b1_kw": "Dogovorjena moč B1",
+          "target_b2_kw": "Dogovorjena moč B2",
+          "target_b3_kw": "Dogovorjena moč B3",
+          "target_b4_kw": "Dogovorjena moč B4",
+          "target_b5_kw": "Dogovorjena moč B5"
+        },
+        "data_description": {
+          "target_b1_kw": "Distributerjeva omejitev povprečne 15-minutne UVOZNE moči za B1 v kW. Velja samo v tem obdobju in v bloku B1.",
+          "target_b2_kw": "Distributerjeva omejitev povprečne 15-minutne UVOZNE moči za B2 v kW. Velja samo v tem obdobju in v bloku B2.",
+          "target_b3_kw": "Distributerjeva omejitev povprečne 15-minutne UVOZNE moči za B3 v kW. Velja samo v tem obdobju in v bloku B3.",
+          "target_b4_kw": "Distributerjeva omejitev povprečne 15-minutne UVOZNE moči za B4 v kW. Velja samo v tem obdobju in v bloku B4.",
+          "target_b5_kw": "Distributerjeva omejitev povprečne 15-minutne UVOZNE moči za B5 v kW. Velja samo v tem obdobju in v bloku B5."
+        }
+      },
       "calculation": {
         "title": "Nastavitve izračuna",
         "description": "Privzete izbire lahko potrdite brez ponovnega izbiranja. Začasna pravila 2028-2030 so privzeto izključena.",
@@ -47,14 +104,37 @@
           "sustained_horizon_minutes": "Obzorje napovedi trajne obremenitve",
           "retention": "Hramba arhiva",
           "allow_provisional_tariff": "Dovoli začasna pravila za nepotrjena leta"
+        },
+        "data_description": {
+          "safety_margin_kw": "Neobvezna rezerva (kW), odšteta od dogovorjene moči pri načrtovanju porabe. Privzeto 0,00 kW; pogodbe ne spreminja.",
+          "smoothing_seconds": "Povprečenje zadnjih meritev za napoved ob koncu 15-minutnega intervala. 30 s se hitreje odziva, 120 s je bolj mirno.",
+          "sustained_horizon_minutes": "Koliko časa (15/30/60/120 min) naprej se ocenjuje trajna dodatna obremenitev, tudi ob prehodu v strožji blok.",
+          "retention": "Čas hrambe zaključenih 15-minutnih intervalov v podatkovni zbirki SQLite. 'Za vedno' ohrani podatke tudi po čiščenju HA Recorder.",
+          "allow_provisional_tariff": "Izrecno dovolite začasno nadaljevanje pravil 2027 za še nepotrjena leta 2028–2030. Brez potrditve se bloki ne prikazujejo kot uradni."
         }
       },
-      "review": {"title": "Pregled in namestitev", "description": "Vir: {entity}\nVeljavnost: {dates}\nMeje: {targets}\n\nČasovno omejen urnik je edini veljavni vir nastavitev.", "data": {"confirm": "Namesti SI Grid Monitor"}}
+      "review": {
+        "title": "Pregled in namestitev",
+        "description": "Vir: {entity}\nVeljavnost: {dates}\nMeje: {targets}\n\nČasovno omejen urnik je edini veljavni vir nastavitev.",
+        "data": {
+          "confirm": "Namesti SI Grid Monitor"
+        },
+        "data_description": {
+          "confirm": "Potrdite prikaz smeri. Če je uvoz prikazan kot izvoz, se vrnite in popravite predznak; potrditev ne spreminja meritev."
+        }
+      }
     }
   },
   "options": {
     "step": {
-      "init": {"title": "Nastavitve SI Grid Monitor", "menu_options": {"settings": "Nastavitve meritev in izračuna", "assignments": "Upravljanje dodelitev dogovorjene moči", "add_assignment": "Dodaj dodelitev dogovorjene moči"}},
+      "init": {
+        "title": "Nastavitve SI Grid Monitor",
+        "menu_options": {
+          "settings": "Nastavitve meritev in izračuna",
+          "assignments": "Upravljanje dodelitev dogovorjene moči",
+          "add_assignment": "Dodaj dodelitev dogovorjene moči"
+        }
+      },
       "settings": {
         "title": "Nastavitve meritev in izračuna",
         "description": "Sprememba vira ali predznaka ustvari novo konfiguracijsko obdobje. Nedostopen nasvet ni prikazan kot nič.",
@@ -66,12 +146,89 @@
           "smoothing_seconds": "Okno glajenja napovedi",
           "sustained_horizon_minutes": "Obzorje napovedi trajne obremenitve",
           "retention": "Hramba arhiva"
+        },
+        "data_description": {
+          "power_entity": "Izberite senzor moči na priključku v omrežje (W ali kW), ne skupne porabe hiše ali proizvodnje elektrarne. Interno je uvoz pozitiven, izvoz negativen.",
+          "positive_means_import": "Vključite, če pozitivna surova vrednost pomeni uvoz iz omrežja. Izključite, če pozitivna vrednost pomeni izvoz (npr. nekateri senzorji SolarEdge). Preverite prikaz smeri.",
+          "allow_provisional_tariff": "Izrecno dovolite začasno nadaljevanje pravil 2027 za še nepotrjena leta 2028–2030. Brez potrditve se bloki ne prikazujejo kot uradni.",
+          "safety_margin_kw": "Neobvezna rezerva (kW), odšteta od dogovorjene moči pri načrtovanju porabe. Privzeto 0,00 kW; pogodbe ne spreminja.",
+          "smoothing_seconds": "Povprečenje zadnjih meritev za napoved ob koncu 15-minutnega intervala. 30 s se hitreje odziva, 120 s je bolj mirno.",
+          "sustained_horizon_minutes": "Koliko časa (15/30/60/120 min) naprej se ocenjuje trajna dodatna obremenitev, tudi ob prehodu v strožji blok.",
+          "retention": "Čas hrambe zaključenih 15-minutnih intervalov v podatkovni zbirki SQLite. 'Za vedno' ohrani podatke tudi po čiščenju HA Recorder."
         }
       },
-      "assignments": {"title": "Dodelitve dogovorjene moči", "description": "Izberite dodelitev za urejanje ali odstranitev. Obdobja se ne smejo prekrivati.", "data": {"assignment_action": "Dejanje"}},
-      "add_assignment": {"title": "Dodaj dodelitev", "description": "Dodajte vključujoče obdobje veljavnosti s petimi mejami.", "data": {"assignment_start_date": "Začetek veljavnosti", "assignment_end_date": "Konec veljavnosti", "assignment_recorded_on": "Datum evidence (neobvezno)", "assignment_provenance": "Izvor", "target_b1_kw": "Dogovorjena moč B1", "target_b2_kw": "Dogovorjena moč B2", "target_b3_kw": "Dogovorjena moč B3", "target_b4_kw": "Dogovorjena moč B4", "target_b5_kw": "Dogovorjena moč B5"}},
-      "edit_assignment": {"title": "Uredi dodelitev", "description": "Sprememba ustvari novo konfiguracijsko obdobje in ne prepiše arhiviranih četrtin.", "data": {"assignment_start_date": "Začetek veljavnosti", "assignment_end_date": "Konec veljavnosti", "assignment_recorded_on": "Datum evidence (neobvezno)", "assignment_provenance": "Izvor", "target_b1_kw": "Dogovorjena moč B1", "target_b2_kw": "Dogovorjena moč B2", "target_b3_kw": "Dogovorjena moč B3", "target_b4_kw": "Dogovorjena moč B4", "target_b5_kw": "Dogovorjena moč B5"}},
-      "remove_assignment": {"title": "Odstrani dodelitev", "description": "Potrdite odstranitev. Arhivske meritve in izvor se ne izbrišejo.", "data": {"confirm": "Odstrani to dodelitev"}}
+      "assignments": {
+        "title": "Dodelitve dogovorjene moči",
+        "description": "Izberite dodelitev za urejanje ali odstranitev. Obdobja se ne smejo prekrivati.",
+        "data": {
+          "assignment_action": "Dejanje"
+        },
+        "data_description": {
+          "assignment_action": "Izberite točno določeno časovno omejeno dodelitev za urejanje ali odstranitev. Zgodovinske meritve ostanejo nespremenjene."
+        }
+      },
+      "add_assignment": {
+        "title": "Dodaj dodelitev",
+        "description": "Dodajte vključujoče obdobje veljavnosti s petimi mejami.",
+        "data": {
+          "assignment_start_date": "Začetek veljavnosti",
+          "assignment_end_date": "Konec veljavnosti",
+          "assignment_recorded_on": "Datum evidence (neobvezno)",
+          "assignment_provenance": "Izvor",
+          "target_b1_kw": "Dogovorjena moč B1",
+          "target_b2_kw": "Dogovorjena moč B2",
+          "target_b3_kw": "Dogovorjena moč B3",
+          "target_b4_kw": "Dogovorjena moč B4",
+          "target_b5_kw": "Dogovorjena moč B5"
+        },
+        "data_description": {
+          "assignment_start_date": "Prvi lokalni datum veljavnosti teh dogovorjenih moči, vključno s tem dnem, npr. 2026-01-01.",
+          "assignment_end_date": "Zadnji lokalni datum veljavnosti, vključno s tem dnem. Vrednosti se samodejno ne podaljšajo v prihodnja leta.",
+          "assignment_recorded_on": "Neobvezni datum izdaje oziroma zapisa distributerjeve dodelitve. To ni datum začetka veljavnosti.",
+          "assignment_provenance": "Navedite vir dogovorjenih moči, npr. 'dodelitev distributerja'. Podatek se ohrani v zgodovini.",
+          "target_b1_kw": "Distributerjeva omejitev povprečne 15-minutne UVOZNE moči za B1 v kW. Velja samo v tem obdobju in v bloku B1.",
+          "target_b2_kw": "Distributerjeva omejitev povprečne 15-minutne UVOZNE moči za B2 v kW. Velja samo v tem obdobju in v bloku B2.",
+          "target_b3_kw": "Distributerjeva omejitev povprečne 15-minutne UVOZNE moči za B3 v kW. Velja samo v tem obdobju in v bloku B3.",
+          "target_b4_kw": "Distributerjeva omejitev povprečne 15-minutne UVOZNE moči za B4 v kW. Velja samo v tem obdobju in v bloku B4.",
+          "target_b5_kw": "Distributerjeva omejitev povprečne 15-minutne UVOZNE moči za B5 v kW. Velja samo v tem obdobju in v bloku B5."
+        }
+      },
+      "edit_assignment": {
+        "title": "Uredi dodelitev",
+        "description": "Sprememba ustvari novo konfiguracijsko obdobje in ne prepiše arhiviranih četrtin.",
+        "data": {
+          "assignment_start_date": "Začetek veljavnosti",
+          "assignment_end_date": "Konec veljavnosti",
+          "assignment_recorded_on": "Datum evidence (neobvezno)",
+          "assignment_provenance": "Izvor",
+          "target_b1_kw": "Dogovorjena moč B1",
+          "target_b2_kw": "Dogovorjena moč B2",
+          "target_b3_kw": "Dogovorjena moč B3",
+          "target_b4_kw": "Dogovorjena moč B4",
+          "target_b5_kw": "Dogovorjena moč B5"
+        },
+        "data_description": {
+          "assignment_start_date": "Prvi lokalni datum veljavnosti teh dogovorjenih moči, vključno s tem dnem, npr. 2026-01-01.",
+          "assignment_end_date": "Zadnji lokalni datum veljavnosti, vključno s tem dnem. Vrednosti se samodejno ne podaljšajo v prihodnja leta.",
+          "assignment_recorded_on": "Neobvezni datum izdaje oziroma zapisa distributerjeve dodelitve. To ni datum začetka veljavnosti.",
+          "assignment_provenance": "Navedite vir dogovorjenih moči, npr. 'dodelitev distributerja'. Podatek se ohrani v zgodovini.",
+          "target_b1_kw": "Distributerjeva omejitev povprečne 15-minutne UVOZNE moči za B1 v kW. Velja samo v tem obdobju in v bloku B1.",
+          "target_b2_kw": "Distributerjeva omejitev povprečne 15-minutne UVOZNE moči za B2 v kW. Velja samo v tem obdobju in v bloku B2.",
+          "target_b3_kw": "Distributerjeva omejitev povprečne 15-minutne UVOZNE moči za B3 v kW. Velja samo v tem obdobju in v bloku B3.",
+          "target_b4_kw": "Distributerjeva omejitev povprečne 15-minutne UVOZNE moči za B4 v kW. Velja samo v tem obdobju in v bloku B4.",
+          "target_b5_kw": "Distributerjeva omejitev povprečne 15-minutne UVOZNE moči za B5 v kW. Velja samo v tem obdobju in v bloku B5."
+        }
+      },
+      "remove_assignment": {
+        "title": "Odstrani dodelitev",
+        "description": "Potrdite odstranitev. Arhivske meritve in izvor se ne izbrišejo.",
+        "data": {
+          "confirm": "Odstrani to dodelitev"
+        },
+        "data_description": {
+          "confirm": "Potrdite prikaz smeri. Če je uvoz prikazan kot izvoz, se vrnite in popravite predznak; potrditev ne spreminja meritev."
+        }
+      }
     }
   },
   "selector": {
