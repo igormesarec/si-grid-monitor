@@ -66,6 +66,14 @@ class WindowAverage:
 
 
 @dataclass(frozen=True, slots=True)
+class PowerSegment:
+    """One covered piece of a time-weighted signed-power path."""
+
+    duration_seconds: float
+    signed_kw: float
+
+
+@dataclass(frozen=True, slots=True)
 class CompletedQuarter:
     start_utc: datetime
     end_utc: datetime
@@ -88,12 +96,19 @@ class Projection:
     allowed_remaining_import_kw: float | None
     forecast_instant_kw: float | None
     forecast_smoothed_kw: float | None
-    forecast_utilization_pct: float | None
+    forecast_instant_utilization_pct: float | None
+    forecast_smoothed_utilization_pct: float | None
     current_utilization_pct: float | None
     can_add_kw: float | None
     must_reduce_kw: float | None
     unrecoverable: bool
     projected_exceedance: bool | None
+
+    @property
+    def forecast_utilization_pct(self) -> float | None:
+        """Backward-compatible primary forecast utilization (smoothed)."""
+
+        return self.forecast_smoothed_utilization_pct
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,6 +127,7 @@ class EngineSnapshot:
     rolling_15m_signed: WindowAverage
     rolling_15m_import: WindowAverage
     smoothed_signed: WindowAverage
+    smoothed_import: WindowAverage
     projection: Projection
     coverage_seconds: float
     gap_seconds: float
@@ -164,7 +180,8 @@ def calculate_projection(
     elapsed_hours: float,
     remaining_hours: float,
     current_signed_power_kw: float | None,
-    smoothed_signed_power_kw: float | None,
+    smoothed_import_power_kw: float | None = None,
+    smoothed_signed_power_kw: float | None = None,
 ) -> Projection:
     """Apply the frozen current-quarter formulas from specification V1.1."""
 
@@ -179,6 +196,7 @@ def calculate_projection(
             raise CalculationError(f"{label} must be finite and nonnegative")
     for value, label in (
         (current_signed_power_kw, "current_signed_power_kw"),
+        (smoothed_import_power_kw, "smoothed_import_power_kw"),
         (smoothed_signed_power_kw, "smoothed_signed_power_kw"),
     ):
         if value is not None and not math.isfinite(value):
@@ -188,21 +206,22 @@ def calculate_projection(
     budget_kwh = operational_target_kw * QUARTER_HOURS
     budget_remaining_kwh = budget_kwh - import_kwh
     unrecoverable = budget_remaining_kwh < -EPSILON
-    allowed = (
-        max(0.0, budget_remaining_kwh / remaining_hours)
-        if remaining_hours > 0
-        else None
-    )
+    allowed = max(0.0, budget_remaining_kwh / remaining_hours) if remaining_hours > 0 else None
 
-    forecast_instant = _forecast(
-        import_kwh, remaining_hours, current_signed_power_kw
-    )
-    forecast_smoothed = _forecast(
-        import_kwh, remaining_hours, smoothed_signed_power_kw
-    )
-    forecast_utilization = (
+    forecast_instant = _forecast(import_kwh, remaining_hours, current_signed_power_kw)
+    # ``smoothed_signed_power_kw`` is accepted only for V0.1 API compatibility.
+    # V0.2 callers must provide the separately integrated import-only average.
+    if smoothed_import_power_kw is None and smoothed_signed_power_kw is not None:
+        smoothed_import_power_kw = max(0.0, smoothed_signed_power_kw)
+    forecast_smoothed = _forecast_import(import_kwh, remaining_hours, smoothed_import_power_kw)
+    forecast_instant_utilization = (
         100.0 * forecast_instant / target_kw
         if forecast_instant is not None and target_kw > 0
+        else None
+    )
+    forecast_smoothed_utilization = (
+        100.0 * forecast_smoothed / target_kw
+        if forecast_smoothed is not None and target_kw > 0
         else None
     )
     current_average = import_kwh / elapsed_hours if elapsed_hours > 0 else None
@@ -223,9 +242,7 @@ def calculate_projection(
         must_reduce = max(0.0, current_signed_power_kw - allowed)
 
     projected_exceedance = (
-        forecast_instant > target_kw + EPSILON
-        if forecast_instant is not None
-        else None
+        forecast_instant > target_kw + EPSILON if forecast_instant is not None else None
     )
     return Projection(
         operational_target_kw=operational_target_kw,
@@ -234,7 +251,8 @@ def calculate_projection(
         allowed_remaining_import_kw=allowed,
         forecast_instant_kw=forecast_instant,
         forecast_smoothed_kw=forecast_smoothed,
-        forecast_utilization_pct=forecast_utilization,
+        forecast_instant_utilization_pct=forecast_instant_utilization,
+        forecast_smoothed_utilization_pct=forecast_smoothed_utilization,
         current_utilization_pct=current_utilization,
         can_add_kw=can_add,
         must_reduce_kw=must_reduce,
@@ -249,6 +267,14 @@ def _forecast(
     if signed_power_kw is None:
         return None
     return (import_kwh + remaining_hours * max(0.0, signed_power_kw)) / QUARTER_HOURS
+
+
+def _forecast_import(
+    import_kwh: float, remaining_hours: float, import_power_kw: float | None
+) -> float | None:
+    if import_power_kw is None:
+        return None
+    return (import_kwh + remaining_hours * import_power_kw) / QUARTER_HOURS
 
 
 class TimeWeightedBuffer:
@@ -308,6 +334,31 @@ class TimeWeightedBuffer:
             WindowAverage(import_value, coverage, gap, complete),
         )
 
+    def segments(self, *, end: datetime, window_seconds: int) -> tuple[PowerSegment, ...]:
+        """Return covered signed segments in chronological order for forecasting."""
+
+        _require_aware(end, "end")
+        if window_seconds <= 0:
+            raise CalculationError("window_seconds must be positive")
+        end_utc = end.astimezone(UTC)
+        start_utc = end_utc - timedelta(seconds=window_seconds)
+        segments: list[PowerSegment] = []
+        for index, sample in enumerate(self._samples):
+            if sample.timestamp_utc >= end_utc:
+                break
+            next_start = (
+                self._samples[index + 1].timestamp_utc
+                if index + 1 < len(self._samples)
+                else end_utc
+            )
+            segment_start = max(sample.timestamp_utc, start_utc)
+            segment_end = min(next_start, sample.timestamp_utc + self.stale_after, end_utc)
+            if segment_end > segment_start:
+                segments.append(
+                    PowerSegment((segment_end - segment_start).total_seconds(), sample.signed_kw)
+                )
+        return tuple(segments)
+
 
 class FixedQuarterEngine:
     """Integrate signed samples into fixed import/export quarters."""
@@ -327,14 +378,69 @@ class FixedQuarterEngine:
         self.gap_seconds = 0.0
         self.completed: list[CompletedQuarter] = []
 
+    def checkpoint(self) -> dict[str, object] | None:
+        """Serialize durable current-quarter state without smoothing history."""
+
+        if self.bounds is None or self.cursor_utc is None:
+            return None
+        return {
+            "schema": 1,
+            "source_id": self.source_id,
+            "quarter_start_utc": self.bounds.start_utc.isoformat(),
+            "cursor_utc": self.cursor_utc.isoformat(),
+            "last_sample_utc": (
+                self.last_sample.timestamp_utc.isoformat() if self.last_sample is not None else None
+            ),
+            "last_signed_kw": (
+                self.last_sample.signed_kw if self.last_sample is not None else None
+            ),
+            "import_kwh": self.import_kwh,
+            "export_kwh": self.export_kwh,
+            "coverage_seconds": self.coverage_seconds,
+            "gap_seconds": self.gap_seconds,
+        }
+
+    def restore_checkpoint(self, payload: dict[str, object]) -> bool:
+        """Restore a same-source current quarter; unknown downtime stays a gap."""
+
+        if payload.get("schema") != 1 or payload.get("source_id") != self.source_id:
+            return False
+        try:
+            start = datetime.fromisoformat(str(payload["quarter_start_utc"]))
+            cursor = datetime.fromisoformat(str(payload["cursor_utc"]))
+            _require_aware(start, "quarter_start_utc")
+            _require_aware(cursor, "cursor_utc")
+            bounds = quarter_bounds(cursor)
+            if bounds.start_utc != start.astimezone(UTC):
+                return False
+            last_utc = payload.get("last_sample_utc")
+            last_kw = payload.get("last_signed_kw")
+            last_sample = (
+                PowerSample(datetime.fromisoformat(str(last_utc)), float(last_kw))
+                if last_utc is not None and last_kw is not None
+                else None
+            )
+            self.bounds = bounds
+            self.cursor_utc = cursor.astimezone(UTC)
+            self.last_sample = last_sample
+            self.import_kwh = float(payload["import_kwh"])
+            self.export_kwh = float(payload["export_kwh"])
+            self.coverage_seconds = float(payload["coverage_seconds"])
+            self.gap_seconds = float(payload["gap_seconds"])
+        except (KeyError, TypeError, ValueError, CalculationError):
+            return False
+        # Smoothing samples are deliberately not invented after a restart.
+        self.buffer = TimeWeightedBuffer(stale_after_seconds=self.stale_after.total_seconds())
+        if last_sample is not None:
+            self.buffer.add(last_sample)
+        return True
+
     def ingest(self, sample: PowerSample) -> tuple[CompletedQuarter, ...]:
         sample = PowerSample(sample.timestamp_utc, sample.signed_kw)
         before = len(self.completed)
         if self.bounds is None:
             self._initialize(sample.timestamp_utc)
-            self.gap_seconds = (
-                sample.timestamp_utc - self.bounds.start_utc
-            ).total_seconds()
+            self.gap_seconds = (sample.timestamp_utc - self.bounds.start_utc).total_seconds()
         elif self.last_sample and sample.timestamp_utc <= self.last_sample.timestamp_utc:
             raise CalculationError("sample timestamps must increase strictly")
         else:
@@ -369,7 +475,7 @@ class FixedQuarterEngine:
         now: datetime,
         target_kw: float,
         safety_margin_kw: float = 0.0,
-        smoothing_seconds: int = 30,
+        smoothing_seconds: int = 120,
     ) -> EngineSnapshot:
         self.advance(now)
         if self.bounds is None:
@@ -378,19 +484,15 @@ class FixedQuarterEngine:
         elapsed_seconds = (now_utc - self.bounds.start_utc).total_seconds()
         remaining_seconds = (self.bounds.end_utc - now_utc).total_seconds()
         latest = self.last_sample
-        input_stale = (
-            latest is None or now_utc > latest.timestamp_utc + self.stale_after
-        )
+        input_stale = latest is None or now_utc > latest.timestamp_utc + self.stale_after
         current_power = None if input_stale or latest is None else latest.signed_kw
         rolling_15m_signed, rolling_15m_import = self.buffer.averages(
             end=now_utc, window_seconds=QUARTER_SECONDS
         )
-        smoothed_signed, _ = self.buffer.averages(
+        smoothed_signed, smoothed_import = self.buffer.averages(
             end=now_utc, window_seconds=smoothing_seconds
         )
-        smoothed_power = (
-            smoothed_signed.value_kw if smoothed_signed.complete else None
-        )
+        smoothed_import_power = smoothed_import.value_kw if smoothed_import.complete else None
         projection = calculate_projection(
             target_kw=target_kw,
             safety_margin_kw=safety_margin_kw,
@@ -398,13 +500,11 @@ class FixedQuarterEngine:
             elapsed_hours=max(0.0, elapsed_seconds / 3600.0),
             remaining_hours=max(0.0, remaining_seconds / 3600.0),
             current_signed_power_kw=current_power,
-            smoothed_signed_power_kw=smoothed_power,
+            smoothed_import_power_kw=smoothed_import_power,
         )
         elapsed_hours = elapsed_seconds / 3600.0
         quality = (
-            DataQuality.RECONSTRUCTED
-            if self.gap_seconds <= EPSILON
-            else DataQuality.INCOMPLETE
+            DataQuality.RECONSTRUCTED if self.gap_seconds <= EPSILON else DataQuality.INCOMPLETE
         )
         return EngineSnapshot(
             bounds=self.bounds,
@@ -420,13 +520,12 @@ class FixedQuarterEngine:
                 self.import_kwh / elapsed_hours if elapsed_hours > 0 else None
             ),
             current_signed_average_kw=(
-                (self.import_kwh - self.export_kwh) / elapsed_hours
-                if elapsed_hours > 0
-                else None
+                (self.import_kwh - self.export_kwh) / elapsed_hours if elapsed_hours > 0 else None
             ),
             rolling_15m_signed=rolling_15m_signed,
             rolling_15m_import=rolling_15m_import,
             smoothed_signed=smoothed_signed,
+            smoothed_import=smoothed_import,
             projection=projection,
             coverage_seconds=self.coverage_seconds,
             gap_seconds=self.gap_seconds,
@@ -464,8 +563,7 @@ class FixedQuarterEngine:
             raise CalculationError("cannot finalize an uninitialized quarter")
         quality = (
             DataQuality.RECONSTRUCTED
-            if self.coverage_seconds >= QUARTER_SECONDS - EPSILON
-            and self.gap_seconds <= EPSILON
+            if self.coverage_seconds >= QUARTER_SECONDS - EPSILON and self.gap_seconds <= EPSILON
             else DataQuality.INCOMPLETE
         )
         signed_net_kwh = self.import_kwh - self.export_kwh
@@ -489,3 +587,9 @@ class FixedQuarterEngine:
 def _require_aware(value: datetime, field: str) -> None:
     if value.tzinfo is None or value.utcoffset() is None:
         raise CalculationError(f"{field} must be timezone-aware")
+
+
+def round_for_display(value: float | None, decimals: int) -> float | None:
+    """Round only the published value while keeping engine calculations precise."""
+
+    return None if value is None else round(value, decimals)

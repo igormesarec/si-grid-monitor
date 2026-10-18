@@ -1,4 +1,4 @@
-"""Sensor entities for SI Grid Monitor V0.1."""
+"""Sensor entities for SI Grid Monitor V0.2."""
 
 from __future__ import annotations
 
@@ -19,7 +19,7 @@ from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import ATTR_BUDGET_HEADROOM_WARNING, CONF_TARGET_KW, DOMAIN
-from .engine import EngineSnapshot
+from .engine import EngineSnapshot, round_for_display
 from .runtime import GridMonitorRuntime
 
 
@@ -30,6 +30,7 @@ class SIGridSensorDescription(SensorEntityDescription):
     value_fn: Callable[[EngineSnapshot, GridMonitorRuntime], float | str | None]
     requires_fresh_input: bool = False
     budget_warning: bool = False
+    display_precision: int | None = None
 
 
 SENSORS: tuple[SIGridSensorDescription, ...] = (
@@ -85,6 +86,26 @@ SENSORS: tuple[SIGridSensorDescription, ...] = (
         value_fn=lambda snapshot, runtime: snapshot.rolling_15m_import.value_kw,
     ),
     SIGridSensorDescription(
+        key="smoothed_signed_power",
+        translation_key="smoothed_signed_power",
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda snapshot, runtime: (
+            snapshot.smoothed_signed.value_kw if snapshot.smoothed_signed.complete else None
+        ),
+    ),
+    SIGridSensorDescription(
+        key="smoothed_import_power",
+        translation_key="smoothed_import_power",
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda snapshot, runtime: (
+            snapshot.smoothed_import.value_kw if snapshot.smoothed_import.complete else None
+        ),
+    ),
+    SIGridSensorDescription(
         key="current_interval_import_average",
         translation_key="current_interval_import_average",
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
@@ -107,9 +128,7 @@ SENSORS: tuple[SIGridSensorDescription, ...] = (
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda snapshot, runtime: (
-            runtime.engine.completed[-1].import_demand_kw
-            if runtime.engine.completed
-            else None
+            runtime.engine.completed[-1].import_demand_kw if runtime.engine.completed else None
         ),
     ),
     SIGridSensorDescription(
@@ -119,9 +138,7 @@ SENSORS: tuple[SIGridSensorDescription, ...] = (
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda snapshot, runtime: (
-            runtime.engine.completed[-1].signed_average_kw
-            if runtime.engine.completed
-            else None
+            runtime.engine.completed[-1].signed_average_kw if runtime.engine.completed else None
         ),
     ),
     SIGridSensorDescription(
@@ -189,6 +206,16 @@ SENSORS: tuple[SIGridSensorDescription, ...] = (
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda snapshot, runtime: snapshot.projection.forecast_utilization_pct,
+        display_precision=2,
+    ),
+    SIGridSensorDescription(
+        key="forecast_instant_utilization_pct",
+        translation_key="forecast_instant_utilization_pct",
+        native_unit_of_measurement=PERCENTAGE,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda snapshot, runtime: snapshot.projection.forecast_instant_utilization_pct,
+        requires_fresh_input=True,
+        display_precision=2,
     ),
     SIGridSensorDescription(
         key="current_utilization_pct",
@@ -196,6 +223,7 @@ SENSORS: tuple[SIGridSensorDescription, ...] = (
         native_unit_of_measurement=PERCENTAGE,
         state_class=SensorStateClass.MEASUREMENT,
         value_fn=lambda snapshot, runtime: snapshot.projection.current_utilization_pct,
+        display_precision=2,
     ),
     SIGridSensorDescription(
         key="can_add_power",
@@ -214,6 +242,41 @@ SENSORS: tuple[SIGridSensorDescription, ...] = (
         value_fn=lambda snapshot, runtime: snapshot.projection.must_reduce_kw,
         requires_fresh_input=True,
         budget_warning=True,
+    ),
+    SIGridSensorDescription(
+        key="sustained_can_add_power",
+        translation_key="sustained_can_add_power",
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=SensorDeviceClass.POWER,
+        value_fn=lambda snapshot, runtime: (
+            runtime.sustained_forecast.can_add_kw
+            if runtime.sustained_forecast is not None
+            else None
+        ),
+        budget_warning=True,
+        display_precision=2,
+    ),
+    SIGridSensorDescription(
+        key="sustained_must_reduce_power",
+        translation_key="sustained_must_reduce_power",
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=SensorDeviceClass.POWER,
+        value_fn=lambda snapshot, runtime: (
+            runtime.sustained_forecast.must_reduce_kw
+            if runtime.sustained_forecast is not None
+            else None
+        ),
+        budget_warning=True,
+        display_precision=2,
+    ),
+    SIGridSensorDescription(
+        key="sustained_forecast_quality",
+        translation_key="sustained_forecast_quality",
+        value_fn=lambda snapshot, runtime: (
+            runtime.sustained_forecast.quality.value
+            if runtime.sustained_forecast is not None
+            else "unavailable"
+        ),
     ),
     SIGridSensorDescription(
         key="interval_elapsed_seconds",
@@ -245,9 +308,7 @@ async def async_setup_entry(
     """Set up SI Grid Monitor sensors."""
 
     runtime: GridMonitorRuntime = entry.runtime_data
-    async_add_entities(
-        SIGridSensor(runtime, entry, description) for description in SENSORS
-    )
+    async_add_entities(SIGridSensor(runtime, entry, description) for description in SENSORS)
 
 
 class SIGridSensor(SensorEntity):
@@ -270,22 +331,34 @@ class SIGridSensor(SensorEntity):
             manufacturer="SI Grid Monitor",
             model="Software meter monitor",
         )
+        precision = description.display_precision
+        if precision is None and description.native_unit_of_measurement == UnitOfPower.KILO_WATT:
+            precision = 2
+        if precision is not None:
+            self._attr_suggested_display_precision = precision
 
     @property
     def available(self) -> bool:
         snapshot = self.runtime.snapshot
         if snapshot is None:
             return False
-        return not (
-            self.entity_description.requires_fresh_input and snapshot.input_stale
-        )
+        return not (self.entity_description.requires_fresh_input and snapshot.input_stale)
 
     @property
     def native_value(self) -> float | str | None:
         snapshot = self.runtime.snapshot
         if snapshot is None:
             return None
-        return self.entity_description.value_fn(snapshot, self.runtime)
+        value = self.entity_description.value_fn(snapshot, self.runtime)
+        precision = self.entity_description.display_precision
+        if (
+            precision is None
+            and self.entity_description.native_unit_of_measurement == UnitOfPower.KILO_WATT
+        ):
+            precision = 2
+        if isinstance(value, float) and precision is not None:
+            return round_for_display(value, precision)
+        return value
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
@@ -297,6 +370,7 @@ class SIGridSensor(SensorEntity):
             "coverage_seconds": round(snapshot.coverage_seconds, 3),
             "gap_seconds": round(snapshot.gap_seconds, 3),
             "input_stale": snapshot.input_stale,
+            "simulation_enabled": bool(self.runtime.settings.get("simulation_enabled", False)),
         }
         if self.entity_description.key.endswith("15m_rolling"):
             window = (
@@ -315,6 +389,37 @@ class SIGridSensor(SensorEntity):
             attributes["safety_warning"] = ATTR_BUDGET_HEADROOM_WARNING
             if snapshot.projection.unrecoverable:
                 attributes["advice_status"] = "cannot_restore_target"
+        if self.entity_description.key.startswith("sustained_"):
+            forecast = self.runtime.sustained_forecast
+            if forecast is not None:
+                attributes.update(
+                    {
+                        "forecast_horizon_minutes": forecast.horizon_minutes,
+                        "smoothing_window_seconds": forecast.smoothing_seconds,
+                        "source_measurement_age_seconds": forecast.measurement_age_seconds,
+                        "valid_measurement_coverage_seconds": forecast.coverage_seconds,
+                        "limiting_quarter_start": forecast.limiting_quarter_start_utc,
+                        "limiting_quarter_end": forecast.limiting_quarter_end_utc,
+                        "limiting_target_kw": forecast.limiting_target_kw,
+                        "current_quarter_unrecoverable": (forecast.current_quarter_unrecoverable),
+                        "forecast_assumption": forecast.assumption,
+                        "reason": forecast.reason,
+                    }
+                )
+        if self.entity_description.key in {
+            "forecast_smoothed_kw",
+            "forecast_utilization_pct",
+        }:
+            attributes.update(
+                {
+                    "smoothing_window_complete": snapshot.smoothed_import.complete,
+                    "smoothing_coverage_seconds": round(
+                        snapshot.smoothed_import.coverage_seconds, 3
+                    ),
+                    "smoothing_gap_seconds": round(snapshot.smoothed_import.gap_seconds, 3),
+                    "forecast_basis": "time_weighted_import_only_power",
+                }
+            )
         return attributes
 
     async def async_added_to_hass(self) -> None:
