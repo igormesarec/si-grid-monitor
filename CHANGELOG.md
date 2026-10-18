@@ -21,11 +21,17 @@ All notable changes to SI Grid Monitor will be documented here.
 - Daily, weekly, monthly, yearly, next-transition and upcoming-quarter calendar
   query methods for future dashboard use.
 - SQLite schema 3 tariff provenance and five-target configuration epochs.
+- A documented, date-bound real-world 2026 B1–B5 validation fixture and backend
+  contracted-power period model; fixture values remain user configuration and
+  are never substituted for defaults or migrated V0.2 targets.
 
 ### Correctness
 
 - Current and sustained import-only calculations select the target independently
   for every applicable fixed quarter.
+- Automated acceptance coverage verifies target selection, live advice,
+  forecasts, tariff transitions and archived confirmed exceedances against the
+  selected block target for the documented 2026 fixture.
 - Historical measurements and targets are not rewritten when calendar metadata
   is added. Unknown rules/configuration and incomplete quarters cannot create
   confirmed exceedances.

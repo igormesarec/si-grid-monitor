@@ -44,6 +44,13 @@ unrecoverable and projected-exceedance calculations. Sustained forecasts call
 the calendar for every future fixed quarter independently; they do not reuse the
 current block's target. Export never offsets imported energy.
 
+Contracted-power assignments have their own inclusive local-date validity and
+provenance, independent from tariff rule versions. The backend accepts
+non-overlapping periods so a later year can use different B1–B5 values without
+rewriting history. No assignment is inferred beyond its stated validity. The
+documented user-supplied 2026 acceptance fixture (recorded 17 October 2025) is
+not a product default and does not alter V0.2-to-V0.3 migration semantics.
+
 ## Immutable archive provenance
 
 SQLite schema 4 adds tariff calendar year, season, day type, rule verification

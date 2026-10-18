@@ -11,6 +11,9 @@ The authoritative MASTER PRODUCT SPECIFICATION V1.1 is preserved unchanged in
 [`SPECIFICATION_V1.2_ADDENDUM.md`](SPECIFICATION_V1.2_ADDENDUM.md) and the V0.3
 calendar rules are documented in
 [`SPECIFICATION_V1.3_ADDENDUM.md`](SPECIFICATION_V1.3_ADDENDUM.md).
+The user-supplied 2026 contracted-power acceptance case is documented separately
+in [`REAL_WORLD_VALIDATION.md`](REAL_WORLD_VALIDATION.md); its values are test
+fixtures, never installation defaults.
 
 ## Safety and accuracy
 
@@ -115,6 +118,13 @@ V0.2 upgrade the previous target is copied into all five blocks. Current-quarter
 calculations use the active block; sustained forecasts classify and select the
 target for every future quarter separately.
 
+Contracted-power assignments are user-owned and date-bound independently from
+tariff calendar rules. The backend period model supports different B1–B5 values
+for non-overlapping future validity periods, retaining provenance and the date a
+record was issued. The V0.3 Home Assistant options UI edits the currently
+effective five values; advance scheduling of future assignments is not yet an
+options-flow feature. A 2026 assignment must not be assumed valid for 2027–2030.
+
 New entities expose current/next block and target, season, day type, transition
 countdown, calendar year, rule status, and contracted power B1–B5. Calendar
 status attributes include the rule version, source, local timestamp, UTC offset,
@@ -196,6 +206,9 @@ and the HACS repository validator.
 - The calendar is legally verified only for 2026 and 2027 as of 18 October 2026.
   Provisional 2028–2030 continuation requires explicit opt-in and may differ from
   rules later published by URO.
+- Date-bound contracted-power periods are represented and tested in the backend,
+  but V0.3 does not yet provide an options-flow editor for scheduling a future
+  assignment before its effective date.
 - Completed quarters retain the tariff policy and rule status that applied when
   they were written. Changing provisional-calendar policy does not relabel old
   rows. Legacy rows without policy provenance remain explicitly unknown.

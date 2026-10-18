@@ -42,6 +42,11 @@ connection capacity from CAN ADD values.
    current and next target sensors follow block transitions.
 8. Run a sustained forecast across a block boundary and confirm each future
    quarter uses its own block target, especially when the next target is lower.
+9. Configure the documented values in `REAL_WORLD_VALIDATION.md` (B1 3.50,
+   B2 3.90, B3 4.10, B4/B5 4.20 kW) only in a suitable test entry. During 2026,
+   verify the active target, utilization, forecasts, CAN ADD and MUST REDUCE at
+   representative B1–B5 intervals and immediately across a block transition.
+   Do not apply this user-specific assignment to another installation or year.
 
 ## Tariff calendar
 
@@ -95,6 +100,9 @@ connection capacity from CAN ADD values.
     and a reason. A provisional exceedance must not increase the confirmed count.
 14. Toggle provisional policy and reload. Previously completed rows must retain
     their original policy and rule status.
+15. With the documented 2026 fixture configured, inspect completed rows from
+    each block. Confirm they retain the effective target and provenance, and an
+    exceedance is confirmed only against that quarter's official block target.
 
 ## Lifecycle and observations to report
 

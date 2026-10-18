@@ -20,6 +20,13 @@ def test_v02_target_is_copied_to_all_five_blocks_without_losing_settings() -> No
     assert migrated_options["smoothing_seconds"] == 120
 
 
+def test_v02_480_fixture_is_not_replaced_by_documented_2026_values() -> None:
+    migrated_data, migrated_options = migrated_v3_settings({CONF_TARGET_KW: 4.8}, {})
+
+    assert tuple(migrated_data[key] for key in TARGET_KEYS) == (4.8,) * 5
+    assert not any(key in migrated_options for key in TARGET_KEYS)
+
+
 def test_existing_v03_block_values_are_never_overwritten() -> None:
     data = {CONF_TARGET_KW: 4.8, **dict(zip(TARGET_KEYS, (1, 2, 3, 4, 5), strict=True))}
     migrated_data, _ = migrated_v3_settings(data, {})
