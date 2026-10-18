@@ -4,6 +4,15 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
+from .const import DOMAIN
+
+try:
+    from homeassistant.helpers import config_validation as cv
+except ModuleNotFoundError:  # Pure calculation tests intentionally do not install HA.
+    CONFIG_SCHEMA = None
+else:
+    CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
 if TYPE_CHECKING:
     from homeassistant.config_entries import ConfigEntry
     from homeassistant.core import HomeAssistant
