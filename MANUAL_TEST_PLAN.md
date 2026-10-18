@@ -88,7 +88,7 @@ connection capacity from CAN ADD values.
 8. Create a missing-data quarter with some observed import. Confirm its partial
    energy remains inspectable but is excluded from valid contractual totals,
    demand maxima, averages and exceedance counts.
-9. Inspect a new schema-4 row for tariff block, calendar year, season, day type,
+9. Inspect a new schema-5 row for tariff block, calendar year, season, day type,
    rule version/status/source and the effective immutable block target.
 10. Upgrade a copy of a V0.2 database. Confirm each configuration epoch's common
     target migrated to B1–B5 and no measurement or existing target was rewritten.
