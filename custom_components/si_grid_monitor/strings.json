@@ -14,6 +14,9 @@
         "description": "V0.4 fully supports a signed W or kW grid-power sensor. Other source designs remain visibly unavailable.",
         "data": {
           "source_mode": "Source mode"
+        },
+        "data_description": {
+          "source_mode": "Choose the input type. In V0.4 only a single signed power sensor (W or kW) is operational; other modes cannot yet be configured."
         }
       },
       "meter": {
@@ -22,12 +25,21 @@
         "data": {
           "power_entity": "Grid power sensor",
           "positive_means_import": "Positive source values mean IMPORT"
+        },
+        "data_description": {
+          "power_entity": "Select the grid-connection power sensor (W or kW), not total house consumption or PV production. Current readings will be normalized into import (+) and export (−).",
+          "positive_means_import": "Enable if a positive raw sensor reading means electricity imported from the grid. Disable if positive means grid export, as with some SolarEdge sensors. Review the live polarity preview."
         }
       },
       "polarity_preview": {
         "title": "Check normalized direction",
         "description": "{preview} If the direction is wrong, go back and reverse the polarity choice.",
-        "data": {"confirm": "The normalized direction is correct"}
+        "data": {
+          "confirm": "The normalized direction is correct"
+        },
+        "data_description": {
+          "confirm": "Confirm the preview and proceed. If import appears as export, return to the polarity field; the confirmation does not change sensor data."
+        }
       },
       "contract": {
         "title": "Contracted-power validity",
@@ -37,17 +49,33 @@
           "assignment_end_date": "Contracted-power validity end",
           "assignment_recorded_on": "Distributor record/issue date (optional)",
           "assignment_provenance": "Source or provenance"
+        },
+        "data_description": {
+          "assignment_start_date": "First local calendar date on which this contracted-power assignment applies (inclusive). For example, 2026-01-01.",
+          "assignment_end_date": "Last local calendar date for these limits (inclusive). The system does not silently extend the assignment into future years.",
+          "assignment_recorded_on": "Optional date printed or recorded on the distributor's assignment. This is evidence/provenance, not the start of validity.",
+          "assignment_provenance": "Identify who provided these limits, for example 'distributor assignment'. Kept with archived contract metadata."
         }
       },
       "target_mode": {
         "title": "Contracted-power mode",
         "description": "A contracted limit is a 15-minute average import-demand target, not instantaneous breaker or phase capacity.",
-        "data": {"target_mode": "Target entry mode"}
+        "data": {
+          "target_mode": "Target entry mode"
+        },
+        "data_description": {
+          "target_mode": "Use one shared kW limit for B1–B5, or enter five independent limits. These are limits for 15-minute import demand, not electrical breaker capacity."
+        }
       },
       "shared_target": {
         "title": "Shared B1-B5 target",
         "description": "This value will be saved for all five tariff blocks in the dated assignment.",
-        "data": {"target_kw": "Contracted power for B1-B5"}
+        "data": {
+          "target_kw": "Contracted power for B1-B5"
+        },
+        "data_description": {
+          "target_kw": "Agreed 15-minute average IMPORT power in kW. Shared mode copies this exact limit into all five tariff blocks for the selected dates."
+        }
       },
       "individual_targets": {
         "title": "Individual B1-B5 targets",
@@ -58,6 +86,13 @@
           "target_b3_kw": "B3 contracted power",
           "target_b4_kw": "B4 contracted power",
           "target_b5_kw": "B5 contracted power"
+        },
+        "data_description": {
+          "target_b1_kw": "Distributor-assigned B1 15-minute average IMPORT demand limit in kW. Used only while this dated assignment is valid and B1 applies.",
+          "target_b2_kw": "Distributor-assigned B2 15-minute average IMPORT demand limit in kW. Used only while this dated assignment is valid and B2 applies.",
+          "target_b3_kw": "Distributor-assigned B3 15-minute average IMPORT demand limit in kW. Used only while this dated assignment is valid and B3 applies.",
+          "target_b4_kw": "Distributor-assigned B4 15-minute average IMPORT demand limit in kW. Used only while this dated assignment is valid and B4 applies.",
+          "target_b5_kw": "Distributor-assigned B5 15-minute average IMPORT demand limit in kW. Used only while this dated assignment is valid and B5 applies."
         }
       },
       "calculation": {
@@ -69,18 +104,37 @@
           "sustained_horizon_minutes": "Sustained load forecast horizon",
           "retention": "Archive retention",
           "allow_provisional_tariff": "Allow provisional tariffs for unverified years"
+        },
+        "data_description": {
+          "safety_margin_kw": "Optional planning buffer (kW) subtracted from the agreed limit when calculating operational headroom. Default 0.00 kW; does not change the contract.",
+          "smoothing_seconds": "Averages recent signed power for the end-of-quarter forecast. 30 s reacts faster; 120 s is steadier but slower to follow changes.",
+          "sustained_horizon_minutes": "How long (15/30/60/120 min) continuous extra demand is evaluated, including any stricter tariff blocks coming next.",
+          "retention": "How long completed 15-minute quarters remain in the integration-owned SQLite database. 'Forever' preserves them across normal HA recorder purges.",
+          "allow_provisional_tariff": "Opt in to explicitly provisional continuation of the 2027 block pattern for unverified years 2028–2030. Without opt-in no future block/limit is claimed as confirmed."
         }
       },
       "review": {
         "title": "Review and install",
         "description": "Source: {entity}\nValidity: {dates}\nTargets: {targets}\n\nThe dated schedule is the single source of truth.",
-        "data": {"confirm": "Install SI Grid Monitor"}
+        "data": {
+          "confirm": "Install SI Grid Monitor"
+        },
+        "data_description": {
+          "confirm": "Confirm the preview and proceed. If import appears as export, return to the polarity field; the confirmation does not change sensor data."
+        }
       }
     }
   },
   "options": {
     "step": {
-      "init": {"title": "SI Grid Monitor settings", "menu_options": {"settings": "Calculation and meter settings", "assignments": "Manage contracted-power assignments", "add_assignment": "Add contracted-power assignment"}},
+      "init": {
+        "title": "SI Grid Monitor settings",
+        "menu_options": {
+          "settings": "Calculation and meter settings",
+          "assignments": "Manage contracted-power assignments",
+          "add_assignment": "Add contracted-power assignment"
+        }
+      },
       "settings": {
         "title": "Calculation and meter settings",
         "description": "Changing source or polarity creates a new configuration epoch. Unavailable or stale advice is never converted to zero.",
@@ -92,12 +146,89 @@
           "smoothing_seconds": "Forecast smoothing window",
           "sustained_horizon_minutes": "Sustained load forecast horizon",
           "retention": "Archive retention"
+        },
+        "data_description": {
+          "power_entity": "Select the grid-connection power sensor (W or kW), not total house consumption or PV production. Current readings will be normalized into import (+) and export (−).",
+          "positive_means_import": "Enable if a positive raw sensor reading means electricity imported from the grid. Disable if positive means grid export, as with some SolarEdge sensors. Review the live polarity preview.",
+          "allow_provisional_tariff": "Opt in to explicitly provisional continuation of the 2027 block pattern for unverified years 2028–2030. Without opt-in no future block/limit is claimed as confirmed.",
+          "safety_margin_kw": "Optional planning buffer (kW) subtracted from the agreed limit when calculating operational headroom. Default 0.00 kW; does not change the contract.",
+          "smoothing_seconds": "Averages recent signed power for the end-of-quarter forecast. 30 s reacts faster; 120 s is steadier but slower to follow changes.",
+          "sustained_horizon_minutes": "How long (15/30/60/120 min) continuous extra demand is evaluated, including any stricter tariff blocks coming next.",
+          "retention": "How long completed 15-minute quarters remain in the integration-owned SQLite database. 'Forever' preserves them across normal HA recorder purges."
         }
       },
-      "assignments": {"title": "Contracted-power assignments", "description": "Choose an assignment to edit or remove. Periods cannot overlap.", "data": {"assignment_action": "Assignment action"}},
-      "add_assignment": {"title": "Add contracted-power assignment", "description": "Add an inclusive validity period with five block targets.", "data": {"assignment_start_date": "Effective start", "assignment_end_date": "Effective end", "assignment_recorded_on": "Record date (optional)", "assignment_provenance": "Provenance", "target_b1_kw": "B1 contracted power", "target_b2_kw": "B2 contracted power", "target_b3_kw": "B3 contracted power", "target_b4_kw": "B4 contracted power", "target_b5_kw": "B5 contracted power"}},
-      "edit_assignment": {"title": "Edit contracted-power assignment", "description": "The change applies prospectively through a new configuration epoch and never rewrites archived quarters.", "data": {"assignment_start_date": "Effective start", "assignment_end_date": "Effective end", "assignment_recorded_on": "Record date (optional)", "assignment_provenance": "Provenance", "target_b1_kw": "B1 contracted power", "target_b2_kw": "B2 contracted power", "target_b3_kw": "B3 contracted power", "target_b4_kw": "B4 contracted power", "target_b5_kw": "B5 contracted power"}},
-      "remove_assignment": {"title": "Remove contracted-power assignment", "description": "Confirm removal. Archived measurements and immutable quarter provenance are not deleted.", "data": {"confirm": "Remove this assignment"}}
+      "assignments": {
+        "title": "Contracted-power assignments",
+        "description": "Choose an assignment to edit or remove. Periods cannot overlap.",
+        "data": {
+          "assignment_action": "Assignment action"
+        },
+        "data_description": {
+          "assignment_action": "Choose exactly which dated contract assignment to edit or remove. Editing only that period does not rewrite older completed quarters."
+        }
+      },
+      "add_assignment": {
+        "title": "Add contracted-power assignment",
+        "description": "Add an inclusive validity period with five block targets.",
+        "data": {
+          "assignment_start_date": "Effective start",
+          "assignment_end_date": "Effective end",
+          "assignment_recorded_on": "Record date (optional)",
+          "assignment_provenance": "Provenance",
+          "target_b1_kw": "B1 contracted power",
+          "target_b2_kw": "B2 contracted power",
+          "target_b3_kw": "B3 contracted power",
+          "target_b4_kw": "B4 contracted power",
+          "target_b5_kw": "B5 contracted power"
+        },
+        "data_description": {
+          "assignment_start_date": "First local calendar date on which this contracted-power assignment applies (inclusive). For example, 2026-01-01.",
+          "assignment_end_date": "Last local calendar date for these limits (inclusive). The system does not silently extend the assignment into future years.",
+          "assignment_recorded_on": "Optional date printed or recorded on the distributor's assignment. This is evidence/provenance, not the start of validity.",
+          "assignment_provenance": "Identify who provided these limits, for example 'distributor assignment'. Kept with archived contract metadata.",
+          "target_b1_kw": "Distributor-assigned B1 15-minute average IMPORT demand limit in kW. Used only while this dated assignment is valid and B1 applies.",
+          "target_b2_kw": "Distributor-assigned B2 15-minute average IMPORT demand limit in kW. Used only while this dated assignment is valid and B2 applies.",
+          "target_b3_kw": "Distributor-assigned B3 15-minute average IMPORT demand limit in kW. Used only while this dated assignment is valid and B3 applies.",
+          "target_b4_kw": "Distributor-assigned B4 15-minute average IMPORT demand limit in kW. Used only while this dated assignment is valid and B4 applies.",
+          "target_b5_kw": "Distributor-assigned B5 15-minute average IMPORT demand limit in kW. Used only while this dated assignment is valid and B5 applies."
+        }
+      },
+      "edit_assignment": {
+        "title": "Edit contracted-power assignment",
+        "description": "The change applies prospectively through a new configuration epoch and never rewrites archived quarters.",
+        "data": {
+          "assignment_start_date": "Effective start",
+          "assignment_end_date": "Effective end",
+          "assignment_recorded_on": "Record date (optional)",
+          "assignment_provenance": "Provenance",
+          "target_b1_kw": "B1 contracted power",
+          "target_b2_kw": "B2 contracted power",
+          "target_b3_kw": "B3 contracted power",
+          "target_b4_kw": "B4 contracted power",
+          "target_b5_kw": "B5 contracted power"
+        },
+        "data_description": {
+          "assignment_start_date": "First local calendar date on which this contracted-power assignment applies (inclusive). For example, 2026-01-01.",
+          "assignment_end_date": "Last local calendar date for these limits (inclusive). The system does not silently extend the assignment into future years.",
+          "assignment_recorded_on": "Optional date printed or recorded on the distributor's assignment. This is evidence/provenance, not the start of validity.",
+          "assignment_provenance": "Identify who provided these limits, for example 'distributor assignment'. Kept with archived contract metadata.",
+          "target_b1_kw": "Distributor-assigned B1 15-minute average IMPORT demand limit in kW. Used only while this dated assignment is valid and B1 applies.",
+          "target_b2_kw": "Distributor-assigned B2 15-minute average IMPORT demand limit in kW. Used only while this dated assignment is valid and B2 applies.",
+          "target_b3_kw": "Distributor-assigned B3 15-minute average IMPORT demand limit in kW. Used only while this dated assignment is valid and B3 applies.",
+          "target_b4_kw": "Distributor-assigned B4 15-minute average IMPORT demand limit in kW. Used only while this dated assignment is valid and B4 applies.",
+          "target_b5_kw": "Distributor-assigned B5 15-minute average IMPORT demand limit in kW. Used only while this dated assignment is valid and B5 applies."
+        }
+      },
+      "remove_assignment": {
+        "title": "Remove contracted-power assignment",
+        "description": "Confirm removal. Archived measurements and immutable quarter provenance are not deleted.",
+        "data": {
+          "confirm": "Remove this assignment"
+        },
+        "data_description": {
+          "confirm": "Confirm the preview and proceed. If import appears as export, return to the polarity field; the confirmation does not change sensor data."
+        }
+      }
     }
   },
   "selector": {
