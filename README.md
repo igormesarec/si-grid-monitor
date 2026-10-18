@@ -41,9 +41,9 @@ The authoritative MASTER PRODUCT SPECIFICATION V1.1 is preserved unchanged in
 | Stale/gap quality handling | Yes | Yes | Yes | No |
 | Europe/Ljubljana DST quarter mapping | Yes | Yes | Yes | No |
 | 15/30/60/120-minute sustained forecast | V0.2 | Yes | Yes | No |
-| SQLite archive, checkpoints, recovery | V0.2 | Yes | Yes | No |
-| Detailed-recorder historical backfill | V0.2 | Yes | Pure engine tested | No |
-| Source/sign reconfiguration | V0.2 | Yes | Static validation | No |
+| SQLite archive, checkpoints, recovery | V0.2 | Yes | Yes, including boundary reload | No |
+| Detailed-recorder historical backfill | V0.2 | Yes | Epoch/provenance tests | No |
+| Source/sign/target reconfiguration epochs | V0.2 | Yes | Yes | No |
 | Dated Slovenian tariff/calendar rules | V0.3 | No | No | No |
 | Six-tab professional dashboard | V0.4-V0.7 | No | No | No |
 | GitHub Pages and HACS default listing | V0.8 | No | No | No |
@@ -151,6 +151,14 @@ and the HACS repository validator.
   claim is made.
 - Recorder reconstruction and SQLite migration/recovery are automated but still
   require validation against a real supported Home Assistant installation.
+- Historical reconstruction starts only where a persisted source/sign epoch is
+  available and uses the target effective in that epoch. A quarter crossed by a
+  source or target change is marked mixed/unknown and cannot create a contractual
+  exceedance. Pre-migration rows whose assumptions cannot be audited are retained
+  as `legacy_unverified` and excluded from confirmed contractual statistics.
+- Confirmed archive maxima, averages and energy totals exclude incomplete or
+  unavailable quarters. Their observed partial energy is retained separately so
+  missing coverage is visible rather than silently promoted to a valid quarter.
 - The archive is integration-owned, namespaced per config entry, WAL-backed and
   retained forever by default. Removal policy and export tooling are not yet UI
   features; uninstalling the integration does not promise archive deletion.
@@ -168,8 +176,8 @@ and the HACS repository validator.
   sustained load advice, independent SQLite archive, checkpoints, recorder
   backfill, provenance, and Forever default retention.
 - **V0.3:** dated/versioned official Slovenian 2026/2027 tariff and holiday rules,
-  rule-expiry warnings, one shared or five per-block settings, historical target
-  snapshots, and three consecutive exceedances stored as three intervals.
+  rule-expiry warnings, one shared or five per-block settings, block/rule target
+  provenance, and three consecutive exceedances stored as three intervals.
 - **V0.4:** OVERVIEW and TODAY; the first Overview card is the live graphical
   current quarter with one-second countdown, instant/30-second forecasts, CAN
   ADD/MUST REDUCE, and all five Today block rows even when inactive.

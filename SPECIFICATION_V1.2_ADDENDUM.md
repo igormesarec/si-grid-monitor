@@ -40,6 +40,24 @@ exceedance.
   lower-quality reconstruction cannot overwrite a better record.
 - Temporary simulation targets do not contaminate genuine contractual history.
 
+### Archive integrity clarification
+
+Source identity, sign polarity, contractual target and safety margin form a
+time-stamped configuration epoch. Live completion and recorder reconstruction
+resolve the epoch that actually covered the fixed quarter; asynchronous storage
+never reads later runtime settings as a substitute. A source or target change
+inside a quarter makes that quarter's contractual configuration mixed/unknown.
+If historical source mapping or target provenance is unavailable, those fields
+remain unknown and the record cannot create an exceedance.
+
+Shutdown and config-entry reload stop recorder backfill, drain outstanding
+quarter/checkpoint operations, retry any quarter whose durable cursor did not
+advance, write the final checkpoint, and only then close SQLite. Incomplete and
+unavailable quarters never contribute to confirmed energy totals, contractual
+demand maxima/averages or exceedance counts. Any actually observed partial
+energy is retained in separate partial totals. Legacy rows lacking auditable
+configuration provenance remain stored but are classified as unverified.
+
 ## Sustained load forecasting
 
 V0.2 adds a continuous-load forecast distinct from current-quarter advice:

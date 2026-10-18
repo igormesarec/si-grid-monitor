@@ -4,6 +4,20 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+### Fixed
+
+- Recorder backfill now replays each historical source/sign configuration epoch
+  and its effective contractual target instead of applying current settings to
+  older measurements. Unknown or mixed provenance suppresses exceedance claims.
+- Completed-quarter writes use an immutable as-of configuration snapshot.
+  Mid-quarter target/source changes are recorded explicitly as mixed/unknown.
+- Reload and shutdown drain archive work, retry quarters whose durable write did
+  not complete, save the final checkpoint, and only then close SQLite.
+- Archive summaries exclude incomplete and unavailable quarters from confirmed
+  energy, demand maxima and averages; partial observed energy is reported
+  separately. Legacy V0.2 rows migrate as unverified rather than producing
+  potentially false contractual exceedances.
+
 ## [0.2.0] - 2026-10-18
 
 ### Added

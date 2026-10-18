@@ -8,9 +8,36 @@ It never reconstructs quarters from hourly long-term statistics.
 from __future__ import annotations
 
 from collections.abc import Iterable
+from dataclasses import dataclass
 from datetime import datetime
 
+from .adapters import AdapterError, SignedPowerAdapter
 from .engine import CompletedQuarter, FixedQuarterEngine, PowerSample
+
+
+@dataclass(frozen=True, slots=True)
+class HistoricalPowerReading:
+    """Raw detailed recorder reading before epoch-specific normalization."""
+
+    timestamp: datetime
+    value: object
+    unit: str
+
+
+def normalize_historical_readings(
+    readings: Iterable[HistoricalPowerReading], *, positive_means_import: bool
+) -> tuple[PowerSample, ...]:
+    """Normalize recorder readings using the historical epoch, never current settings."""
+
+    adapter = SignedPowerAdapter(positive_means_import=positive_means_import)
+    samples: list[PowerSample] = []
+    for reading in readings:
+        try:
+            normalized = adapter.normalize(reading.value, reading.unit)
+            samples.append(PowerSample(reading.timestamp, normalized.signed_kw))
+        except (AdapterError, ValueError):
+            continue
+    return tuple(samples)
 
 
 def reconstruct_quarters(

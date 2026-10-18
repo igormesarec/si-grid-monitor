@@ -7,12 +7,13 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
-from .engine import LJUBLJANA, DataQuality
+from .engine import EPSILON, LJUBLJANA, CompletedQuarter, DataQuality
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _QUALITY_RANK = {
     DataQuality.UNAVAILABLE.value: 0,
     DataQuality.INCOMPLETE.value: 1,
@@ -20,6 +21,41 @@ _QUALITY_RANK = {
     DataQuality.COUNTER_DERIVED.value: 3,
     DataQuality.MEASURED_ALIGNED.value: 4,
 }
+
+
+class ConfigurationStatus(StrEnum):
+    """How confidently a quarter can be tied to historical configuration."""
+
+    KNOWN = "known"
+    TARGET_UNKNOWN = "target_unknown"
+    TARGET_MIXED = "target_mixed"
+    SOURCE_UNKNOWN = "source_unknown"
+    SOURCE_MIXED = "source_mixed"
+    LEGACY_UNVERIFIED = "legacy_unverified"
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigurationEpoch:
+    """One source/sign/target configuration effective on the UTC timeline."""
+
+    epoch: int
+    source_id: str
+    positive_means_import: bool
+    effective_utc: datetime
+    contractual_target_kw: float | None
+    safety_margin_kw: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigurationResolution:
+    """Configuration provenance resolved for one complete quarter."""
+
+    status: ConfigurationStatus
+    source_id: str | None = None
+    positive_means_import: bool | None = None
+    source_epoch: int | None = None
+    contractual_target_kw: float | None = None
+    safety_margin_kw: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,10 +73,11 @@ class ArchiveRecord:
     gap_seconds: float
     quality: str
     provenance: str
-    source_id: str
-    source_epoch: int
+    source_id: str | None
+    source_epoch: int | None
+    configuration_status: str
     contractual_target_kw: float | None
-    safety_margin_kw: float
+    safety_margin_kw: float | None
     operational_target_kw: float | None
     utilization_pct: float | None
     exceeded: bool | None
@@ -57,12 +94,75 @@ class ArchiveSummary:
     valid_count: int
     incomplete_count: int
     exceeded_count: int
+    unknown_configuration_count: int
     import_kwh: float
     export_kwh: float
+    partial_observed_import_kwh: float
+    partial_observed_export_kwh: float
     maximum_import_demand_kw: float | None
     average_import_demand_kw: float | None
     minimum_signed_average_kw: float | None
     maximum_signed_average_kw: float | None
+
+
+def archive_record_from_quarter(
+    *,
+    namespace: str,
+    quarter: CompletedQuarter,
+    configuration: ConfigurationResolution,
+    provenance: str,
+) -> ArchiveRecord:
+    """Build a record exclusively from immutable quarter/configuration inputs."""
+
+    source_known = configuration.status in {
+        ConfigurationStatus.KNOWN,
+        ConfigurationStatus.TARGET_UNKNOWN,
+        ConfigurationStatus.TARGET_MIXED,
+    }
+    target_known = configuration.status == ConfigurationStatus.KNOWN
+    complete = source_known and quarter.quality not in {
+        DataQuality.INCOMPLETE,
+        DataQuality.UNAVAILABLE,
+    }
+    target = configuration.contractual_target_kw if target_known else None
+    margin = configuration.safety_margin_kw if target_known else None
+    utilization = (
+        100.0 * quarter.import_demand_kw / target
+        if complete and target is not None and target > 0
+        else None
+    )
+    exceeded = (
+        quarter.import_demand_kw > target + EPSILON if complete and target is not None else None
+    )
+    return ArchiveRecord(
+        namespace=namespace,
+        start_utc=quarter.start_utc,
+        end_utc=quarter.end_utc,
+        import_kwh=quarter.import_kwh,
+        export_kwh=quarter.export_kwh,
+        signed_average_kw=quarter.signed_average_kw,
+        import_demand_kw=quarter.import_demand_kw,
+        coverage_seconds=quarter.coverage_seconds,
+        gap_seconds=quarter.gap_seconds,
+        quality=quarter.quality.value,
+        provenance=provenance,
+        source_id=configuration.source_id if source_known else None,
+        source_epoch=configuration.source_epoch,
+        configuration_status=configuration.status.value,
+        contractual_target_kw=target,
+        safety_margin_kw=margin,
+        operational_target_kw=(
+            max(0.0, target - margin) if target is not None and margin is not None else None
+        ),
+        utilization_pct=utilization,
+        exceeded=exceeded,
+        excess_kw=(
+            max(0.0, quarter.import_demand_kw - target)
+            if exceeded is not None and target is not None
+            else None
+        ),
+        simulation=False,
+    )
 
 
 class QuarterArchive:
@@ -106,12 +206,34 @@ class QuarterArchive:
         positive_means_import: bool,
         effective_utc: datetime,
     ) -> int:
-        """Return a stable epoch, creating one when source semantics change."""
+        """Compatibility wrapper for source-only callers."""
+
+        return self.register_configuration_epoch(
+            namespace=namespace,
+            source_id=source_id,
+            positive_means_import=positive_means_import,
+            contractual_target_kw=None,
+            safety_margin_kw=None,
+            effective_utc=effective_utc,
+        ).epoch
+
+    def register_configuration_epoch(
+        self,
+        *,
+        namespace: str,
+        source_id: str,
+        positive_means_import: bool,
+        contractual_target_kw: float | None,
+        safety_margin_kw: float | None,
+        effective_utc: datetime,
+    ) -> ConfigurationEpoch:
+        """Return a stable epoch, creating one whenever semantics change."""
 
         effective = _utc_iso(effective_utc)
         with self._lock, self._db:
             row = self._db.execute(
-                """SELECT epoch, source_id, positive_means_import
+                """SELECT epoch, source_id, positive_means_import, effective_utc,
+                          contractual_target_kw, safety_margin_kw
                    FROM source_epochs WHERE namespace=? ORDER BY epoch DESC LIMIT 1""",
                 (namespace,),
             ).fetchone()
@@ -119,16 +241,86 @@ class QuarterArchive:
                 row
                 and row["source_id"] == source_id
                 and bool(row["positive_means_import"]) == bool(positive_means_import)
+                and _same_optional_float(row["contractual_target_kw"], contractual_target_kw)
+                and _same_optional_float(row["safety_margin_kw"], safety_margin_kw)
             ):
-                return int(row["epoch"])
+                return _epoch_from_row(row)
             epoch = 1 if row is None else int(row["epoch"]) + 1
             self._db.execute(
                 """INSERT INTO source_epochs
-                   (namespace, epoch, source_id, positive_means_import, effective_utc)
-                   VALUES (?, ?, ?, ?, ?)""",
-                (namespace, epoch, source_id, int(positive_means_import), effective),
+                   (namespace, epoch, source_id, positive_means_import, effective_utc,
+                    contractual_target_kw, safety_margin_kw)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    namespace,
+                    epoch,
+                    source_id,
+                    int(positive_means_import),
+                    effective,
+                    contractual_target_kw,
+                    safety_margin_kw,
+                ),
             )
-            return epoch
+            return ConfigurationEpoch(
+                epoch=epoch,
+                source_id=source_id,
+                positive_means_import=positive_means_import,
+                effective_utc=effective_utc.astimezone(UTC),
+                contractual_target_kw=contractual_target_kw,
+                safety_margin_kw=safety_margin_kw,
+            )
+
+    def list_configuration_epochs(self, namespace: str) -> list[ConfigurationEpoch]:
+        """Return all known configuration epochs in effective-time order."""
+
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT epoch, source_id, positive_means_import, effective_utc,
+                          contractual_target_kw, safety_margin_kw
+                   FROM source_epochs WHERE namespace=? ORDER BY effective_utc, epoch""",
+                (namespace,),
+            ).fetchall()
+        return [_epoch_from_row(row) for row in rows]
+
+    def resolve_configuration(
+        self, namespace: str, start_utc: datetime, end_utc: datetime
+    ) -> ConfigurationResolution:
+        """Resolve configuration only when its applicability is auditable."""
+
+        start = start_utc.astimezone(UTC)
+        end = end_utc.astimezone(UTC)
+        epochs = self.list_configuration_epochs(namespace)
+        active = [epoch for epoch in epochs if epoch.effective_utc <= start]
+        if not active:
+            return ConfigurationResolution(ConfigurationStatus.SOURCE_UNKNOWN)
+        first = active[-1]
+        changes = [epoch for epoch in epochs if start < epoch.effective_utc < end]
+        if changes:
+            candidates = [first, *changes]
+            same_source = all(
+                epoch.source_id == first.source_id
+                and epoch.positive_means_import == first.positive_means_import
+                for epoch in candidates
+            )
+            return ConfigurationResolution(
+                ConfigurationStatus.TARGET_MIXED
+                if same_source
+                else ConfigurationStatus.SOURCE_MIXED,
+                source_id=first.source_id if same_source else None,
+                positive_means_import=(first.positive_means_import if same_source else None),
+            )
+        if first.contractual_target_kw is None or first.safety_margin_kw is None:
+            status = ConfigurationStatus.TARGET_UNKNOWN
+        else:
+            status = ConfigurationStatus.KNOWN
+        return ConfigurationResolution(
+            status=status,
+            source_id=first.source_id,
+            positive_means_import=first.positive_means_import,
+            source_epoch=first.epoch,
+            contractual_target_kw=first.contractual_target_kw,
+            safety_margin_kw=first.safety_margin_kw,
+        )
 
     def upsert_quarter(self, record: ArchiveRecord) -> bool:
         """Insert exactly once; replace only with equal-or-better provenance quality."""
@@ -169,6 +361,7 @@ class QuarterArchive:
                 record.provenance,
                 record.source_id,
                 record.source_epoch,
+                record.configuration_status,
                 record.contractual_target_kw,
                 record.safety_margin_kw,
                 record.operational_target_kw,
@@ -185,10 +378,10 @@ class QuarterArchive:
                     namespace,start_utc,end_utc,start_local,utc_offset_seconds,fold,
                     import_kwh,export_kwh,signed_average_kw,import_demand_kw,
                     coverage_seconds,gap_seconds,quality,provenance,source_id,
-                    source_epoch,contractual_target_kw,safety_margin_kw,
+                    source_epoch,configuration_status,contractual_target_kw,safety_margin_kw,
                     operational_target_kw,utilization_pct,exceeded,excess_kw,
                     simulation,tariff_block,tariff_rule_version,created_utc)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(namespace,start_utc) DO UPDATE SET
                     end_utc=excluded.end_utc,start_local=excluded.start_local,
                     utc_offset_seconds=excluded.utc_offset_seconds,fold=excluded.fold,
@@ -199,6 +392,7 @@ class QuarterArchive:
                     gap_seconds=excluded.gap_seconds,quality=excluded.quality,
                     provenance=excluded.provenance,source_id=excluded.source_id,
                     source_epoch=excluded.source_epoch,
+                    configuration_status=excluded.configuration_status,
                     contractual_target_kw=excluded.contractual_target_kw,
                     safety_margin_kw=excluded.safety_margin_kw,
                     operational_target_kw=excluded.operational_target_kw,
@@ -259,24 +453,39 @@ class QuarterArchive:
         *,
         include_simulation: bool = False,
     ) -> ArchiveSummary:
-        """Aggregate without averaging away maximum quarter demand."""
+        """Aggregate valid quarters without promoting partial observations."""
 
         simulation_clause = "" if include_simulation else "AND simulation=0"
+        valid = """quality IN ('measured_aligned','counter_derived','reconstructed')
+                   AND configuration_status IN ('known','target_unknown','target_mixed')"""
         with self._lock:
             row = self._db.execute(
                 f"""SELECT
-                    SUM(CASE WHEN quality IN ('measured_aligned','counter_derived',
-                        'reconstructed') THEN 1 ELSE 0 END) valid_count,
+                    SUM(CASE WHEN {valid} THEN 1 ELSE 0 END) valid_count,
                     SUM(CASE WHEN quality IN ('incomplete','unavailable') THEN 1 ELSE 0 END)
                         incomplete_count,
-                    SUM(CASE WHEN exceeded=1 AND simulation=0 THEN 1 ELSE 0 END)
+                    SUM(CASE WHEN configuration_status NOT IN
+                        ('known','target_unknown','target_mixed') THEN 1 ELSE 0 END)
+                        unknown_configuration_count,
+                    SUM(CASE WHEN {valid} AND configuration_status='known'
+                        AND exceeded=1 AND simulation=0 THEN 1 ELSE 0 END)
                         exceeded_count,
-                    COALESCE(SUM(import_kwh),0) import_kwh,
-                    COALESCE(SUM(export_kwh),0) export_kwh,
-                    MAX(import_demand_kw) maximum_import_demand_kw,
-                    AVG(import_demand_kw) average_import_demand_kw,
-                    MIN(signed_average_kw) minimum_signed_average_kw,
-                    MAX(signed_average_kw) maximum_signed_average_kw
+                    COALESCE(SUM(CASE WHEN {valid} THEN import_kwh ELSE 0 END),0)
+                        import_kwh,
+                    COALESCE(SUM(CASE WHEN {valid} THEN export_kwh ELSE 0 END),0)
+                        export_kwh,
+                    COALESCE(SUM(CASE WHEN NOT ({valid}) THEN import_kwh ELSE 0 END),0)
+                        partial_observed_import_kwh,
+                    COALESCE(SUM(CASE WHEN NOT ({valid}) THEN export_kwh ELSE 0 END),0)
+                        partial_observed_export_kwh,
+                    MAX(CASE WHEN {valid} THEN import_demand_kw END)
+                        maximum_import_demand_kw,
+                    AVG(CASE WHEN {valid} THEN import_demand_kw END)
+                        average_import_demand_kw,
+                    MIN(CASE WHEN {valid} THEN signed_average_kw END)
+                        minimum_signed_average_kw,
+                    MAX(CASE WHEN {valid} THEN signed_average_kw END)
+                        maximum_signed_average_kw
                    FROM quarters WHERE namespace=? AND start_utc>=? AND start_utc<?
                    {simulation_clause}""",
                 (namespace, _utc_iso(start_utc), _utc_iso(end_utc)),
@@ -285,8 +494,11 @@ class QuarterArchive:
             valid_count=int(row["valid_count"] or 0),
             incomplete_count=int(row["incomplete_count"] or 0),
             exceeded_count=int(row["exceeded_count"] or 0),
+            unknown_configuration_count=int(row["unknown_configuration_count"] or 0),
             import_kwh=float(row["import_kwh"]),
             export_kwh=float(row["export_kwh"]),
+            partial_observed_import_kwh=float(row["partial_observed_import_kwh"]),
+            partial_observed_export_kwh=float(row["partial_observed_export_kwh"]),
             maximum_import_demand_kw=_optional_float(row["maximum_import_demand_kw"]),
             average_import_demand_kw=_optional_float(row["average_import_demand_kw"]),
             minimum_signed_average_kw=_optional_float(row["minimum_signed_average_kw"]),
@@ -304,7 +516,8 @@ class QuarterArchive:
                     CREATE TABLE source_epochs(
                       namespace TEXT NOT NULL, epoch INTEGER NOT NULL,
                       source_id TEXT NOT NULL, positive_means_import INTEGER NOT NULL,
-                      effective_utc TEXT NOT NULL,
+                      effective_utc TEXT NOT NULL,contractual_target_kw REAL,
+                      safety_margin_kw REAL,
                       PRIMARY KEY(namespace,epoch));
                     CREATE TABLE quarters(
                       namespace TEXT NOT NULL,start_utc TEXT NOT NULL,end_utc TEXT NOT NULL,
@@ -312,9 +525,10 @@ class QuarterArchive:
                       fold INTEGER NOT NULL,import_kwh REAL NOT NULL,export_kwh REAL NOT NULL,
                       signed_average_kw REAL NOT NULL,import_demand_kw REAL NOT NULL,
                       coverage_seconds REAL NOT NULL,gap_seconds REAL NOT NULL,
-                      quality TEXT NOT NULL,provenance TEXT NOT NULL,source_id TEXT NOT NULL,
-                      source_epoch INTEGER NOT NULL,contractual_target_kw REAL,
-                      safety_margin_kw REAL NOT NULL,operational_target_kw REAL,
+                      quality TEXT NOT NULL,provenance TEXT NOT NULL,source_id TEXT,
+                      source_epoch INTEGER,configuration_status TEXT NOT NULL,
+                      contractual_target_kw REAL,safety_margin_kw REAL,
+                      operational_target_kw REAL,
                       utilization_pct REAL,exceeded INTEGER,excess_kw REAL,
                       simulation INTEGER NOT NULL DEFAULT 0,tariff_block INTEGER,
                       tariff_rule_version TEXT,created_utc TEXT NOT NULL,
@@ -330,7 +544,54 @@ class QuarterArchive:
                     CREATE TABLE checkpoints(
                       namespace TEXT PRIMARY KEY,payload_json TEXT NOT NULL,
                       updated_utc TEXT NOT NULL);
-                    PRAGMA user_version=1;
+                    PRAGMA user_version=2;
+                    """
+                )
+            return
+        if version == 1:
+            with self._db:
+                self._db.executescript(
+                    """
+                    ALTER TABLE source_epochs ADD COLUMN contractual_target_kw REAL;
+                    ALTER TABLE source_epochs ADD COLUMN safety_margin_kw REAL;
+                    ALTER TABLE quarters RENAME TO quarters_v1;
+                    CREATE TABLE quarters(
+                      namespace TEXT NOT NULL,start_utc TEXT NOT NULL,end_utc TEXT NOT NULL,
+                      start_local TEXT NOT NULL,utc_offset_seconds INTEGER NOT NULL,
+                      fold INTEGER NOT NULL,import_kwh REAL NOT NULL,export_kwh REAL NOT NULL,
+                      signed_average_kw REAL NOT NULL,import_demand_kw REAL NOT NULL,
+                      coverage_seconds REAL NOT NULL,gap_seconds REAL NOT NULL,
+                      quality TEXT NOT NULL,provenance TEXT NOT NULL,source_id TEXT,
+                      source_epoch INTEGER,configuration_status TEXT NOT NULL,
+                      contractual_target_kw REAL,safety_margin_kw REAL,
+                      operational_target_kw REAL,utilization_pct REAL,exceeded INTEGER,
+                      excess_kw REAL,simulation INTEGER NOT NULL DEFAULT 0,
+                      tariff_block INTEGER,tariff_rule_version TEXT,created_utc TEXT NOT NULL,
+                      PRIMARY KEY(namespace,start_utc));
+                    INSERT INTO quarters(
+                      namespace,start_utc,end_utc,start_local,utc_offset_seconds,fold,
+                      import_kwh,export_kwh,signed_average_kw,import_demand_kw,
+                      coverage_seconds,gap_seconds,quality,provenance,source_id,
+                      source_epoch,configuration_status,contractual_target_kw,
+                      safety_margin_kw,operational_target_kw,utilization_pct,exceeded,
+                      excess_kw,simulation,tariff_block,tariff_rule_version,created_utc)
+                    SELECT namespace,start_utc,end_utc,start_local,utc_offset_seconds,fold,
+                      import_kwh,export_kwh,signed_average_kw,import_demand_kw,
+                      coverage_seconds,gap_seconds,quality,provenance,source_id,
+                      source_epoch,'legacy_unverified',contractual_target_kw,
+                      safety_margin_kw,operational_target_kw,utilization_pct,exceeded,
+                      excess_kw,simulation,tariff_block,tariff_rule_version,created_utc
+                    FROM quarters_v1;
+                    DROP TABLE quarters_v1;
+                    CREATE INDEX idx_quarters_namespace_end
+                      ON quarters(namespace,end_utc);
+                    CREATE INDEX idx_quarters_namespace_demand
+                      ON quarters(namespace,import_demand_kw DESC);
+                    CREATE INDEX idx_quarters_namespace_block
+                      ON quarters(namespace,tariff_block,start_utc);
+                    CREATE INDEX idx_quarters_namespace_exceeded
+                      ON quarters(namespace,exceeded,start_utc);
+                    PRAGMA user_version=2;
                     """
                 )
 
@@ -349,3 +610,20 @@ def _utc_iso(value: datetime) -> str:
 
 def _optional_float(value: object) -> float | None:
     return None if value is None else float(value)
+
+
+def _same_optional_float(value: object, expected: float | None) -> bool:
+    return (value is None and expected is None) or (
+        value is not None and expected is not None and float(value) == expected
+    )
+
+
+def _epoch_from_row(row: sqlite3.Row) -> ConfigurationEpoch:
+    return ConfigurationEpoch(
+        epoch=int(row["epoch"]),
+        source_id=str(row["source_id"]),
+        positive_means_import=bool(row["positive_means_import"]),
+        effective_utc=datetime.fromisoformat(str(row["effective_utc"])).astimezone(UTC),
+        contractual_target_kw=_optional_float(row["contractual_target_kw"]),
+        safety_margin_kw=_optional_float(row["safety_margin_kw"]),
+    )

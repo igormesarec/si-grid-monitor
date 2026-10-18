@@ -4,7 +4,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from custom_components.si_grid_monitor.backfill import reconstruct_quarters
+from custom_components.si_grid_monitor.backfill import (
+    HistoricalPowerReading,
+    normalize_historical_readings,
+    reconstruct_quarters,
+)
 from custom_components.si_grid_monitor.engine import DataQuality, PowerSample
 
 
@@ -36,3 +40,12 @@ def test_backfill_preserves_gaps_as_incomplete() -> None:
     assert quarters[0].quality == DataQuality.INCOMPLETE
     assert quarters[0].coverage_seconds == pytest.approx(30)
     assert quarters[0].gap_seconds == pytest.approx(870)
+
+
+def test_historical_epoch_polarity_is_used_instead_of_current_polarity() -> None:
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    readings = [HistoricalPowerReading(start, -6000, "W")]
+    historical = normalize_historical_readings(readings, positive_means_import=False)
+    current = normalize_historical_readings(readings, positive_means_import=True)
+    assert historical[0].signed_kw == pytest.approx(6.0)
+    assert current[0].signed_kw == pytest.approx(-6.0)

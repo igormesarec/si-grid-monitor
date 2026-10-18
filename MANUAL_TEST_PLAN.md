@@ -51,6 +51,16 @@ connection capacity from CAN ADD values.
    recorder reconstruction cannot replace a better live/aligned record.
 5. Enable a temporary simulation threshold. Confirm live entities respond but
    genuine contractual archive/exceedance statistics retain the real target.
+6. Change the contractual target and then source polarity during a test period.
+   Confirm later backfill uses each setting only in its persisted effective epoch;
+   a quarter crossed by either change is marked mixed/unknown and is not counted
+   as an exceedance.
+7. Reload immediately after a `:00/:15/:30/:45` boundary. Confirm the completed
+   quarter and final checkpoint exist exactly once after reload, with no closed-
+   database task exception in the log.
+8. Create a missing-data quarter with some observed import. Confirm its partial
+   energy remains inspectable but is excluded from valid contractual totals,
+   demand maxima, averages and exceedance counts.
 
 ## Lifecycle and observations to report
 
