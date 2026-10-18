@@ -13,6 +13,7 @@ from custom_components.si_grid_monitor.archive import (
     archive_record_from_quarter,
 )
 from custom_components.si_grid_monitor.engine import CompletedQuarter, DataQuality
+from custom_components.si_grid_monitor.tariffs import SlovenianTariffCalendar
 
 
 def record(
@@ -54,7 +55,7 @@ def record(
 def test_schema_idempotence_import_only_storage_and_dst_context(tmp_path) -> None:
     archive = QuarterArchive(tmp_path / "archive.db")
     archive.open()
-    assert archive.schema_version == 2
+    assert archive.schema_version == 3
     start = datetime(2026, 10, 25, 0, 0, tzinfo=UTC)
     assert archive.upsert_quarter(record(start))
     assert not archive.upsert_quarter(record(start))
@@ -392,7 +393,7 @@ def test_v1_migration_marks_legacy_rows_unverified_and_suppresses_exceedance(tmp
 
     archive = QuarterArchive(path)
     archive.open()
-    assert archive.schema_version == 2
+    assert archive.schema_version == 3
     migrated = archive.list_quarters("meter-a", start, start + timedelta(hours=1))[0]
     assert migrated["configuration_status"] == "legacy_unverified"
     assert archive.list_configuration_epochs("meter-a")[0].contractual_target_kw is None
@@ -402,4 +403,149 @@ def test_v1_migration_marks_legacy_rows_unverified_and_suppresses_exceedance(tmp
     assert summary.exceeded_count == 0
     assert summary.maximum_import_demand_kw is None
     assert summary.partial_observed_import_kwh == pytest.approx(2.0)
+    archive.close()
+
+
+def test_tariff_and_selected_block_target_are_immutable_archive_fields(tmp_path) -> None:
+    start = datetime(2027, 1, 4, 11, 0, tzinfo=UTC)  # 12:00 local, higher working B2
+    quarter = CompletedQuarter(
+        start_utc=start,
+        end_utc=start + timedelta(minutes=15),
+        import_kwh=1.0,
+        export_kwh=0.0,
+        signed_net_kwh=1.0,
+        import_demand_kw=4.0,
+        signed_average_kw=4.0,
+        coverage_seconds=900,
+        gap_seconds=0,
+        quality=DataQuality.RECONSTRUCTED,
+        source_id="sensor.grid",
+    )
+    tariff = SlovenianTariffCalendar().classify(start)
+    archived = archive_record_from_quarter(
+        namespace="meter-a",
+        quarter=quarter,
+        configuration=ConfigurationResolution(
+            status=ConfigurationStatus.KNOWN,
+            source_id="sensor.grid",
+            source_epoch=2,
+            contractual_target_kw=3.0,
+            safety_margin_kw=0.1,
+            block_targets_kw=(3.0, 4.0, 5.0, 6.0, 7.0),
+        ),
+        provenance="live_reconstructed",
+        tariff=tariff,
+    )
+    assert tariff.block == 2
+    assert archived.contractual_target_kw == 4.0
+    assert archived.tariff_rule_version == "SI-URO-2027"
+    assert archived.tariff_rule_status == "official"
+    assert archived.tariff_calendar_year == 2027
+    assert archived.tariff_season == "higher"
+    assert archived.tariff_day_type == "working"
+
+    archive = QuarterArchive(tmp_path / "tariff.db")
+    archive.open()
+    archive.upsert_quarter(archived)
+    row = archive.list_quarters("meter-a", start, start + timedelta(hours=1))[0]
+    assert row["tariff_block"] == 2
+    assert row["contractual_target_kw"] == 4.0
+    assert row["tariff_rule_status"] == "official"
+    archive.close()
+
+
+def test_v2_to_v3_migration_copies_common_target_to_all_blocks(tmp_path) -> None:
+    path = tmp_path / "v2.db"
+    db = sqlite3.connect(path)
+    db.executescript(
+        """
+        CREATE TABLE source_epochs(
+          namespace TEXT NOT NULL,epoch INTEGER NOT NULL,source_id TEXT NOT NULL,
+          positive_means_import INTEGER NOT NULL,effective_utc TEXT NOT NULL,
+          contractual_target_kw REAL,safety_margin_kw REAL,
+          PRIMARY KEY(namespace,epoch));
+        CREATE TABLE quarters(
+          namespace TEXT NOT NULL,start_utc TEXT NOT NULL,end_utc TEXT NOT NULL,
+          start_local TEXT NOT NULL,utc_offset_seconds INTEGER NOT NULL,fold INTEGER NOT NULL,
+          import_kwh REAL NOT NULL,export_kwh REAL NOT NULL,signed_average_kw REAL NOT NULL,
+          import_demand_kw REAL NOT NULL,coverage_seconds REAL NOT NULL,gap_seconds REAL NOT NULL,
+          quality TEXT NOT NULL,provenance TEXT NOT NULL,source_id TEXT,source_epoch INTEGER,
+          configuration_status TEXT NOT NULL,contractual_target_kw REAL,safety_margin_kw REAL,
+          operational_target_kw REAL,utilization_pct REAL,exceeded INTEGER,excess_kw REAL,
+          simulation INTEGER NOT NULL DEFAULT 0,tariff_block INTEGER,
+          tariff_rule_version TEXT,created_utc TEXT NOT NULL,
+          PRIMARY KEY(namespace,start_utc));
+        CREATE TABLE checkpoints(
+          namespace TEXT PRIMARY KEY,payload_json TEXT NOT NULL,updated_utc TEXT NOT NULL);
+        INSERT INTO source_epochs VALUES(
+          'meter-a',1,'sensor.grid',1,'2026-01-01T00:00:00+00:00',4.8,0.0);
+        PRAGMA user_version=2;
+        """
+    )
+    db.commit()
+    db.close()
+
+    archive = QuarterArchive(path)
+    archive.open()
+    assert archive.schema_version == 3
+    epoch = archive.list_configuration_epochs("meter-a")[0]
+    assert epoch.block_targets_kw == (4.8, 4.8, 4.8, 4.8, 4.8)
+    archive.close()
+
+
+def test_unverified_tariff_never_creates_contractual_target_or_exceedance() -> None:
+    start = datetime(2028, 1, 3, 11, 0, tzinfo=UTC)
+    quarter = CompletedQuarter(
+        start_utc=start,
+        end_utc=start + timedelta(minutes=15),
+        import_kwh=2.0,
+        export_kwh=0.0,
+        signed_net_kwh=2.0,
+        import_demand_kw=8.0,
+        signed_average_kw=8.0,
+        coverage_seconds=900,
+        gap_seconds=0,
+        quality=DataQuality.RECONSTRUCTED,
+        source_id="sensor.grid",
+    )
+    tariff = SlovenianTariffCalendar().classify(start)
+    assert tariff.block is None
+    archived = archive_record_from_quarter(
+        namespace="meter-a",
+        quarter=quarter,
+        configuration=ConfigurationResolution(
+            status=ConfigurationStatus.KNOWN,
+            source_id="sensor.grid",
+            source_epoch=1,
+            contractual_target_kw=4.8,
+            safety_margin_kw=0.0,
+            block_targets_kw=(3.0, 4.0, 5.0, 6.0, 7.0),
+        ),
+        provenance="live_reconstructed",
+        tariff=tariff,
+    )
+    assert archived.contractual_target_kw is None
+    assert archived.utilization_pct is None
+    assert archived.exceeded is None
+    assert archived.excess_kw is None
+
+
+def test_classifying_legacy_row_in_unverified_year_suppresses_old_exceedance(
+    tmp_path,
+) -> None:
+    start = datetime(2028, 1, 3, 11, 0, tzinfo=UTC)
+    archive = QuarterArchive(tmp_path / "unverified.db")
+    archive.open()
+    archive.upsert_quarter(record(start, import_kwh=2.0))
+
+    changed = archive.classify_existing_quarters("meter-a", SlovenianTariffCalendar().classify)
+
+    assert changed == 1
+    row = archive.list_quarters("meter-a", start, start + timedelta(hours=1))[0]
+    assert row["tariff_rule_status"] == "unverified"
+    assert row["tariff_block"] is None
+    assert row["exceeded"] is None
+    assert row["excess_kw"] is None
+    assert row["import_kwh"] == 2.0
+    assert row["contractual_target_kw"] == 4.6
     archive.close()

@@ -1,4 +1,4 @@
-# SI Grid Monitor V0.2 — Real Home Assistant Test Plan
+# SI Grid Monitor V0.3 — Real Home Assistant Test Plan
 
 Use a disposable or backed-up Home Assistant instance. Never infer physical
 connection capacity from CAN ADD values.
@@ -37,6 +37,27 @@ connection capacity from CAN ADD values.
 5. Apply a sudden +3 kW step. Confirm the instantaneous conservative scenario
    changes sustained advice immediately before the smoothed path catches up.
 6. Confirm stale/incomplete history publishes a reason instead of a safe value.
+7. Upgrade a V0.2 entry and confirm its old target appears identically in B1–B5.
+   Switch to per-block mode, set five distinct values, reload and verify the
+   current and next target sensors follow block transitions.
+8. Run a sustained forecast across a block boundary and confirm each future
+   quarter uses its own block target, especially when the next target is lower.
+
+## Tariff calendar
+
+1. Compare current block, season and day type with the official URO 2026/2027
+   table and Moj Elektro for the same local interval. Distributor data remains
+   authoritative; report any discrepancy with UTC time, offset and fold.
+2. Check a normal weekday, Saturday, Sunday, weekday holiday and weekend holiday
+   in both seasons. Verify the holiday name remains visible on weekends.
+3. Check 31 December/1 January and the February/March and October/November season
+   transitions. Check the 1 January 2027 rule-version change.
+4. On DST spring-forward and autumn fallback, confirm 23/25 hourly calendar rows,
+   no invented local hour and two distinct repeated 02:00 rows with different
+   offsets/folds.
+5. Keep provisional rules disabled and inspect 2028–2030: status must be
+   unverified and the block unavailable. Enable provisional continuation and
+   confirm every result is visibly labeled provisional, never official.
 
 ## Archive and recorder
 
@@ -61,6 +82,10 @@ connection capacity from CAN ADD values.
 8. Create a missing-data quarter with some observed import. Confirm its partial
    energy remains inspectable but is excluded from valid contractual totals,
    demand maxima, averages and exceedance counts.
+9. Inspect a new schema-3 row for tariff block, calendar year, season, day type,
+   rule version/status/source and the effective immutable block target.
+10. Upgrade a copy of a V0.2 database. Confirm each configuration epoch's common
+    target migrated to B1–B5 and no measurement or existing target was rewritten.
 
 ## Lifecycle and observations to report
 

@@ -4,6 +4,32 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-18
+
+### Added
+
+- Versioned Slovenian tariff calendar package with dedicated 2026–2030 rule
+  modules, Europe/Ljubljana DST handling and official work-free holidays.
+- Official URO 2026 and 2027 hourly block tables. The amended 2027 schedule is
+  effective 1 January 2027.
+- Explicit unavailable/provisional status for 2028–2030. The 2027 pattern is
+  continued only when the user deliberately enables provisional rules.
+- Five independent contracted-power settings, shared/per-block editing and an
+  automatic V0.2 migration that copies the old target to B1–B5.
+- Current/next block, season, day type, block target, transition countdown,
+  calendar year, rule status and five contracted-power sensors.
+- Daily, weekly, monthly, yearly, next-transition and upcoming-quarter calendar
+  query methods for future dashboard use.
+- SQLite schema 3 tariff provenance and five-target configuration epochs.
+
+### Correctness
+
+- Current and sustained import-only calculations select the target independently
+  for every applicable fixed quarter.
+- Historical measurements and targets are not rewritten when calendar metadata
+  is added. Unknown rules/configuration and incomplete quarters cannot create
+  confirmed exceedances.
+
 ### Fixed
 
 - Recorder backfill now replays each historical source/sign configuration epoch
