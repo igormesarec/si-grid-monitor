@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 DOMAIN = "si_grid_monitor"
+VERSION = "0.4.0"
+PANEL_URL_PATH = "si-grid-monitor"
+PANEL_TITLE = "SI Grid Monitor"
+PANEL_ICON = "mdi:transmission-tower"
+FRONTEND_URL = "/si_grid_monitor_frontend"
 
 CONF_SOURCE_MODE = "source_mode"
 CONF_POWER_ENTITY = "power_entity"
@@ -17,6 +22,10 @@ CONF_TARGET_B5_KW = "target_b5_kw"
 CONF_CONTRACTED_POWER_PERIODS = "contracted_power_periods"
 CONF_ASSIGNMENT_START_DATE = "assignment_start_date"
 CONF_ASSIGNMENT_END_DATE = "assignment_end_date"
+CONF_ASSIGNMENT_RECORDED_ON = "assignment_recorded_on"
+CONF_ASSIGNMENT_PROVENANCE = "assignment_provenance"
+CONF_ASSIGNMENT_ACTION = "assignment_action"
+CONF_ASSIGNMENT_INDEX = "assignment_index"
 CONF_ALLOW_PROVISIONAL_TARIFF = "allow_provisional_tariff"
 CONF_SAFETY_MARGIN_KW = "safety_margin_kw"
 CONF_SMOOTHING_SECONDS = "smoothing_seconds"

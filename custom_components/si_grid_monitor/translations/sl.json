@@ -5,65 +5,79 @@
       "already_configured": "Ta vir je že nastavljen."
     },
     "error": {
-      "mode_not_available_v0_1": "Ta način vira ostaja načrtovan, vendar v V0.3 še ni povezan s Home Assistantom. Izberite en podpisan senzor trenutne moči.",
+      "mode_not_available_v0_4": "Ta način vira v V0.4 še ni izveden. Izberite en podpisan senzor trenutne moči omrežja.",
       "invalid_contracted_power_periods": "Obdobja dogovorjene moči niso veljavna, se prekrivajo ali imajo končni datum pred začetnim."
     },
     "step": {
       "user": {
-        "title": "Izberite vrsto vira omrežnih podatkov",
-        "description": "V0.3 deluje z enim podpisanim senzorjem trenutne moči. Drugi načini ostajajo načrtovani in jih še ni mogoče shraniti.",
+        "title": "Vir meritev",
+        "description": "V0.4 v celoti podpira podpisan senzor moči v W ali kW. Drugi načini so še nedostopni.",
         "data": {
           "source_mode": "Način vira"
         }
       },
-      "signed_power": {
-        "title": "Nastavite podpisano trenutno moč omrežja",
-        "description": "Izberite senzor v W ali kW. SI Grid Monitor vrednost normalizira tako, da je uvoz pozitiven in izvoz negativen. Cilj mora biti vaša izrecno izbrana dogovorjena vrednost; 4,8 kW ni privzeto.",
+      "meter": {
+        "title": "Predznak vira",
+        "description": "Izberite senzor v W ali kW in pomen predznaka. Interno je uvoz vedno pozitiven, izvoz pa negativen.",
+        "data": {
+          "power_entity": "Senzor moči omrežja",
+          "positive_means_import": "Pozitivna vrednost vira pomeni UVOZ"
+        }
+      },
+      "polarity_preview": {"title": "Preverite normalizirano smer", "description": "{preview} Če je smer napačna, se vrnite in obrnite izbiro predznaka.", "data": {"confirm": "Normalizirana smer je pravilna"}},
+      "contract": {
+        "title": "Veljavnost dogovorjene moči",
+        "description": "Datuma sta vključujoča lokalna datuma. Datum evidence in vir ohranita revizijsko sled.",
+        "data": {
+          "assignment_start_date": "Začetek veljavnosti dogovorjene moči",
+          "assignment_end_date": "Konec veljavnosti dogovorjene moči",
+          "assignment_recorded_on": "Datum evidence/izdaje (neobvezno)",
+          "assignment_provenance": "Vir oziroma izvor"
+        }
+      },
+      "target_mode": {"title": "Način dogovorjene moči", "description": "Dogovorjena meja je 15-minutno povprečje uvozne moči, ne trenutna zmogljivost varovalk ali faz.", "data": {"target_mode": "Način vnosa"}},
+      "shared_target": {"title": "Skupna meja B1-B5", "description": "Vrednost bo shranjena za vseh pet blokov v časovno omejeni dodelitvi.", "data": {"target_kw": "Dogovorjena moč za B1-B5"}},
+      "individual_targets": {"title": "Posamezne meje B1-B5", "description": "Vnesite distributerjevo dogovorjeno 15-minutno moč za vsak blok.", "data": {"target_b1_kw": "Dogovorjena moč B1", "target_b2_kw": "Dogovorjena moč B2", "target_b3_kw": "Dogovorjena moč B3", "target_b4_kw": "Dogovorjena moč B4", "target_b5_kw": "Dogovorjena moč B5"}},
+      "calculation": {
+        "title": "Nastavitve izračuna",
+        "description": "Privzete izbire lahko potrdite brez ponovnega izbiranja. Začasna pravila 2028-2030 so privzeto izključena.",
+        "data": {
+          "safety_margin_kw": "Varnostna rezerva",
+          "smoothing_seconds": "Okno glajenja napovedi",
+          "sustained_horizon_minutes": "Obzorje napovedi trajne obremenitve",
+          "retention": "Hramba arhiva",
+          "allow_provisional_tariff": "Dovoli začasna pravila za nepotrjena leta"
+        }
+      },
+      "review": {"title": "Pregled in namestitev", "description": "Vir: {entity}\nVeljavnost: {dates}\nMeje: {targets}\n\nČasovno omejen urnik je edini veljavni vir nastavitev.", "data": {"confirm": "Namesti SI Grid Monitor"}}
+    }
+  },
+  "options": {
+    "step": {
+      "init": {"title": "Nastavitve SI Grid Monitor", "menu_options": {"settings": "Nastavitve meritev in izračuna", "assignments": "Upravljanje dodelitev dogovorjene moči", "add_assignment": "Dodaj dodelitev dogovorjene moči"}},
+      "settings": {
+        "title": "Nastavitve meritev in izračuna",
+        "description": "Sprememba vira ali predznaka ustvari novo konfiguracijsko obdobje. Nedostopen nasvet ni prikazan kot nič.",
         "data": {
           "power_entity": "Senzor moči omrežja",
           "positive_means_import": "Pozitivna vrednost vira pomeni uvoz",
-          "target_kw": "Dogovorjena moč",
-          "assignment_start_date": "Začetek veljavnosti dogovorjene moči",
-          "assignment_end_date": "Konec veljavnosti dogovorjene moči",
+          "allow_provisional_tariff": "Dovoli začasno nadaljevanje za nepotrjena leta",
           "safety_margin_kw": "Varnostna rezerva",
           "smoothing_seconds": "Okno glajenja napovedi",
           "sustained_horizon_minutes": "Obzorje napovedi trajne obremenitve",
           "retention": "Hramba arhiva"
         }
-      }
-    }
-  },
-  "options": {
-    "step": {
-      "init": {
-        "title": "Nastavitve izračuna",
-        "description": "Nastavitve lahko spremenite brez brisanja integracije. Pogodbeni izračuni uporabljajo potrjeni seznam obdobij JSON spodaj; datumi so vključujoči in obdobja se ne smejo prekrivati. Ločena podedovana ciljna polja ostajajo zaradi združljivosti nadgradnje. Začasni testni pragovi so izločeni iz dejanske statistike prekoračitev.",
-        "data": {
-          "power_entity": "Senzor moči omrežja",
-          "positive_means_import": "Pozitivna vrednost vira pomeni uvoz",
-          "target_kw": "Dogovorjena moč",
-          "target_mode": "Način dogovorjene moči",
-          "target_b1_kw": "Dogovorjena moč bloka 1",
-          "target_b2_kw": "Dogovorjena moč bloka 2",
-          "target_b3_kw": "Dogovorjena moč bloka 3",
-          "target_b4_kw": "Dogovorjena moč bloka 4",
-          "target_b5_kw": "Dogovorjena moč bloka 5",
-          "allow_provisional_tariff": "Dovoli začasno nadaljevanje za nepotrjena leta",
-          "contracted_power_periods": "Časovno omejene dodelitve dogovorjene moči (JSON)",
-          "safety_margin_kw": "Varnostna rezerva",
-          "smoothing_seconds": "Okno glajenja napovedi",
-          "sustained_horizon_minutes": "Obzorje napovedi trajne obremenitve",
-          "retention": "Hramba arhiva",
-          "simulation_enabled": "Omogoči začasni testni prag",
-          "simulation_target_kw": "Začasni testni prag"
-        }
-      }
+      },
+      "assignments": {"title": "Dodelitve dogovorjene moči", "description": "Izberite dodelitev za urejanje ali odstranitev. Obdobja se ne smejo prekrivati.", "data": {"assignment_action": "Dejanje"}},
+      "add_assignment": {"title": "Dodaj dodelitev", "description": "Dodajte vključujoče obdobje veljavnosti s petimi mejami.", "data": {"assignment_start_date": "Začetek veljavnosti", "assignment_end_date": "Konec veljavnosti", "assignment_recorded_on": "Datum evidence (neobvezno)", "assignment_provenance": "Izvor", "target_b1_kw": "Dogovorjena moč B1", "target_b2_kw": "Dogovorjena moč B2", "target_b3_kw": "Dogovorjena moč B3", "target_b4_kw": "Dogovorjena moč B4", "target_b5_kw": "Dogovorjena moč B5"}},
+      "edit_assignment": {"title": "Uredi dodelitev", "description": "Sprememba ustvari novo konfiguracijsko obdobje in ne prepiše arhiviranih četrtin.", "data": {"assignment_start_date": "Začetek veljavnosti", "assignment_end_date": "Konec veljavnosti", "assignment_recorded_on": "Datum evidence (neobvezno)", "assignment_provenance": "Izvor", "target_b1_kw": "Dogovorjena moč B1", "target_b2_kw": "Dogovorjena moč B2", "target_b3_kw": "Dogovorjena moč B3", "target_b4_kw": "Dogovorjena moč B4", "target_b5_kw": "Dogovorjena moč B5"}},
+      "remove_assignment": {"title": "Odstrani dodelitev", "description": "Potrdite odstranitev. Arhivske meritve in izvor se ne izbrišejo.", "data": {"confirm": "Odstrani to dodelitev"}}
     }
   },
   "selector": {
     "source_mode": {
       "options": {
-        "signed_power": "En podpisan senzor trenutne moči (V0.3)",
+        "signed_power": "En podpisan senzor trenutne moči (V0.4)",
         "separate_power": "Ločena senzorja uvoza/izvoza (načrtovano)",
         "import_only": "Senzor samo uvozne moči (načrtovano)",
         "cumulative_energy": "Kumulativni števci energije (načrtovano)",

@@ -5,65 +5,105 @@
       "already_configured": "This source is already configured."
     },
     "error": {
-      "mode_not_available_v0_1": "This source mode remains planned but is not connected to Home Assistant in V0.3. Select signed live grid power.",
+      "mode_not_available_v0_4": "This source mode is not implemented in V0.4. Select one signed live grid-power sensor.",
       "invalid_contracted_power_periods": "Contracted-power assignments are invalid, overlapping, or have an end date before the start date."
     },
     "step": {
       "user": {
-        "title": "Choose the grid source design",
-        "description": "V0.3 runs with one signed live grid-power sensor. Other modes remain planned and cannot yet be saved.",
+        "title": "Meter source",
+        "description": "V0.4 fully supports a signed W or kW grid-power sensor. Other source designs remain visibly unavailable.",
         "data": {
           "source_mode": "Source mode"
         }
       },
-      "signed_power": {
-        "title": "Configure signed live grid power",
-        "description": "Choose a W or kW sensor. SI Grid Monitor normalizes it to positive import and negative export. The target must be your explicitly chosen contractual value; 4.8 kW is not assumed.",
+      "meter": {
+        "title": "Source polarity",
+        "description": "Choose the W or kW sensor and how its sign works. Internally, positive always means import and negative always means export. You can change this later.",
         "data": {
           "power_entity": "Grid power sensor",
-          "positive_means_import": "Positive source values mean import",
-          "target_kw": "Contractual target",
+          "positive_means_import": "Positive source values mean IMPORT"
+        }
+      },
+      "polarity_preview": {
+        "title": "Check normalized direction",
+        "description": "{preview} If the direction is wrong, go back and reverse the polarity choice.",
+        "data": {"confirm": "The normalized direction is correct"}
+      },
+      "contract": {
+        "title": "Contracted-power validity",
+        "description": "Dates are inclusive local dates. The optional record date and provenance preserve the distributor assignment's audit trail.",
+        "data": {
           "assignment_start_date": "Contracted-power validity start",
           "assignment_end_date": "Contracted-power validity end",
+          "assignment_recorded_on": "Distributor record/issue date (optional)",
+          "assignment_provenance": "Source or provenance"
+        }
+      },
+      "target_mode": {
+        "title": "Contracted-power mode",
+        "description": "A contracted limit is a 15-minute average import-demand target, not instantaneous breaker or phase capacity.",
+        "data": {"target_mode": "Target entry mode"}
+      },
+      "shared_target": {
+        "title": "Shared B1-B5 target",
+        "description": "This value will be saved for all five tariff blocks in the dated assignment.",
+        "data": {"target_kw": "Contracted power for B1-B5"}
+      },
+      "individual_targets": {
+        "title": "Individual B1-B5 targets",
+        "description": "Enter the distributor-assigned 15-minute contracted power for every block.",
+        "data": {
+          "target_b1_kw": "B1 contracted power",
+          "target_b2_kw": "B2 contracted power",
+          "target_b3_kw": "B3 contracted power",
+          "target_b4_kw": "B4 contracted power",
+          "target_b5_kw": "B5 contracted power"
+        }
+      },
+      "calculation": {
+        "title": "Calculation settings",
+        "description": "Defaults may be submitted unchanged. Provisional 2028-2030 tariff continuation is disabled unless explicitly enabled.",
+        "data": {
           "safety_margin_kw": "Safety margin",
           "smoothing_seconds": "Forecast smoothing window",
           "sustained_horizon_minutes": "Sustained load forecast horizon",
-          "retention": "Archive retention"
+          "retention": "Archive retention",
+          "allow_provisional_tariff": "Allow provisional tariffs for unverified years"
         }
+      },
+      "review": {
+        "title": "Review and install",
+        "description": "Source: {entity}\nValidity: {dates}\nTargets: {targets}\n\nThe dated schedule is the single source of truth.",
+        "data": {"confirm": "Install SI Grid Monitor"}
       }
     }
   },
   "options": {
     "step": {
-      "init": {
-        "title": "Calculation settings",
-        "description": "Change settings without deleting the integration. Contractual calculations use the validated JSON assignments below; dates are inclusive and periods must not overlap. The separate legacy target fields remain for upgrade compatibility. Simulation thresholds are excluded from genuine contractual exceedance statistics.",
+      "init": {"title": "SI Grid Monitor settings", "menu_options": {"settings": "Calculation and meter settings", "assignments": "Manage contracted-power assignments", "add_assignment": "Add contracted-power assignment"}},
+      "settings": {
+        "title": "Calculation and meter settings",
+        "description": "Changing source or polarity creates a new configuration epoch. Unavailable or stale advice is never converted to zero.",
         "data": {
           "power_entity": "Grid power sensor",
           "positive_means_import": "Positive source values mean import",
-          "target_kw": "Contractual target",
-          "target_mode": "Contracted-power mode",
-          "target_b1_kw": "Block 1 contracted power",
-          "target_b2_kw": "Block 2 contracted power",
-          "target_b3_kw": "Block 3 contracted power",
-          "target_b4_kw": "Block 4 contracted power",
-          "target_b5_kw": "Block 5 contracted power",
           "allow_provisional_tariff": "Allow provisional continuation for unverified years",
-          "contracted_power_periods": "Date-bound contracted-power assignments (JSON)",
           "safety_margin_kw": "Safety margin",
           "smoothing_seconds": "Forecast smoothing window",
           "sustained_horizon_minutes": "Sustained load forecast horizon",
-          "retention": "Archive retention",
-          "simulation_enabled": "Enable temporary test threshold",
-          "simulation_target_kw": "Temporary test threshold"
+          "retention": "Archive retention"
         }
-      }
+      },
+      "assignments": {"title": "Contracted-power assignments", "description": "Choose an assignment to edit or remove. Periods cannot overlap.", "data": {"assignment_action": "Assignment action"}},
+      "add_assignment": {"title": "Add contracted-power assignment", "description": "Add an inclusive validity period with five block targets.", "data": {"assignment_start_date": "Effective start", "assignment_end_date": "Effective end", "assignment_recorded_on": "Record date (optional)", "assignment_provenance": "Provenance", "target_b1_kw": "B1 contracted power", "target_b2_kw": "B2 contracted power", "target_b3_kw": "B3 contracted power", "target_b4_kw": "B4 contracted power", "target_b5_kw": "B5 contracted power"}},
+      "edit_assignment": {"title": "Edit contracted-power assignment", "description": "The change applies prospectively through a new configuration epoch and never rewrites archived quarters.", "data": {"assignment_start_date": "Effective start", "assignment_end_date": "Effective end", "assignment_recorded_on": "Record date (optional)", "assignment_provenance": "Provenance", "target_b1_kw": "B1 contracted power", "target_b2_kw": "B2 contracted power", "target_b3_kw": "B3 contracted power", "target_b4_kw": "B4 contracted power", "target_b5_kw": "B5 contracted power"}},
+      "remove_assignment": {"title": "Remove contracted-power assignment", "description": "Confirm removal. Archived measurements and immutable quarter provenance are not deleted.", "data": {"confirm": "Remove this assignment"}}
     }
   },
   "selector": {
     "source_mode": {
       "options": {
-        "signed_power": "One signed live grid-power sensor (V0.3)",
+        "signed_power": "One signed live grid-power sensor (V0.4)",
         "separate_power": "Separate live import/export sensors (planned)",
         "import_only": "Live import-only sensor (planned)",
         "cumulative_energy": "Cumulative energy counters (planned)",
