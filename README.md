@@ -1,8 +1,9 @@
 # SI Grid Monitor
 
 SI Grid Monitor is a HACS-compatible Home Assistant custom integration for
-Slovenian fixed 15-minute grid-demand monitoring. V0.3 provides the setup
-flow, import-only live calculations, sustained-load forecasting, and a permanent
+Slovenian fixed 15-minute grid-demand monitoring. V0.4 provides guided setup,
+an automatically registered sidebar dashboard, import-only live calculations,
+sustained-load forecasting, and a permanent
 SQLite quarter archive. It is an early development release, not the complete V1
 product.
 
@@ -11,9 +12,30 @@ The authoritative MASTER PRODUCT SPECIFICATION V1.1 is preserved unchanged in
 [`SPECIFICATION_V1.2_ADDENDUM.md`](SPECIFICATION_V1.2_ADDENDUM.md) and the V0.3
 calendar rules are documented in
 [`SPECIFICATION_V1.3_ADDENDUM.md`](SPECIFICATION_V1.3_ADDENDUM.md).
+V0.4 behavior is documented in
+[`SPECIFICATION_V1.4_ADDENDUM.md`](SPECIFICATION_V1.4_ADDENDUM.md).
 The user-supplied 2026 contracted-power acceptance case is documented separately
 in [`REAL_WORLD_VALIDATION.md`](REAL_WORLD_VALIDATION.md); its values are test
 fixtures, never installation defaults.
+
+## V0.4 installation and dashboard
+
+1. Install from HACS and restart Home Assistant.
+2. Add SI Grid Monitor from Settings > Devices & services.
+3. Complete the meter, polarity, dated B1-B5 contract, settings, and review steps.
+4. Open **SI Grid Monitor** directly from the left sidebar.
+
+No Lovelace dashboard, YAML, pasted JavaScript, or resource registration is
+required. One idempotent custom panel safely supports multiple config entries
+with separate archive namespaces and is removed only after the final entry unloads.
+
+- **Overview** shows the current quarter, measured trace, import/export, budgets,
+  forecasts, advice, prior-quarter summary, and upcoming limits.
+- **Today** shows 92/96/100 real quarters, quality states, totals, and five block rows.
+- **Tariff Calendar** shows backend-classified 2026-2030 hours with DST and rule status.
+
+The countdown is browser-local. Missing historical detail is explicitly labeled;
+the dashboard never fabricates samples from SQLite quarter summaries.
 
 ## Safety and accuracy
 

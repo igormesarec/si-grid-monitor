@@ -4,6 +4,15 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-18
+
+- Added a guided six-step setup flow and fixed untouched dropdown defaults.
+- Replaced the user-facing JSON editor with native dated B1-B5 assignment management.
+- Added an automatically provisioned sidebar panel with no Lovelace, YAML, or resource setup.
+- Added authenticated bounded WebSocket queries and responsive Overview, Today, and Tariff Calendar views.
+- Added bounded next-lower-target detection while preserving per-quarter sustained forecasting.
+- Preserved SQLite schema 5, provenance, V0.3 schedules, and entity identities.
+
 ## [0.3.0] - 2026-10-18
 
 ### Added

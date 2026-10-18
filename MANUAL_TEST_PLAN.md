@@ -1,7 +1,22 @@
-# SI Grid Monitor V0.3 — Real Home Assistant Test Plan
+# SI Grid Monitor V0.4 - Real Home Assistant Test Plan
 
 Use a disposable or backed-up Home Assistant instance. Never infer physical
 connection capacity from CAN ADD values.
+
+## Automatic sidebar dashboard acceptance
+
+1. Install through HACS, restart, and add the integration.
+2. Submit the displayed 120-second smoothing and 60-minute horizon without
+   opening either dropdown; confirm there is no `expected str` error.
+3. Enter the real 2026 fixture through native controls; JSON must not appear.
+4. Confirm **SI Grid Monitor** appears automatically and opens all three views
+   without Lovelace, YAML, or resource configuration.
+5. Repeat after reload, restart, and HACS update; exactly one panel must remain.
+6. Add a second entry and verify selection and archive isolation. Unload entries
+   one at a time and verify the panel is removed only after the last entry.
+7. Check desktop, tablet, mobile, light/dark themes, and reconnect behavior.
+8. Confirm the local countdown creates no one-second Recorder states.
+9. Confirm DST days show 92/100 quarters and 23/25 tariff hours.
 
 ## Installation and upgrade
 

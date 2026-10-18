@@ -1,5 +1,17 @@
 # Real-world validation fixtures
 
+## V0.4 dashboard acceptance
+
+Configure `sensor.solaredge_m1_ac_power` with **positive means export** and the
+dated fixture below through native controls. Confirm the sidebar normalizes
+`-1500 W` to `+1.50 kW` import and never nets export against contractual import.
+On Sunday 18 October 2026 inspect the nonworking B3/B4/B5 schedule and verify the
+upcoming B4 4.20 kW to B3 4.10 kW lower-target transition. Do not extend the
+assignment into 2027.
+
+Real Home Assistant testing remains required for HACS asset delivery, restart
+and update registration, Recorder traces, responsive layout, themes, and reconnect.
+
 These fixtures validate SI Grid Monitor behavior but are never installation
 defaults. Contracted power is user-specific and must be entered from the user's
 own distributor record.
