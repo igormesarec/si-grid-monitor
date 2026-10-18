@@ -135,9 +135,7 @@ SENSORS: tuple[SIGridSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda snapshot, runtime: (
-            runtime.engine.completed[-1].import_demand_kw if runtime.engine.completed else None
-        ),
+        value_fn=lambda snapshot, runtime: runtime.last_completed_import_demand_kw,
     ),
     SIGridSensorDescription(
         key="last_completed_15m_signed_average",
@@ -145,9 +143,7 @@ SENSORS: tuple[SIGridSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda snapshot, runtime: (
-            runtime.engine.completed[-1].signed_average_kw if runtime.engine.completed else None
-        ),
+        value_fn=lambda snapshot, runtime: runtime.last_completed_signed_average_kw,
     ),
     SIGridSensorDescription(
         key="quarter_import_kwh_so_far",
@@ -436,6 +432,25 @@ TARIFF_ONLY_SENSOR_KEYS = {
     "contracted_power_b5",
 }
 
+CONTRACTUAL_SENSOR_KEYS = {
+    "target_kw",
+    "operational_target_kw",
+    "quarter_budget_remaining_kwh",
+    "allowed_import_until_end_kw",
+    "forecast_instant_kw",
+    "forecast_smoothed_kw",
+    "forecast_utilization_pct",
+    "forecast_instant_utilization_pct",
+    "current_utilization_pct",
+    "can_add_power",
+    "must_reduce_power",
+}
+
+ARCHIVED_SENSOR_KEYS = {
+    "last_completed_15m_import_demand",
+    "last_completed_15m_signed_average",
+}
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -479,8 +494,12 @@ class SIGridSensor(SensorEntity):
         snapshot = self.runtime.snapshot
         if self.entity_description.key in TARIFF_ONLY_SENSOR_KEYS:
             return self.entity_description.value_fn(snapshot, self.runtime) is not None
+        if self.entity_description.key in ARCHIVED_SENSOR_KEYS:
+            return self.entity_description.value_fn(snapshot, self.runtime) is not None
         if snapshot is None:
             return False
+        if self.entity_description.key in CONTRACTUAL_SENSOR_KEYS:
+            return self.runtime.current_contractual_available
         if self.entity_description.key in {
             "sustained_can_add_power",
             "sustained_must_reduce_power",
@@ -498,7 +517,9 @@ class SIGridSensor(SensorEntity):
     @property
     def native_value(self) -> float | int | str | None:
         snapshot = self.runtime.snapshot
-        if snapshot is None and self.entity_description.key not in TARIFF_ONLY_SENSOR_KEYS:
+        if snapshot is None and self.entity_description.key not in (
+            TARIFF_ONLY_SENSOR_KEYS | ARCHIVED_SENSOR_KEYS
+        ):
             return None
         value = self.entity_description.value_fn(snapshot, self.runtime)
         precision = self.entity_description.display_precision
@@ -561,6 +582,8 @@ class SIGridSensor(SensorEntity):
                         "reason": forecast.reason,
                     }
                 )
+            else:
+                attributes["reason"] = self.runtime.sustained_status_reason
         if (
             "tariff" in self.entity_description.key
             or "block_contracted" in self.entity_description.key
@@ -596,6 +619,33 @@ class SIGridSensor(SensorEntity):
                     "forecast_basis": "time_weighted_import_only_power",
                 }
             )
+        if (
+            self.entity_description.key in CONTRACTUAL_SENSOR_KEYS
+            or "tariff" in self.entity_description.key
+            or "block_contracted" in self.entity_description.key
+        ):
+            attributes.update(
+                {
+                    "contractual_available": self.runtime.current_contractual_available,
+                    "contractual_confirmed": self.runtime.current_contractual_confirmed,
+                    "contractual_status_reason": self.runtime.contractual_status_reason,
+                }
+            )
+        if self.entity_description.key in {
+            "last_completed_15m_import_demand",
+            "last_completed_15m_signed_average",
+        }:
+            archived = self.runtime.archived_last_completed
+            if not self.runtime.engine.completed and archived is not None:
+                attributes.update(
+                    {
+                        "quality": archived.quality,
+                        "provenance": archived.provenance,
+                        "quarter_start_utc": archived.start_utc,
+                        "quarter_end_utc": archived.end_utc,
+                        "restored_from_archive": True,
+                    }
+                )
         return attributes
 
     async def async_added_to_hass(self) -> None:

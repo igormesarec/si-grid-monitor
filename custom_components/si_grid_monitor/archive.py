@@ -12,9 +12,10 @@ from pathlib import Path
 from typing import Any
 
 from .engine import EPSILON, LJUBLJANA, CompletedQuarter, DataQuality
-from .tariffs.models import TariffClassification
+from .tariffs.calendar import SlovenianTariffCalendar
+from .tariffs.models import RuleStatus, TariffClassification
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 _QUALITY_RANK = {
     DataQuality.UNAVAILABLE.value: 0,
     DataQuality.INCOMPLETE.value: 1,
@@ -46,6 +47,7 @@ class ConfigurationEpoch:
     contractual_target_kw: float | None
     safety_margin_kw: float | None
     block_targets_kw: tuple[float | None, ...] = (None, None, None, None, None)
+    allow_provisional_tariff: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +61,7 @@ class ConfigurationResolution:
     contractual_target_kw: float | None = None
     safety_margin_kw: float | None = None
     block_targets_kw: tuple[float | None, ...] = (None, None, None, None, None)
+    allow_provisional_tariff: bool | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -93,6 +96,22 @@ class ArchiveRecord:
     tariff_day_type: str | None = None
     tariff_rule_status: str | None = None
     tariff_source_url: str | None = None
+    tariff_policy: str | None = None
+    contractual_status: str = "confirmed"
+    contractual_status_reason: str | None = None
+    confirmed_exceeded: bool | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchivedQuarterSnapshot:
+    """Latest completed-quarter values restored for entity presentation."""
+
+    start_utc: datetime
+    end_utc: datetime
+    import_demand_kw: float
+    signed_average_kw: float
+    quality: str
+    provenance: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,6 +121,7 @@ class ArchiveSummary:
     valid_count: int
     incomplete_count: int
     exceeded_count: int
+    provisional_exceeded_count: int
     unknown_configuration_count: int
     import_kwh: float
     export_kwh: float
@@ -111,6 +131,16 @@ class ArchiveSummary:
     average_import_demand_kw: float | None
     minimum_signed_average_kw: float | None
     maximum_signed_average_kw: float | None
+
+
+def tariff_for_configuration(
+    timestamp: datetime, configuration: ConfigurationResolution
+) -> TariffClassification:
+    """Classify using the immutable policy resolved for the quarter."""
+
+    return SlovenianTariffCalendar(
+        allow_provisional=configuration.allow_provisional_tariff is True
+    ).classify(timestamp)
 
 
 def archive_record_from_quarter(
@@ -150,6 +180,38 @@ def archive_record_from_quarter(
     exceeded = (
         quarter.import_demand_kw > target + EPSILON if complete and target is not None else None
     )
+    if configuration.status != ConfigurationStatus.KNOWN:
+        contractual_status = "unknown_configuration"
+        contractual_reason = "historical target or source configuration is not auditable"
+    elif not complete:
+        contractual_status = "incomplete_measurement"
+        contractual_reason = "quarter measurement coverage is incomplete"
+    elif tariff is None:
+        contractual_status = "legacy_unversioned"
+        contractual_reason = "no versioned tariff classification was supplied"
+    elif tariff.rule_status == RuleStatus.OFFICIAL:
+        contractual_status = "confirmed"
+        contractual_reason = None
+    elif tariff.rule_status == RuleStatus.PROVISIONAL:
+        contractual_status = "provisional_estimate"
+        contractual_reason = "tariff rule is provisional and not legally confirmed"
+    else:
+        contractual_status = "unavailable_rule"
+        contractual_reason = "no enabled verified tariff rule is available"
+    if configuration.status in {
+        ConfigurationStatus.TARGET_MIXED,
+        ConfigurationStatus.SOURCE_MIXED,
+    }:
+        tariff_policy = "mixed_within_quarter"
+    elif configuration.allow_provisional_tariff is None:
+        tariff_policy = "legacy_policy_unknown"
+    else:
+        tariff_policy = (
+            "allow_provisional" if configuration.allow_provisional_tariff else "official_only"
+        )
+    confirmed_exceeded = (
+        exceeded if contractual_status == "confirmed" and exceeded is not None else None
+    )
     return ArchiveRecord(
         namespace=namespace,
         start_utc=quarter.start_utc,
@@ -185,6 +247,10 @@ def archive_record_from_quarter(
         tariff_day_type=tariff.day_type.value if tariff is not None else None,
         tariff_rule_status=tariff.rule_status.value if tariff is not None else None,
         tariff_source_url=tariff.source_url if tariff is not None else None,
+        tariff_policy=tariff_policy,
+        contractual_status=contractual_status,
+        contractual_status_reason=contractual_reason,
+        confirmed_exceeded=confirmed_exceeded,
     )
 
 
@@ -249,6 +315,7 @@ class QuarterArchive:
         contractual_target_kw: float | None,
         safety_margin_kw: float | None,
         block_targets_kw: tuple[float | None, ...] | None = None,
+        allow_provisional_tariff: bool | None = None,
         effective_utc: datetime,
     ) -> ConfigurationEpoch:
         """Return a stable epoch, creating one whenever semantics change."""
@@ -261,7 +328,8 @@ class QuarterArchive:
             row = self._db.execute(
                 """SELECT epoch, source_id, positive_means_import, effective_utc,
                           contractual_target_kw, safety_margin_kw,
-                          target_b1_kw,target_b2_kw,target_b3_kw,target_b4_kw,target_b5_kw
+                          target_b1_kw,target_b2_kw,target_b3_kw,target_b4_kw,target_b5_kw,
+                          allow_provisional_tariff
                    FROM source_epochs WHERE namespace=? ORDER BY epoch DESC LIMIT 1""",
                 (namespace,),
             ).fetchone()
@@ -275,6 +343,7 @@ class QuarterArchive:
                     _same_optional_float(row[f"target_b{index}_kw"], targets[index - 1])
                     for index in range(1, 6)
                 )
+                and _same_optional_bool(row["allow_provisional_tariff"], allow_provisional_tariff)
             ):
                 return _epoch_from_row(row)
             epoch = 1 if row is None else int(row["epoch"]) + 1
@@ -282,8 +351,9 @@ class QuarterArchive:
                 """INSERT INTO source_epochs
                    (namespace, epoch, source_id, positive_means_import, effective_utc,
                     contractual_target_kw, safety_margin_kw,
-                    target_b1_kw,target_b2_kw,target_b3_kw,target_b4_kw,target_b5_kw)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    target_b1_kw,target_b2_kw,target_b3_kw,target_b4_kw,target_b5_kw,
+                    allow_provisional_tariff)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     namespace,
                     epoch,
@@ -293,6 +363,7 @@ class QuarterArchive:
                     contractual_target_kw,
                     safety_margin_kw,
                     *targets,
+                    (None if allow_provisional_tariff is None else int(allow_provisional_tariff)),
                 ),
             )
             return ConfigurationEpoch(
@@ -303,6 +374,7 @@ class QuarterArchive:
                 contractual_target_kw=contractual_target_kw,
                 safety_margin_kw=safety_margin_kw,
                 block_targets_kw=targets,
+                allow_provisional_tariff=allow_provisional_tariff,
             )
 
     def list_configuration_epochs(self, namespace: str) -> list[ConfigurationEpoch]:
@@ -312,7 +384,8 @@ class QuarterArchive:
             rows = self._db.execute(
                 """SELECT epoch, source_id, positive_means_import, effective_utc,
                           contractual_target_kw, safety_margin_kw,
-                          target_b1_kw,target_b2_kw,target_b3_kw,target_b4_kw,target_b5_kw
+                          target_b1_kw,target_b2_kw,target_b3_kw,target_b4_kw,target_b5_kw,
+                          allow_provisional_tariff
                    FROM source_epochs WHERE namespace=? ORDER BY effective_utc, epoch""",
                 (namespace,),
             ).fetchall()
@@ -345,7 +418,11 @@ class QuarterArchive:
                 source_id=first.source_id if same_source else None,
                 positive_means_import=(first.positive_means_import if same_source else None),
             )
-        if first.contractual_target_kw is None or first.safety_margin_kw is None:
+        if (
+            first.contractual_target_kw is None
+            or first.safety_margin_kw is None
+            or any(target is None for target in first.block_targets_kw)
+        ):
             status = ConfigurationStatus.TARGET_UNKNOWN
         else:
             status = ConfigurationStatus.KNOWN
@@ -357,6 +434,7 @@ class QuarterArchive:
             contractual_target_kw=first.contractual_target_kw,
             safety_margin_kw=first.safety_margin_kw,
             block_targets_kw=first.block_targets_kw,
+            allow_provisional_tariff=first.allow_provisional_tariff,
         )
 
     def upsert_quarter(self, record: ArchiveRecord) -> bool:
@@ -413,6 +491,20 @@ class QuarterArchive:
                 record.tariff_day_type,
                 record.tariff_rule_status,
                 record.tariff_source_url,
+                record.tariff_policy,
+                record.contractual_status,
+                record.contractual_status_reason,
+                (
+                    int(record.exceeded)
+                    if record.confirmed_exceeded is None
+                    and record.contractual_status == "confirmed"
+                    and record.exceeded is not None
+                    else (
+                        None
+                        if record.confirmed_exceeded is None
+                        else int(record.confirmed_exceeded)
+                    )
+                ),
                 _utc_iso(datetime.now(UTC)),
             )
             self._db.execute(
@@ -423,8 +515,10 @@ class QuarterArchive:
                     source_epoch,configuration_status,contractual_target_kw,safety_margin_kw,
                     operational_target_kw,utilization_pct,exceeded,excess_kw,
                     simulation,tariff_block,tariff_rule_version,tariff_calendar_year,
-                    tariff_season,tariff_day_type,tariff_rule_status,tariff_source_url,created_utc)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    tariff_season,tariff_day_type,tariff_rule_status,tariff_source_url,
+                    tariff_policy,contractual_status,contractual_status_reason,
+                    confirmed_exceeded,created_utc)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(namespace,start_utc) DO UPDATE SET
                     end_utc=excluded.end_utc,start_local=excluded.start_local,
                     utc_offset_seconds=excluded.utc_offset_seconds,fold=excluded.fold,
@@ -447,7 +541,11 @@ class QuarterArchive:
                     tariff_season=excluded.tariff_season,
                     tariff_day_type=excluded.tariff_day_type,
                     tariff_rule_status=excluded.tariff_rule_status,
-                    tariff_source_url=excluded.tariff_source_url""",
+                    tariff_source_url=excluded.tariff_source_url,
+                    tariff_policy=excluded.tariff_policy,
+                    contractual_status=excluded.contractual_status,
+                    contractual_status_reason=excluded.contractual_status_reason,
+                    confirmed_exceeded=excluded.confirmed_exceeded""",
                 values,
             )
             return existing is None
@@ -493,23 +591,53 @@ class QuarterArchive:
         value = row["latest"]
         return None if value is None else datetime.fromisoformat(str(value)).astimezone(UTC)
 
+    def load_latest_quarter(self, namespace: str) -> ArchivedQuarterSnapshot | None:
+        """Restore the latest completed-quarter display values after restart."""
+
+        with self._lock:
+            row = self._db.execute(
+                """SELECT start_utc,end_utc,import_demand_kw,signed_average_kw,
+                          quality,provenance
+                   FROM quarters WHERE namespace=? ORDER BY start_utc DESC LIMIT 1""",
+                (namespace,),
+            ).fetchone()
+        if row is None:
+            return None
+        return ArchivedQuarterSnapshot(
+            start_utc=datetime.fromisoformat(str(row["start_utc"])).astimezone(UTC),
+            end_utc=datetime.fromisoformat(str(row["end_utc"])).astimezone(UTC),
+            import_demand_kw=float(row["import_demand_kw"]),
+            signed_average_kw=float(row["signed_average_kw"]),
+            quality=str(row["quality"]),
+            provenance=str(row["provenance"]),
+        )
+
     def classify_existing_quarters(self, namespace: str, classifier: Any) -> int:
-        """Fill missing calendar metadata without rewriting stored measurements/targets."""
+        """Add versioned derived metadata while preserving original result fields."""
 
         changed = 0
         with self._lock, self._db:
             rows = self._db.execute(
-                """SELECT start_utc FROM quarters WHERE namespace=?
+                """SELECT start_utc,configuration_status,quality,exceeded
+                   FROM quarters WHERE namespace=?
                    AND tariff_rule_version IS NULL""",
                 (namespace,),
             ).fetchall()
             for row in rows:
                 start = datetime.fromisoformat(str(row["start_utc"])).astimezone(UTC)
                 tariff = classifier(start)
+                confirmed = (
+                    tariff.rule_status == RuleStatus.OFFICIAL
+                    and row["configuration_status"] == ConfigurationStatus.KNOWN.value
+                    and row["quality"]
+                    not in {DataQuality.INCOMPLETE.value, DataQuality.UNAVAILABLE.value}
+                )
                 self._db.execute(
                     """UPDATE quarters SET tariff_block=?,tariff_rule_version=?,
                        tariff_calendar_year=?,tariff_season=?,tariff_day_type=?,
-                       tariff_rule_status=?,tariff_source_url=?
+                       tariff_rule_status=?,tariff_source_url=?,
+                       tariff_policy='legacy_policy_unknown',contractual_status=?,
+                       contractual_status_reason=?,confirmed_exceeded=?
                        WHERE namespace=? AND start_utc=? AND tariff_rule_version IS NULL""",
                     (
                         tariff.block,
@@ -519,20 +647,17 @@ class QuarterArchive:
                         tariff.day_type.value,
                         tariff.rule_status.value,
                         tariff.source_url,
+                        "confirmed" if confirmed else "legacy_policy_unknown",
+                        (
+                            None
+                            if confirmed
+                            else "original quarter did not record tariff-policy provenance"
+                        ),
+                        row["exceeded"] if confirmed else None,
                         namespace,
                         row["start_utc"],
                     ),
                 )
-                if tariff.block is None:
-                    # A V0.2 row may contain an exceedance against the former
-                    # common target.  Once calendar classification is required,
-                    # an unverified year cannot support a confirmed contractual
-                    # exceedance.  Measurements and the original target remain.
-                    self._db.execute(
-                        """UPDATE quarters SET exceeded=NULL,excess_kw=NULL
-                           WHERE namespace=? AND start_utc=?""",
-                        (namespace, row["start_utc"]),
-                    )
                 changed += 1
         return changed
 
@@ -558,9 +683,12 @@ class QuarterArchive:
                     SUM(CASE WHEN configuration_status NOT IN
                         ('known','target_unknown','target_mixed') THEN 1 ELSE 0 END)
                         unknown_configuration_count,
-                    SUM(CASE WHEN {valid} AND configuration_status='known'
-                        AND exceeded=1 AND simulation=0 THEN 1 ELSE 0 END)
+                    SUM(CASE WHEN {valid} AND confirmed_exceeded=1
+                        AND simulation=0 THEN 1 ELSE 0 END)
                         exceeded_count,
+                    SUM(CASE WHEN {valid} AND contractual_status='provisional_estimate'
+                        AND exceeded=1 AND simulation=0 THEN 1 ELSE 0 END)
+                        provisional_exceeded_count,
                     COALESCE(SUM(CASE WHEN {valid} THEN import_kwh ELSE 0 END),0)
                         import_kwh,
                     COALESCE(SUM(CASE WHEN {valid} THEN export_kwh ELSE 0 END),0)
@@ -585,6 +713,7 @@ class QuarterArchive:
             valid_count=int(row["valid_count"] or 0),
             incomplete_count=int(row["incomplete_count"] or 0),
             exceeded_count=int(row["exceeded_count"] or 0),
+            provisional_exceeded_count=int(row["provisional_exceeded_count"] or 0),
             unknown_configuration_count=int(row["unknown_configuration_count"] or 0),
             import_kwh=float(row["import_kwh"]),
             export_kwh=float(row["export_kwh"]),
@@ -610,6 +739,7 @@ class QuarterArchive:
                       effective_utc TEXT NOT NULL,contractual_target_kw REAL,
                       safety_margin_kw REAL,target_b1_kw REAL,target_b2_kw REAL,
                       target_b3_kw REAL,target_b4_kw REAL,target_b5_kw REAL,
+                      allow_provisional_tariff INTEGER,
                       PRIMARY KEY(namespace,epoch));
                     CREATE TABLE quarters(
                       namespace TEXT NOT NULL,start_utc TEXT NOT NULL,end_utc TEXT NOT NULL,
@@ -625,7 +755,10 @@ class QuarterArchive:
                       simulation INTEGER NOT NULL DEFAULT 0,tariff_block INTEGER,
                       tariff_rule_version TEXT,tariff_calendar_year INTEGER,
                       tariff_season TEXT,tariff_day_type TEXT,tariff_rule_status TEXT,
-                      tariff_source_url TEXT,created_utc TEXT NOT NULL,
+                      tariff_source_url TEXT,tariff_policy TEXT,
+                      contractual_status TEXT NOT NULL,
+                      contractual_status_reason TEXT,confirmed_exceeded INTEGER,
+                      created_utc TEXT NOT NULL,
                       PRIMARY KEY(namespace,start_utc));
                     CREATE INDEX idx_quarters_namespace_end
                       ON quarters(namespace,end_utc);
@@ -638,7 +771,7 @@ class QuarterArchive:
                     CREATE TABLE checkpoints(
                       namespace TEXT PRIMARY KEY,payload_json TEXT NOT NULL,
                       updated_utc TEXT NOT NULL);
-                    PRAGMA user_version=3;
+                    PRAGMA user_version=4;
                     """
                 )
             return
@@ -710,6 +843,32 @@ class QuarterArchive:
                     PRAGMA user_version=3;
                     """
                 )
+            version = 3
+        if version == 3:
+            with self._db:
+                self._db.executescript(
+                    """
+                    ALTER TABLE source_epochs ADD COLUMN allow_provisional_tariff INTEGER;
+                    ALTER TABLE quarters ADD COLUMN tariff_policy TEXT;
+                    ALTER TABLE quarters ADD COLUMN contractual_status TEXT
+                      NOT NULL DEFAULT 'legacy_policy_unknown';
+                    ALTER TABLE quarters ADD COLUMN contractual_status_reason TEXT;
+                    ALTER TABLE quarters ADD COLUMN confirmed_exceeded INTEGER;
+                    UPDATE quarters SET contractual_status = CASE
+                      WHEN configuration_status='legacy_unverified' THEN 'legacy_unverified'
+                      WHEN tariff_rule_status='official'
+                        AND quality NOT IN ('incomplete','unavailable')
+                        AND configuration_status='known' THEN 'confirmed'
+                      WHEN tariff_rule_status='provisional' THEN 'provisional_estimate'
+                      WHEN tariff_rule_status IN ('unverified','out_of_range')
+                        THEN 'unavailable_rule'
+                      ELSE 'legacy_policy_unknown' END;
+                    UPDATE quarters SET confirmed_exceeded=exceeded
+                      WHERE contractual_status='confirmed';
+                    UPDATE quarters SET tariff_policy='legacy_policy_unknown';
+                    PRAGMA user_version=4;
+                    """
+                )
 
     @property
     def _db(self) -> sqlite3.Connection:
@@ -734,6 +893,12 @@ def _same_optional_float(value: object, expected: float | None) -> bool:
     )
 
 
+def _same_optional_bool(value: object, expected: bool | None) -> bool:
+    return (value is None and expected is None) or (
+        value is not None and expected is not None and bool(value) == expected
+    )
+
+
 def _epoch_from_row(row: sqlite3.Row) -> ConfigurationEpoch:
     return ConfigurationEpoch(
         epoch=int(row["epoch"]),
@@ -744,5 +909,10 @@ def _epoch_from_row(row: sqlite3.Row) -> ConfigurationEpoch:
         safety_margin_kw=_optional_float(row["safety_margin_kw"]),
         block_targets_kw=tuple(
             _optional_float(row[f"target_b{index}_kw"]) for index in range(1, 6)
+        ),
+        allow_provisional_tariff=(
+            None
+            if row["allow_provisional_tariff"] is None
+            else bool(row["allow_provisional_tariff"])
         ),
     )

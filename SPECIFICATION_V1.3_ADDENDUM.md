@@ -46,7 +46,7 @@ current block's target. Export never offsets imported energy.
 
 ## Immutable archive provenance
 
-SQLite schema 3 adds tariff calendar year, season, day type, rule verification
+SQLite schema 4 adds tariff calendar year, season, day type, rule verification
 status and source URL to each completed quarter. Existing block, rule version,
 target and utilization fields remain. Configuration epochs now retain all five
 targets. A completed record receives the target and rule effective for that
@@ -57,6 +57,19 @@ Existing quarters with no calendar metadata may be classified once under the
 applicable versioned rule; stored measurements and original targets are not
 changed. Unknown configuration, incomplete measurement, or unavailable tariff
 rules cannot produce a confirmed exceedance.
+
+Tariff availability is not a prerequisite for physical metering or durability.
+Signed/import/export measurements, quarter accumulation, completed-quarter
+archive writes and checkpoints continue when the current tariff target is
+unavailable. Only contractual projections and advice are unavailable.
+
+Each completed row records the provisional-calendar policy that applied.
+Provisional exceedances remain queryable estimates with an explicit reason but
+are excluded from confirmed exceedance counts. Calendar migration never erases
+historical `exceeded` or `excess_kw`; separate verification metadata records
+whether the original result can be treated as confirmed. The last completed
+quarter display values are restored from SQLite after restart with quality and
+provenance intact.
 
 ## Backend inspection API
 

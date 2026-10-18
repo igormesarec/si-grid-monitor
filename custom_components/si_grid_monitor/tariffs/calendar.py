@@ -26,6 +26,20 @@ class SlovenianTariffCalendar:
         self.allow_provisional = allow_provisional
 
     def classify(self, timestamp: datetime) -> TariffClassification:
+        """Classify using the configured official/provisional policy."""
+
+        return self._classify(timestamp, apply_policy=True)
+
+    def classify_rule(self, timestamp: datetime) -> TariffClassification:
+        """Return intrinsic rule metadata without applying a current user policy.
+
+        This is used only to annotate legacy rows that never recorded a policy.
+        The result must not be treated as proof that provisional use was enabled.
+        """
+
+        return self._classify(timestamp, apply_policy=False)
+
+    def _classify(self, timestamp: datetime, *, apply_policy: bool) -> TariffClassification:
         if timestamp.tzinfo is None or timestamp.utcoffset() is None:
             raise ValueError("tariff timestamps must be timezone-aware")
         utc = timestamp.astimezone(UTC)
@@ -41,7 +55,11 @@ class SlovenianTariffCalendar:
         if rule is not None:
             version = rule.version
             source = rule.source_url
-            if rule.status == RuleStatus.PROVISIONAL and not self.allow_provisional:
+            if (
+                apply_policy
+                and rule.status == RuleStatus.PROVISIONAL
+                and not self.allow_provisional
+            ):
                 status = RuleStatus.UNVERIFIED
             else:
                 status = rule.status

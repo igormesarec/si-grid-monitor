@@ -82,10 +82,19 @@ connection capacity from CAN ADD values.
 8. Create a missing-data quarter with some observed import. Confirm its partial
    energy remains inspectable but is excluded from valid contractual totals,
    demand maxima, averages and exceedance counts.
-9. Inspect a new schema-3 row for tariff block, calendar year, season, day type,
+9. Inspect a new schema-4 row for tariff block, calendar year, season, day type,
    rule version/status/source and the effective immutable block target.
 10. Upgrade a copy of a V0.2 database. Confirm each configuration epoch's common
     target migrated to B1–B5 and no measurement or existing target was rewritten.
+11. Restart with no current live state and confirm last-completed demand restores
+    from SQLite with its quality and provenance.
+12. With provisional tariffs disabled, cross from 2027-12-31 into 2028 and test
+    representative quarters in 2028–2030. Physical power, energy, archive rows
+    and checkpoints must continue while contractual advice is unavailable.
+13. Enable provisional tariffs and confirm advice includes provisional status
+    and a reason. A provisional exceedance must not increase the confirmed count.
+14. Toggle provisional policy and reload. Previously completed rows must retain
+    their original policy and rule status.
 
 ## Lifecycle and observations to report
 

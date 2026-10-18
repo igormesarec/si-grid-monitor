@@ -102,6 +102,14 @@ years therefore return **unverified / no block** by default. Users may explicitl
 enable a **provisional continuation of the 2027 table** for planning, but those
 results remain labeled provisional and are not legally confirmed.
 
+Tariff availability does not control metering. In an unverified year with
+provisional use disabled, signed/import/export power, quarter energy, completed
+quarter demand, SQLite archiving and checkpoints continue normally. Contractual
+budgets, forecasts, utilization, CAN ADD/MUST REDUCE and exceedance advice are
+unavailable with a reason attribute. If provisional use is enabled, those
+values are explicitly provisional estimates; their exceedances are never added
+to confirmed contractual statistics.
+
 Configure one shared value or B1–B5 independently in integration options. On a
 V0.2 upgrade the previous target is copied into all five blocks. Current-quarter
 calculations use the active block; sustained forecasts classify and select the
@@ -188,6 +196,9 @@ and the HACS repository validator.
 - The calendar is legally verified only for 2026 and 2027 as of 18 October 2026.
   Provisional 2028–2030 continuation requires explicit opt-in and may differ from
   rules later published by URO.
+- Completed quarters retain the tariff policy and rule status that applied when
+  they were written. Changing provisional-calendar policy does not relabel old
+  rows. Legacy rows without policy provenance remain explicitly unknown.
 - The archive is integration-owned, namespaced per config entry, WAL-backed and
   retained forever by default. Removal policy and export tooling are not yet UI
   features; uninstalling the integration does not promise archive deletion.

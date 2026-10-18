@@ -334,11 +334,14 @@ def test_season_and_official_rule_transition_at_year_boundary() -> None:
 def test_future_rules_are_unverified_unless_explicitly_enabled(year: int) -> None:
     timestamp = local_utc(year, 7, 1, 12)
     unavailable = SlovenianTariffCalendar().classify(timestamp)
+    intrinsic = SlovenianTariffCalendar().classify_rule(timestamp)
     provisional = SlovenianTariffCalendar(allow_provisional=True).classify(timestamp)
     assert unavailable.block is None
     assert unavailable.rule_status == RuleStatus.UNVERIFIED
     assert provisional.block is not None
     assert provisional.rule_status == RuleStatus.PROVISIONAL
+    assert intrinsic.block == provisional.block
+    assert intrinsic.rule_status == RuleStatus.PROVISIONAL
     assert "PROVISIONAL" in (provisional.rule_version or "")
 
 

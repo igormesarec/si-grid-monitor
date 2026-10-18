@@ -1,6 +1,7 @@
 """SQLite archive, migration, provenance and aggregation tests."""
 
 import sqlite3
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -11,6 +12,7 @@ from custom_components.si_grid_monitor.archive import (
     ConfigurationStatus,
     QuarterArchive,
     archive_record_from_quarter,
+    tariff_for_configuration,
 )
 from custom_components.si_grid_monitor.engine import CompletedQuarter, DataQuality
 from custom_components.si_grid_monitor.tariffs import SlovenianTariffCalendar
@@ -55,7 +57,7 @@ def record(
 def test_schema_idempotence_import_only_storage_and_dst_context(tmp_path) -> None:
     archive = QuarterArchive(tmp_path / "archive.db")
     archive.open()
-    assert archive.schema_version == 3
+    assert archive.schema_version == 4
     start = datetime(2026, 10, 25, 0, 0, tzinfo=UTC)
     assert archive.upsert_quarter(record(start))
     assert not archive.upsert_quarter(record(start))
@@ -393,9 +395,12 @@ def test_v1_migration_marks_legacy_rows_unverified_and_suppresses_exceedance(tmp
 
     archive = QuarterArchive(path)
     archive.open()
-    assert archive.schema_version == 3
+    assert archive.schema_version == 4
     migrated = archive.list_quarters("meter-a", start, start + timedelta(hours=1))[0]
     assert migrated["configuration_status"] == "legacy_unverified"
+    assert migrated["exceeded"] == 1
+    assert migrated["excess_kw"] == pytest.approx(3.4)
+    assert migrated["confirmed_exceeded"] is None
     assert archive.list_configuration_epochs("meter-a")[0].contractual_target_kw is None
     summary = archive.summarize("meter-a", start, start + timedelta(hours=1))
     assert summary.valid_count == 0
@@ -443,6 +448,8 @@ def test_tariff_and_selected_block_target_are_immutable_archive_fields(tmp_path)
     assert archived.tariff_calendar_year == 2027
     assert archived.tariff_season == "higher"
     assert archived.tariff_day_type == "working"
+    assert archived.contractual_status == "confirmed"
+    assert archived.confirmed_exceeded is False
 
     archive = QuarterArchive(tmp_path / "tariff.db")
     archive.open()
@@ -487,7 +494,7 @@ def test_v2_to_v3_migration_copies_common_target_to_all_blocks(tmp_path) -> None
 
     archive = QuarterArchive(path)
     archive.open()
-    assert archive.schema_version == 3
+    assert archive.schema_version == 4
     epoch = archive.list_configuration_epochs("meter-a")[0]
     assert epoch.block_targets_kw == (4.8, 4.8, 4.8, 4.8, 4.8)
     archive.close()
@@ -530,7 +537,7 @@ def test_unverified_tariff_never_creates_contractual_target_or_exceedance() -> N
     assert archived.excess_kw is None
 
 
-def test_classifying_legacy_row_in_unverified_year_suppresses_old_exceedance(
+def test_classifying_legacy_row_preserves_original_exceedance_as_unconfirmed(
     tmp_path,
 ) -> None:
     start = datetime(2028, 1, 3, 11, 0, tzinfo=UTC)
@@ -544,8 +551,187 @@ def test_classifying_legacy_row_in_unverified_year_suppresses_old_exceedance(
     row = archive.list_quarters("meter-a", start, start + timedelta(hours=1))[0]
     assert row["tariff_rule_status"] == "unverified"
     assert row["tariff_block"] is None
-    assert row["exceeded"] is None
-    assert row["excess_kw"] is None
+    assert row["exceeded"] == 1
+    assert row["excess_kw"] == pytest.approx(3.4)
+    assert row["confirmed_exceeded"] is None
+    assert row["contractual_status"] == "legacy_policy_unknown"
+    assert row["tariff_policy"] == "legacy_policy_unknown"
     assert row["import_kwh"] == 2.0
     assert row["contractual_target_kw"] == 4.6
+    archive.close()
+
+
+def _completed_quarter(start: datetime, *, demand_kw: float = 8.0) -> CompletedQuarter:
+    import_kwh = demand_kw * 0.25
+    return CompletedQuarter(
+        start_utc=start,
+        end_utc=start + timedelta(minutes=15),
+        import_kwh=import_kwh,
+        export_kwh=0.0,
+        signed_net_kwh=import_kwh,
+        import_demand_kw=demand_kw,
+        signed_average_kw=demand_kw,
+        coverage_seconds=900,
+        gap_seconds=0,
+        quality=DataQuality.RECONSTRUCTED,
+        source_id="sensor.grid",
+    )
+
+
+def _known_configuration(*, allow_provisional: bool) -> ConfigurationResolution:
+    return ConfigurationResolution(
+        status=ConfigurationStatus.KNOWN,
+        source_id="sensor.grid",
+        positive_means_import=True,
+        source_epoch=1,
+        contractual_target_kw=4.8,
+        safety_margin_kw=0.0,
+        block_targets_kw=(4.8, 4.8, 4.8, 4.8, 4.8),
+        allow_provisional_tariff=allow_provisional,
+    )
+
+
+def test_provisional_exceedance_is_estimate_not_confirmed_statistic(tmp_path) -> None:
+    start = datetime(2028, 6, 5, 10, 0, tzinfo=UTC)
+    tariff = SlovenianTariffCalendar(allow_provisional=True).classify(start)
+    archived = archive_record_from_quarter(
+        namespace="meter-a",
+        quarter=_completed_quarter(start),
+        configuration=_known_configuration(allow_provisional=True),
+        provenance="live_reconstructed",
+        tariff=tariff,
+    )
+    assert archived.exceeded is True
+    assert archived.confirmed_exceeded is None
+    assert archived.contractual_status == "provisional_estimate"
+    assert archived.tariff_policy == "allow_provisional"
+    assert "not legally confirmed" in (archived.contractual_status_reason or "")
+
+    archive = QuarterArchive(tmp_path / "provisional.db")
+    archive.open()
+    archive.upsert_quarter(archived)
+    summary = archive.summarize("meter-a", start, start + timedelta(hours=1))
+    assert summary.exceeded_count == 0
+    assert summary.provisional_exceeded_count == 1
+    archive.close()
+
+
+def test_policy_change_creates_epoch_and_never_relabels_completed_rows(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "policy.db")
+    archive.open()
+    first_start = datetime(2028, 1, 3, 11, 0, tzinfo=UTC)
+    second_start = first_start + timedelta(minutes=15)
+    common = {
+        "namespace": "meter-a",
+        "source_id": "sensor.grid",
+        "positive_means_import": True,
+        "contractual_target_kw": 4.8,
+        "safety_margin_kw": 0.0,
+        "block_targets_kw": (4.8, 4.8, 4.8, 4.8, 4.8),
+    }
+    off_epoch = archive.register_configuration_epoch(
+        **common,
+        allow_provisional_tariff=False,
+        effective_utc=first_start,
+    )
+    on_epoch = archive.register_configuration_epoch(
+        **common,
+        allow_provisional_tariff=True,
+        effective_utc=second_start,
+    )
+    assert off_epoch.epoch == 1
+    assert on_epoch.epoch == 2
+    assert [
+        epoch.allow_provisional_tariff for epoch in archive.list_configuration_epochs("meter-a")
+    ] == [False, True]
+
+    off_configuration = replace(_known_configuration(allow_provisional=False), source_epoch=1)
+    on_configuration = replace(_known_configuration(allow_provisional=True), source_epoch=2)
+    assert (
+        tariff_for_configuration(first_start, off_configuration).rule_status.value == "unverified"
+    )
+    assert (
+        tariff_for_configuration(second_start, on_configuration).rule_status.value == "provisional"
+    )
+
+    off_record = archive_record_from_quarter(
+        namespace="meter-a",
+        quarter=_completed_quarter(first_start),
+        configuration=off_configuration,
+        provenance="live_reconstructed",
+        tariff=SlovenianTariffCalendar().classify(first_start),
+    )
+    on_record = archive_record_from_quarter(
+        namespace="meter-a",
+        quarter=_completed_quarter(second_start),
+        configuration=on_configuration,
+        provenance="live_reconstructed",
+        tariff=SlovenianTariffCalendar(allow_provisional=True).classify(second_start),
+    )
+    archive.upsert_quarter(off_record)
+    archive.upsert_quarter(on_record)
+
+    assert (
+        archive.classify_existing_quarters("meter-a", SlovenianTariffCalendar().classify_rule) == 0
+    )
+    rows = archive.list_quarters("meter-a", first_start, second_start + timedelta(minutes=15))
+    assert rows[0]["tariff_policy"] == "official_only"
+    assert rows[0]["tariff_rule_status"] == "unverified"
+    assert rows[0]["tariff_block"] is None
+    assert rows[1]["tariff_policy"] == "allow_provisional"
+    assert rows[1]["tariff_rule_status"] == "provisional"
+    assert rows[1]["tariff_block"] is not None
+    archive.close()
+
+
+def test_latest_completed_quarter_restores_quality_and_provenance(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "restore.db")
+    archive.open()
+    start = datetime(2027, 6, 5, 10, 0, tzinfo=UTC)
+    archive.upsert_quarter(record(start, import_kwh=0.75, quality="counter_derived"))
+
+    restored = archive.load_latest_quarter("meter-a")
+
+    assert restored is not None
+    assert restored.import_demand_kw == pytest.approx(3.0)
+    assert restored.signed_average_kw == pytest.approx((0.75 - 2 / 3) / 0.25)
+    assert restored.quality == "counter_derived"
+    assert restored.provenance == "live_reconstructed"
+    assert restored.start_utc == start
+    archive.close()
+
+
+def test_midquarter_policy_change_is_explicitly_mixed(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "mixed-policy.db")
+    archive.open()
+    start = datetime(2028, 1, 3, 11, 0, tzinfo=UTC)
+    common = {
+        "namespace": "meter-a",
+        "source_id": "sensor.grid",
+        "positive_means_import": True,
+        "contractual_target_kw": 4.8,
+        "safety_margin_kw": 0.0,
+        "block_targets_kw": (4.8, 4.8, 4.8, 4.8, 4.8),
+    }
+    archive.register_configuration_epoch(
+        **common, allow_provisional_tariff=False, effective_utc=start
+    )
+    archive.register_configuration_epoch(
+        **common,
+        allow_provisional_tariff=True,
+        effective_utc=start + timedelta(minutes=5),
+    )
+    resolution = archive.resolve_configuration("meter-a", start, start + timedelta(minutes=15))
+    assert resolution.status == ConfigurationStatus.TARGET_MIXED
+
+    record_value = archive_record_from_quarter(
+        namespace="meter-a",
+        quarter=_completed_quarter(start),
+        configuration=resolution,
+        provenance="live_reconstructed",
+        tariff=SlovenianTariffCalendar(allow_provisional=True).classify(start),
+    )
+    assert record_value.tariff_policy == "mixed_within_quarter"
+    assert record_value.contractual_status == "unknown_configuration"
+    assert record_value.confirmed_exceeded is None
     archive.close()

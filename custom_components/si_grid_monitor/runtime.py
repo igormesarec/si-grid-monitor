@@ -20,11 +20,13 @@ from homeassistant.util import dt as dt_util
 
 from .adapters import AdapterError, SignedPowerAdapter
 from .archive import (
+    ArchivedQuarterSnapshot,
     ConfigurationEpoch,
     ConfigurationResolution,
     ConfigurationStatus,
     QuarterArchive,
     archive_record_from_quarter,
+    tariff_for_configuration,
 )
 from .backfill import (
     HistoricalPowerReading,
@@ -65,6 +67,7 @@ from .engine import (
 )
 from .sustained import SustainedForecast, calculate_sustained_forecast
 from .tariffs import SlovenianTariffCalendar, TariffClassification
+from .tariffs.models import RuleStatus
 from .task_queue import ArchiveTaskQueue
 
 _LOGGER = logging.getLogger(__name__)
@@ -96,6 +99,11 @@ class GridMonitorRuntime:
         self.next_tariff: TariffClassification | None = None
         self.time_to_next_tariff_seconds: float | None = None
         self._tariff_signature: tuple[object, ...] | None = None
+        self.current_contractual_available = False
+        self.current_contractual_confirmed = False
+        self.contractual_status_reason: str | None = None
+        self.sustained_status_reason: str | None = None
+        self.archived_last_completed: ArchivedQuarterSnapshot | None = None
         self._listeners: set[Callable[[], None]] = set()
         self._unsubscribers: list[Callable[[], None]] = []
         self.namespace = entry.entry_id
@@ -142,15 +150,29 @@ class GridMonitorRuntime:
         }
 
     @property
-    def effective_target_kw(self) -> float:
+    def effective_target_kw(self) -> float | None:
         settings = self.settings
         if settings[CONF_SIMULATION_ENABLED]:
             return float(settings[CONF_SIMULATION_TARGET_KW])
         tariff = self.current_tariff or self.tariff_calendar.classify(dt_util.utcnow())
         target = self.target_for_tariff(tariff)
-        if target is None:
-            raise CalculationError("tariff calendar is unavailable or unverified")
         return target
+
+    @property
+    def last_completed_import_demand_kw(self) -> float | None:
+        if self.engine.completed:
+            return self.engine.completed[-1].import_demand_kw
+        if self.archived_last_completed is not None:
+            return self.archived_last_completed.import_demand_kw
+        return None
+
+    @property
+    def last_completed_signed_average_kw(self) -> float | None:
+        if self.engine.completed:
+            return self.engine.completed[-1].signed_average_kw
+        if self.archived_last_completed is not None:
+            return self.archived_last_completed.signed_average_kw
+        return None
 
     @property
     def block_targets_kw(self) -> tuple[float, ...]:
@@ -193,16 +215,18 @@ class GridMonitorRuntime:
                 contractual_target_kw=targets[0],
                 safety_margin_kw=float(startup_settings[CONF_SAFETY_MARGIN_KW]),
                 block_targets_kw=targets,
+                allow_provisional_tariff=bool(startup_settings[CONF_ALLOW_PROVISIONAL_TARIFF]),
                 effective_utc=dt_util.utcnow(),
             )
         )
         await self.hass.async_add_executor_job(
             self.archive.classify_existing_quarters,
             self.namespace,
-            self.tariff_calendar.classify,
+            self.tariff_calendar.classify_rule,
         )
-        checkpoint = await self.hass.async_add_executor_job(
-            self.archive.load_checkpoint, self.namespace
+        checkpoint, self.archived_last_completed = await asyncio.gather(
+            self.hass.async_add_executor_job(self.archive.load_checkpoint, self.namespace),
+            self.hass.async_add_executor_job(self.archive.load_latest_quarter, self.namespace),
         )
         if checkpoint is not None:
             self.engine.restore_checkpoint(checkpoint)
@@ -314,41 +338,71 @@ class GridMonitorRuntime:
             for listener in tuple(self._listeners):
                 listener()
             return
+        target_kw = self.effective_target_kw
+        simulation_enabled = bool(settings[CONF_SIMULATION_ENABLED])
+        self.current_contractual_available = target_kw is not None
+        self.current_contractual_confirmed = (
+            target_kw is not None
+            and not simulation_enabled
+            and current_tariff.rule_status == RuleStatus.OFFICIAL
+        )
+        if simulation_enabled:
+            self.contractual_status_reason = (
+                "simulation threshold is active; results are not contractual"
+            )
+        elif current_tariff.rule_status == RuleStatus.PROVISIONAL:
+            self.contractual_status_reason = "tariff rule is provisional and not legally confirmed"
+        elif target_kw is None:
+            self.contractual_status_reason = (
+                f"tariff rule status is {current_tariff.rule_status.value}; "
+                "no enabled contractual target is available"
+            )
+        else:
+            self.contractual_status_reason = None
+        self.sustained_status_reason = self.contractual_status_reason
         try:
             self.snapshot = self.engine.snapshot(
                 now=now,
-                target_kw=self.effective_target_kw,
+                target_kw=target_kw,
                 safety_margin_kw=float(settings[CONF_SAFETY_MARGIN_KW]),
                 smoothing_seconds=int(settings[CONF_SMOOTHING_SECONDS]),
-            )
-            latest = self.engine.last_sample
-            smoothing_seconds = int(settings[CONF_SMOOTHING_SECONDS])
-            self.sustained_forecast = calculate_sustained_forecast(
-                now=now_utc,
-                current_import_kwh=self.snapshot.quarter_import_kwh,
-                current_unrecoverable=self.snapshot.projection.unrecoverable,
-                current_quarter_complete=self.snapshot.gap_seconds <= EPSILON,
-                recent_segments=self.engine.buffer.segments(
-                    end=now_utc, window_seconds=smoothing_seconds
-                ),
-                latest_signed_kw=self.snapshot.current_signed_power_kw,
-                measurement_age_seconds=(
-                    (now_utc - latest.timestamp_utc).total_seconds() if latest is not None else None
-                ),
-                smoothing_seconds=smoothing_seconds,
-                horizon_minutes=int(settings[CONF_SUSTAINED_HORIZON_MINUTES]),
-                target_for_quarter=lambda start, end: self._operational_target_for_quarter(
-                    start, end, float(settings[CONF_SAFETY_MARGIN_KW])
-                ),
-                stale_after_seconds=DEFAULT_STALE_AFTER_SECONDS,
             )
         except CalculationError as err:
             _LOGGER.warning("Could not refresh SI Grid Monitor: %s", err)
             self.snapshot = None
             self.sustained_forecast = None
-            for listener in tuple(self._listeners):
-                listener()
-            return
+        else:
+            self.sustained_forecast = None
+            if self.current_contractual_available:
+                latest = self.engine.last_sample
+                smoothing_seconds = int(settings[CONF_SMOOTHING_SECONDS])
+                try:
+                    self.sustained_forecast = calculate_sustained_forecast(
+                        now=now_utc,
+                        current_import_kwh=self.snapshot.quarter_import_kwh,
+                        current_unrecoverable=bool(self.snapshot.projection.unrecoverable),
+                        current_quarter_complete=self.snapshot.gap_seconds <= EPSILON,
+                        recent_segments=self.engine.buffer.segments(
+                            end=now_utc, window_seconds=smoothing_seconds
+                        ),
+                        latest_signed_kw=self.snapshot.current_signed_power_kw,
+                        measurement_age_seconds=(
+                            (now_utc - latest.timestamp_utc).total_seconds()
+                            if latest is not None
+                            else None
+                        ),
+                        smoothing_seconds=smoothing_seconds,
+                        horizon_minutes=int(settings[CONF_SUSTAINED_HORIZON_MINUTES]),
+                        target_for_quarter=lambda start, end: self._operational_target_for_quarter(
+                            start,
+                            end,
+                            float(settings[CONF_SAFETY_MARGIN_KW]),
+                        ),
+                        stale_after_seconds=DEFAULT_STALE_AFTER_SECONDS,
+                    )
+                except CalculationError as err:
+                    self.sustained_status_reason = str(err)
+                    _LOGGER.info("Sustained forecast unavailable: %s", err)
         self._drain_completed()
         self._checkpoint_if_due(now)
         for listener in tuple(self._listeners):
@@ -393,10 +447,18 @@ class GridMonitorRuntime:
             quarter=quarter,
             configuration=configuration,
             provenance=provenance,
-            tariff=self.tariff_calendar.classify(quarter.start_utc),
+            tariff=tariff_for_configuration(quarter.start_utc, configuration),
         )
         async with self._archive_operation_lock:
             await self.hass.async_add_executor_job(self.archive.upsert_quarter, record)
+        self.archived_last_completed = ArchivedQuarterSnapshot(
+            start_utc=quarter.start_utc,
+            end_utc=quarter.end_utc,
+            import_demand_kw=quarter.import_demand_kw,
+            signed_average_kw=quarter.signed_average_kw,
+            quality=quarter.quality.value,
+            provenance=provenance,
+        )
 
     async def _async_backfill_recorder(self) -> None:
         """Backfill missing completed quarters from detailed recorder states."""
@@ -556,4 +618,5 @@ def _resolution_for_epoch(epoch: ConfigurationEpoch) -> ConfigurationResolution:
         contractual_target_kw=epoch.contractual_target_kw,
         safety_margin_kw=epoch.safety_margin_kw,
         block_targets_kw=epoch.block_targets_kw,
+        allow_provisional_tariff=epoch.allow_provisional_tariff,
     )

@@ -32,6 +32,17 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ### Fixed
 
+- Missing or disabled provisional tariff rules no longer interrupt physical
+  import/export metering, fixed-quarter completion, SQLite writes or checkpoint
+  saving; only contractual forecasts and advice become unavailable.
+- Provisional-rule exceedances are stored as estimates with an explicit reason
+  and are excluded from legally confirmed exceedance counts.
+- Calendar annotation preserves historical `exceeded` and `excess_kw` values;
+  verification status and confirmed exceedance are stored separately.
+- The last completed quarter is restored from SQLite for sensor presentation
+  after restart, including its quality and provenance.
+- Tariff-policy changes create configuration epochs and completed rows retain the
+  policy that applied when they were recorded.
 - Recorder backfill now replays each historical source/sign configuration epoch
   and its effective contractual target instead of applying current settings to
   older measurements. Unknown or mixed provenance suppresses exceedance claims.
