@@ -2,28 +2,63 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from collections.abc import Callable
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
+from functools import partial
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT
 from homeassistant.core import Event, HomeAssistant, State, callback
-from homeassistant.helpers.event import async_track_state_change_event, async_track_time_interval
+from homeassistant.helpers.event import (
+    async_track_state_change_event,
+    async_track_state_report_event,
+    async_track_time_interval,
+)
 from homeassistant.util import dt as dt_util
 
 from .adapters import AdapterError, SignedPowerAdapter
+from .archive import (
+    ConfigurationEpoch,
+    ConfigurationResolution,
+    ConfigurationStatus,
+    QuarterArchive,
+    archive_record_from_quarter,
+)
+from .backfill import (
+    HistoricalPowerReading,
+    normalize_historical_readings,
+    reconstruct_quarters,
+)
 from .const import (
     CONF_POSITIVE_MEANS_IMPORT,
     CONF_POWER_ENTITY,
+    CONF_RETENTION,
     CONF_SAFETY_MARGIN_KW,
+    CONF_SIMULATION_ENABLED,
+    CONF_SIMULATION_TARGET_KW,
     CONF_SMOOTHING_SECONDS,
+    CONF_SUSTAINED_HORIZON_MINUTES,
     CONF_TARGET_KW,
+    DEFAULT_RETENTION,
     DEFAULT_SAFETY_MARGIN_KW,
     DEFAULT_SMOOTHING_SECONDS,
     DEFAULT_STALE_AFTER_SECONDS,
+    DEFAULT_SUSTAINED_HORIZON_MINUTES,
 )
-from .engine import CalculationError, EngineSnapshot, FixedQuarterEngine, PowerSample
+from .engine import (
+    EPSILON,
+    CalculationError,
+    CompletedQuarter,
+    DataQuality,
+    EngineSnapshot,
+    FixedQuarterEngine,
+    PowerSample,
+    quarter_bounds,
+)
+from .sustained import SustainedForecast, calculate_sustained_forecast
+from .task_queue import ArchiveTaskQueue
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,35 +69,87 @@ class GridMonitorRuntime:
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         self.hass = hass
         self.entry = entry
-        self.power_entity = str(entry.data[CONF_POWER_ENTITY])
-        self.adapter = SignedPowerAdapter(
-            positive_means_import=bool(entry.data[CONF_POSITIVE_MEANS_IMPORT])
+        configured = {**entry.data, **entry.options}
+        self.power_entity = str(configured[CONF_POWER_ENTITY])
+        self.positive_means_import = bool(configured[CONF_POSITIVE_MEANS_IMPORT])
+        self.adapter = SignedPowerAdapter(positive_means_import=self.positive_means_import)
+        self.source_semantics_id = (
+            f"{self.power_entity}|positive_means_import={self.positive_means_import}"
         )
         self.engine = FixedQuarterEngine(
             stale_after_seconds=DEFAULT_STALE_AFTER_SECONDS,
-            source_id=self.power_entity,
+            source_id=self.source_semantics_id,
         )
         self.snapshot: EngineSnapshot | None = None
+        self.sustained_forecast: SustainedForecast | None = None
         self._listeners: set[Callable[[], None]] = set()
         self._unsubscribers: list[Callable[[], None]] = []
+        self.namespace = entry.entry_id
+        self.archive = QuarterArchive(
+            hass.config.path(".storage", f"si_grid_monitor_{entry.entry_id}.db")
+        )
+        self.configuration_epoch: ConfigurationEpoch | None = None
+        self._stored_completed = 0
+        self._last_checkpoint_utc: datetime | None = None
+        self._backfill_task: asyncio.Task[None] | None = None
+        self._completed_store_task: asyncio.Task[None] | None = None
+        self._archive_tasks = ArchiveTaskQueue()
+        self._archive_operation_lock = asyncio.Lock()
 
     @property
-    def settings(self) -> dict[str, float | int]:
+    def settings(self) -> dict[str, float | int | bool | str]:
         """Return effective editable settings."""
 
         data = {**self.entry.data, **self.entry.options}
         return {
             CONF_TARGET_KW: float(data[CONF_TARGET_KW]),
-            CONF_SAFETY_MARGIN_KW: float(
-                data.get(CONF_SAFETY_MARGIN_KW, DEFAULT_SAFETY_MARGIN_KW)
-            ),
+            CONF_SAFETY_MARGIN_KW: float(data.get(CONF_SAFETY_MARGIN_KW, DEFAULT_SAFETY_MARGIN_KW)),
             CONF_SMOOTHING_SECONDS: int(
                 data.get(CONF_SMOOTHING_SECONDS, DEFAULT_SMOOTHING_SECONDS)
             ),
+            CONF_RETENTION: str(data.get(CONF_RETENTION, DEFAULT_RETENTION)),
+            CONF_SIMULATION_ENABLED: bool(data.get(CONF_SIMULATION_ENABLED, False)),
+            CONF_SIMULATION_TARGET_KW: float(
+                data.get(CONF_SIMULATION_TARGET_KW, data[CONF_TARGET_KW])
+            ),
+            CONF_SUSTAINED_HORIZON_MINUTES: int(
+                data.get(
+                    CONF_SUSTAINED_HORIZON_MINUTES,
+                    DEFAULT_SUSTAINED_HORIZON_MINUTES,
+                )
+            ),
         }
+
+    @property
+    def effective_target_kw(self) -> float:
+        settings = self.settings
+        return float(
+            settings[CONF_SIMULATION_TARGET_KW]
+            if settings[CONF_SIMULATION_ENABLED]
+            else settings[CONF_TARGET_KW]
+        )
 
     async def async_start(self) -> None:
         """Read the current state and register state/timer listeners."""
+
+        await self.hass.async_add_executor_job(self.archive.open)
+        startup_settings = self.settings
+        self.configuration_epoch = await self.hass.async_add_executor_job(
+            partial(
+                self.archive.register_configuration_epoch,
+                namespace=self.namespace,
+                source_id=self.power_entity,
+                positive_means_import=self.positive_means_import,
+                contractual_target_kw=float(startup_settings[CONF_TARGET_KW]),
+                safety_margin_kw=float(startup_settings[CONF_SAFETY_MARGIN_KW]),
+                effective_utc=dt_util.utcnow(),
+            )
+        )
+        checkpoint = await self.hass.async_add_executor_job(
+            self.archive.load_checkpoint, self.namespace
+        )
+        if checkpoint is not None:
+            self.engine.restore_checkpoint(checkpoint)
 
         current = self.hass.states.get(self.power_entity)
         if current is not None:
@@ -74,19 +161,36 @@ class GridMonitorRuntime:
             )
         )
         self._unsubscribers.append(
-            async_track_time_interval(
-                self.hass, self._async_tick, timedelta(seconds=1)
+            async_track_state_report_event(
+                self.hass, [self.power_entity], self._async_state_changed
             )
         )
+        self._backfill_task = self._archive_tasks.track(
+            self.hass.async_create_task(
+                self._async_backfill_recorder(), "SI Grid Monitor recorder backfill"
+            )
+        )
+        self._unsubscribers.append(
+            async_track_time_interval(self.hass, self._async_tick, timedelta(seconds=1))
+        )
 
-    @callback
-    def async_stop(self) -> None:
+    async def async_stop(self) -> None:
         """Remove runtime listeners."""
 
         for unsubscribe in self._unsubscribers:
             unsubscribe()
         self._unsubscribers.clear()
         self._listeners.clear()
+        await self._archive_tasks.cancel_and_wait(self._backfill_task)
+        self._drain_completed()
+        await self._archive_tasks.drain()
+        # A prior executor/database failure leaves the durable cursor unchanged.
+        # Retry outstanding quarters synchronously before the connection closes.
+        await self._async_store_pending_completed()
+        payload = self.engine.checkpoint()
+        if payload is not None:
+            await self._async_save_checkpoint(payload)
+        await self.hass.async_add_executor_job(self.archive.close)
 
     @callback
     def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
@@ -135,12 +239,238 @@ class GridMonitorRuntime:
         try:
             self.snapshot = self.engine.snapshot(
                 now=now,
-                target_kw=float(settings[CONF_TARGET_KW]),
+                target_kw=self.effective_target_kw,
                 safety_margin_kw=float(settings[CONF_SAFETY_MARGIN_KW]),
                 smoothing_seconds=int(settings[CONF_SMOOTHING_SECONDS]),
+            )
+            latest = self.engine.last_sample
+            now_utc = now.astimezone(UTC)
+            smoothing_seconds = int(settings[CONF_SMOOTHING_SECONDS])
+            operational_target = max(
+                0.0,
+                self.effective_target_kw - float(settings[CONF_SAFETY_MARGIN_KW]),
+            )
+            self.sustained_forecast = calculate_sustained_forecast(
+                now=now_utc,
+                current_import_kwh=self.snapshot.quarter_import_kwh,
+                current_unrecoverable=self.snapshot.projection.unrecoverable,
+                current_quarter_complete=self.snapshot.gap_seconds <= EPSILON,
+                recent_segments=self.engine.buffer.segments(
+                    end=now_utc, window_seconds=smoothing_seconds
+                ),
+                latest_signed_kw=self.snapshot.current_signed_power_kw,
+                measurement_age_seconds=(
+                    (now_utc - latest.timestamp_utc).total_seconds() if latest is not None else None
+                ),
+                smoothing_seconds=smoothing_seconds,
+                horizon_minutes=int(settings[CONF_SUSTAINED_HORIZON_MINUTES]),
+                target_for_quarter=lambda _start, _end: operational_target,
+                stale_after_seconds=DEFAULT_STALE_AFTER_SECONDS,
             )
         except CalculationError as err:
             _LOGGER.warning("Could not refresh SI Grid Monitor: %s", err)
             return
+        self._drain_completed()
+        self._checkpoint_if_due(now)
         for listener in tuple(self._listeners):
             listener()
+
+    @callback
+    def _drain_completed(self) -> None:
+        if self._completed_store_task is not None and not self._completed_store_task.done():
+            return
+        if self._stored_completed >= len(self.engine.completed):
+            return
+        self._completed_store_task = self._archive_tasks.track(
+            self.hass.async_create_task(
+                self._async_store_pending_completed(),
+                "SI Grid Monitor store completed quarters",
+            )
+        )
+
+    async def _async_store_pending_completed(self) -> None:
+        """Store quarters serially and advance only after durable success."""
+
+        while self._stored_completed < len(self.engine.completed):
+            quarter = self.engine.completed[self._stored_completed]
+            await self._async_store_quarter(quarter)
+            self._stored_completed += 1
+
+    async def _async_store_quarter(
+        self,
+        quarter: CompletedQuarter,
+        provenance: str = "live_reconstructed",
+        configuration: ConfigurationResolution | None = None,
+    ) -> None:
+        if configuration is None:
+            configuration = await self.hass.async_add_executor_job(
+                self.archive.resolve_configuration,
+                self.namespace,
+                quarter.start_utc,
+                quarter.end_utc,
+            )
+        record = archive_record_from_quarter(
+            namespace=self.namespace,
+            quarter=quarter,
+            configuration=configuration,
+            provenance=provenance,
+        )
+        async with self._archive_operation_lock:
+            await self.hass.async_add_executor_job(self.archive.upsert_quarter, record)
+
+    async def _async_backfill_recorder(self) -> None:
+        """Backfill missing completed quarters from detailed recorder states."""
+
+        try:
+            from homeassistant.components.recorder.history import get_significant_states
+            from homeassistant.helpers.recorder import get_instance
+
+            end = dt_util.utcnow()
+            latest, epochs = await asyncio.gather(
+                self.hass.async_add_executor_job(self.archive.latest_quarter_end, self.namespace),
+                self.hass.async_add_executor_job(
+                    self.archive.list_configuration_epochs, self.namespace
+                ),
+            )
+            if not epochs:
+                return
+            # Revisit the newest stored quarter so detailed recorder states can
+            # improve a crash-affected incomplete live record.
+            requested_start = (
+                latest - timedelta(minutes=15) if latest is not None else epochs[0].effective_utc
+            )
+            start = max(requested_start, epochs[0].effective_utc)
+            recorder = get_instance(self.hass)
+            for index, epoch in enumerate(epochs):
+                epoch_end = epochs[index + 1].effective_utc if index + 1 < len(epochs) else end
+                segment_start = max(start, epoch.effective_utc)
+                segment_end = min(end, epoch_end)
+                if segment_end <= segment_start:
+                    continue
+                history = await recorder.async_add_executor_job(
+                    partial(
+                        get_significant_states,
+                        self.hass,
+                        segment_start,
+                        segment_end,
+                        entity_ids=[epoch.source_id],
+                        include_start_time_state=True,
+                        significant_changes_only=False,
+                        minimal_response=False,
+                        no_attributes=False,
+                    )
+                )
+                readings: list[HistoricalPowerReading] = []
+                for state in history.get(epoch.source_id, []):
+                    unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
+                    if not isinstance(unit, str) or state.state in {
+                        "unknown",
+                        "unavailable",
+                        "none",
+                        "",
+                    }:
+                        continue
+                    readings.append(
+                        HistoricalPowerReading(
+                            timestamp=state.last_reported or state.last_updated,
+                            value=state.state,
+                            unit=unit,
+                        )
+                    )
+                samples = normalize_historical_readings(
+                    readings,
+                    positive_means_import=epoch.positive_means_import,
+                )
+                quarters = reconstruct_quarters(
+                    samples,
+                    end_utc=segment_end,
+                    source_id=(
+                        f"{epoch.source_id}|positive_means_import={epoch.positive_means_import}"
+                    ),
+                    stale_after_seconds=DEFAULT_STALE_AFTER_SECONDS,
+                )
+                configuration = _resolution_for_epoch(epoch)
+                for quarter in quarters:
+                    if quarter.start_utc < segment_start or quarter.end_utc > segment_end:
+                        continue
+                    await self._async_store_quarter(
+                        quarter,
+                        provenance="recorder_reconstructed",
+                        configuration=configuration,
+                    )
+
+            # A mid-quarter configuration boundary cannot safely inherit either
+            # side's target. Store an unavailable marker only when no better row
+            # exists; quality-ranked upsert protects live/observed data.
+            for epoch in epochs[1:]:
+                if not (start < epoch.effective_utc < end):
+                    continue
+                bounds = quarter_bounds(epoch.effective_utc)
+                if epoch.effective_utc == bounds.start_utc:
+                    continue
+                unknown = CompletedQuarter(
+                    start_utc=bounds.start_utc,
+                    end_utc=bounds.end_utc,
+                    import_kwh=0.0,
+                    export_kwh=0.0,
+                    signed_net_kwh=0.0,
+                    import_demand_kw=0.0,
+                    signed_average_kw=0.0,
+                    coverage_seconds=0.0,
+                    gap_seconds=900.0,
+                    quality=DataQuality.UNAVAILABLE,
+                    source_id="configuration_boundary",
+                )
+                configuration = await self.hass.async_add_executor_job(
+                    self.archive.resolve_configuration,
+                    self.namespace,
+                    bounds.start_utc,
+                    bounds.end_utc,
+                )
+                await self._async_store_quarter(
+                    unknown,
+                    provenance="configuration_boundary_unavailable",
+                    configuration=configuration,
+                )
+        except Exception:  # recorder availability/API failures must not stop live data
+            _LOGGER.exception("SI Grid Monitor recorder backfill did not complete")
+
+    @callback
+    def _checkpoint_if_due(self, now: datetime) -> None:
+        now_utc = now.astimezone(UTC)
+        if self._last_checkpoint_utc is not None and (
+            now_utc - self._last_checkpoint_utc
+        ) < timedelta(seconds=30):
+            return
+        payload = self.engine.checkpoint()
+        if payload is None:
+            return
+        self._last_checkpoint_utc = now_utc
+        self._archive_tasks.track(
+            self.hass.async_create_task(
+                self._async_save_checkpoint(payload),
+                "SI Grid Monitor save checkpoint",
+            )
+        )
+
+    async def _async_save_checkpoint(self, payload: dict[str, object]) -> None:
+        async with self._archive_operation_lock:
+            await self.hass.async_add_executor_job(
+                self.archive.save_checkpoint, self.namespace, payload
+            )
+
+
+def _resolution_for_epoch(epoch: ConfigurationEpoch) -> ConfigurationResolution:
+    status = (
+        ConfigurationStatus.KNOWN
+        if epoch.contractual_target_kw is not None and epoch.safety_margin_kw is not None
+        else ConfigurationStatus.TARGET_UNKNOWN
+    )
+    return ConfigurationResolution(
+        status=status,
+        source_id=epoch.source_id,
+        positive_means_import=epoch.positive_means_import,
+        source_epoch=epoch.epoch,
+        contractual_target_kw=epoch.contractual_target_kw,
+        safety_margin_kw=epoch.safety_margin_kw,
+    )

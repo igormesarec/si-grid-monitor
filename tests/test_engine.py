@@ -81,9 +81,7 @@ def test_boundary_split_and_smoothing_carryover_without_energy_carryover() -> No
 def test_sparse_data_stops_at_stale_limit_and_marks_gap() -> None:
     engine = FixedQuarterEngine(stale_after_seconds=30)
     engine.ingest(PowerSample(utc(8, 0), 3.0))
-    snapshot = engine.snapshot(
-        now=utc(8, 2), target_kw=4.8, smoothing_seconds=60
-    )
+    snapshot = engine.snapshot(now=utc(8, 2), target_kw=4.8, smoothing_seconds=60)
     assert snapshot.quarter_import_kwh == pytest.approx(3 * 30 / 3600)
     assert snapshot.coverage_seconds == pytest.approx(30)
     assert snapshot.gap_seconds == pytest.approx(90)
@@ -120,3 +118,61 @@ def test_ljubljana_quarter_boundaries_and_dst_day_lengths() -> None:
     ]
     assert len(repeated_two_oclock) == 2
     assert repeated_two_oclock[0].utcoffset() != repeated_two_oclock[1].utcoffset()
+
+
+def test_import_only_billing_acceptance_never_nets_export() -> None:
+    engine = FixedQuarterEngine(stale_after_seconds=600)
+    engine.ingest(PowerSample(utc(0, 0), 6.0))
+    engine.ingest(PowerSample(utc(0, 5), -8.0))
+    engine.ingest(PowerSample(utc(0, 10), 6.0))
+    completed = engine.ingest(PowerSample(utc(0, 15), 0.0))
+
+    quarter = completed[0]
+    assert quarter.import_kwh == pytest.approx(1.0)
+    assert quarter.export_kwh == pytest.approx(2 / 3)
+    assert quarter.signed_net_kwh == pytest.approx(1 / 3)
+    assert quarter.import_demand_kw == pytest.approx(4.0)
+    assert quarter.signed_average_kw == pytest.approx(4 / 3)
+    assert quarter.import_demand_kw <= 4.60
+    assert 100 * quarter.import_demand_kw / 4.60 == pytest.approx(86.9565217391)
+    assert quarter.import_demand_kw != pytest.approx(quarter.signed_average_kw)
+
+
+def test_alternating_thirty_second_import_export_is_integrated_separately() -> None:
+    engine = FixedQuarterEngine(stale_after_seconds=31)
+    start = utc(0, 0)
+    for index in range(30):
+        power = 3.0 if index % 2 == 0 else -5.0
+        engine.ingest(PowerSample(start + timedelta(seconds=30 * index), power))
+    completed = engine.ingest(PowerSample(utc(0, 15), 0.0))
+    quarter = completed[0]
+    assert quarter.import_kwh == pytest.approx(3 * 7.5 / 60)
+    assert quarter.export_kwh == pytest.approx(5 * 7.5 / 60)
+    assert quarter.import_demand_kw == pytest.approx(1.5)
+    assert quarter.signed_average_kw == pytest.approx(-1.0)
+
+
+def test_import_only_smoothing_is_not_clamped_signed_average() -> None:
+    engine = FixedQuarterEngine(stale_after_seconds=180)
+    engine.ingest(PowerSample(utc(0, 0), 2.0))
+    engine.ingest(PowerSample(utc(0, 1), -2.0))
+    snapshot = engine.snapshot(now=utc(0, 2), target_kw=4.0, smoothing_seconds=120)
+    assert snapshot.smoothed_signed.complete
+    assert snapshot.smoothed_signed.value_kw == pytest.approx(0.0)
+    assert snapshot.smoothed_import.value_kw == pytest.approx(1.0)
+    expected = (snapshot.quarter_import_kwh + (13 / 60) * 1.0) / 0.25
+    assert snapshot.projection.forecast_smoothed_kw == pytest.approx(expected)
+
+
+def test_checkpoint_restores_energy_but_not_fabricated_smoothing_history() -> None:
+    engine = FixedQuarterEngine(stale_after_seconds=60, source_id="sensor.grid")
+    engine.ingest(PowerSample(utc(8, 0), 3.0))
+    engine.advance(utc(8, 2))
+    payload = engine.checkpoint()
+    assert payload is not None
+
+    recovered = FixedQuarterEngine(stale_after_seconds=60, source_id="sensor.grid")
+    assert recovered.restore_checkpoint(payload)
+    assert recovered.import_kwh == pytest.approx(engine.import_kwh)
+    snapshot = recovered.snapshot(now=utc(8, 2), target_kw=4.8)
+    assert not snapshot.smoothed_import.complete

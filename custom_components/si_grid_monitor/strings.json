@@ -5,12 +5,12 @@
       "already_configured": "This source is already configured."
     },
     "error": {
-      "mode_not_available_v0_1": "This source mode is designed but is not connected to Home Assistant in V0.1. Select signed live grid power."
+      "mode_not_available_v0_1": "This source mode remains planned but is not connected to Home Assistant in V0.2. Select signed live grid power."
     },
     "step": {
       "user": {
         "title": "Choose the grid source design",
-        "description": "V0.1 runs with one signed live grid-power sensor. Other modes are visible as planned capability scaffolding and cannot yet be saved.",
+        "description": "V0.2 runs with one signed live grid-power sensor. Other modes remain planned and cannot yet be saved.",
         "data": {
           "source_mode": "Source mode"
         }
@@ -23,7 +23,9 @@
           "positive_means_import": "Positive source values mean import",
           "target_kw": "Contractual target",
           "safety_margin_kw": "Safety margin",
-          "smoothing_seconds": "Forecast smoothing window"
+          "smoothing_seconds": "Forecast smoothing window",
+          "sustained_horizon_minutes": "Sustained load forecast horizon",
+          "retention": "Archive retention"
         }
       }
     }
@@ -32,11 +34,17 @@
     "step": {
       "init": {
         "title": "Calculation settings",
-        "description": "The operational target is the contractual target minus the nonnegative safety margin.",
+        "description": "Change source and polarity without deleting the integration. Simulation thresholds are excluded from genuine contractual exceedance statistics.",
         "data": {
+          "power_entity": "Grid power sensor",
+          "positive_means_import": "Positive source values mean import",
           "target_kw": "Contractual target",
           "safety_margin_kw": "Safety margin",
-          "smoothing_seconds": "Forecast smoothing window"
+          "smoothing_seconds": "Forecast smoothing window",
+          "sustained_horizon_minutes": "Sustained load forecast horizon",
+          "retention": "Archive retention",
+          "simulation_enabled": "Enable temporary test threshold",
+          "simulation_target_kw": "Temporary test threshold"
         }
       }
     }
@@ -44,7 +52,7 @@
   "selector": {
     "source_mode": {
       "options": {
-        "signed_power": "One signed live grid-power sensor (V0.1)",
+        "signed_power": "One signed live grid-power sensor (V0.2)",
         "separate_power": "Separate live import/export sensors (planned)",
         "import_only": "Live import-only sensor (planned)",
         "cumulative_energy": "Cumulative energy counters (planned)",
@@ -68,6 +76,12 @@
       },
       "import_power_15m_rolling": {
         "name": "Import-only rolling 15-minute power"
+      },
+      "smoothed_signed_power": {
+        "name": "Smoothed signed grid power"
+      },
+      "smoothed_import_power": {
+        "name": "Smoothed import-only power"
       },
       "current_interval_import_average": {
         "name": "Current fixed-quarter import average"
@@ -106,7 +120,10 @@
         "name": "Smoothed final demand forecast"
       },
       "forecast_utilization_pct": {
-        "name": "Forecast target utilization"
+        "name": "Smoothed forecast target utilization"
+      },
+      "forecast_instant_utilization_pct": {
+        "name": "Instant forecast target utilization"
       },
       "current_utilization_pct": {
         "name": "So-far target utilization"
@@ -116,6 +133,15 @@
       },
       "must_reduce_power": {
         "name": "MUST REDUCE budget power"
+      },
+      "sustained_can_add_power": {
+        "name": "Sustained CAN ADD power"
+      },
+      "sustained_must_reduce_power": {
+        "name": "Sustained MUST REDUCE power"
+      },
+      "sustained_forecast_quality": {
+        "name": "Sustained forecast quality"
       },
       "interval_elapsed_seconds": {
         "name": "Current quarter elapsed time"

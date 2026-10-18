@@ -5,12 +5,12 @@
       "already_configured": "Ta vir je že nastavljen."
     },
     "error": {
-      "mode_not_available_v0_1": "Ta način vira je načrtovan, vendar v V0.1 še ni povezan s Home Assistantom. Izberite en podpisan senzor trenutne moči."
+      "mode_not_available_v0_1": "Ta način vira ostaja načrtovan, vendar v V0.2 še ni povezan s Home Assistantom. Izberite en podpisan senzor trenutne moči."
     },
     "step": {
       "user": {
         "title": "Izberite vrsto vira omrežnih podatkov",
-        "description": "V0.1 deluje z enim podpisanim senzorjem trenutne moči. Drugi načini so prikazani kot načrtovana ogrodja in jih še ni mogoče shraniti.",
+        "description": "V0.2 deluje z enim podpisanim senzorjem trenutne moči. Drugi načini ostajajo načrtovani in jih še ni mogoče shraniti.",
         "data": {
           "source_mode": "Način vira"
         }
@@ -23,7 +23,9 @@
           "positive_means_import": "Pozitivna vrednost vira pomeni uvoz",
           "target_kw": "Dogovorjena moč",
           "safety_margin_kw": "Varnostna rezerva",
-          "smoothing_seconds": "Okno glajenja napovedi"
+          "smoothing_seconds": "Okno glajenja napovedi",
+          "sustained_horizon_minutes": "Obzorje napovedi trajne obremenitve",
+          "retention": "Hramba arhiva"
         }
       }
     }
@@ -32,11 +34,17 @@
     "step": {
       "init": {
         "title": "Nastavitve izračuna",
-        "description": "Operativni cilj je dogovorjena moč, zmanjšana za nenegativno varnostno rezervo.",
+        "description": "Vir in polariteto lahko spremenite brez brisanja integracije. Začasni testni pragovi so izločeni iz dejanske statistike prekoračitev.",
         "data": {
+          "power_entity": "Senzor moči omrežja",
+          "positive_means_import": "Pozitivna vrednost vira pomeni uvoz",
           "target_kw": "Dogovorjena moč",
           "safety_margin_kw": "Varnostna rezerva",
-          "smoothing_seconds": "Okno glajenja napovedi"
+          "smoothing_seconds": "Okno glajenja napovedi",
+          "sustained_horizon_minutes": "Obzorje napovedi trajne obremenitve",
+          "retention": "Hramba arhiva",
+          "simulation_enabled": "Omogoči začasni testni prag",
+          "simulation_target_kw": "Začasni testni prag"
         }
       }
     }
@@ -44,7 +52,7 @@
   "selector": {
     "source_mode": {
       "options": {
-        "signed_power": "En podpisan senzor trenutne moči (V0.1)",
+        "signed_power": "En podpisan senzor trenutne moči (V0.2)",
         "separate_power": "Ločena senzorja uvoza/izvoza (načrtovano)",
         "import_only": "Senzor samo uvozne moči (načrtovano)",
         "cumulative_energy": "Kumulativni števci energije (načrtovano)",
@@ -68,6 +76,12 @@
       },
       "import_power_15m_rolling": {
         "name": "Drseča 15-minutna uvozna moč"
+      },
+      "smoothed_signed_power": {
+        "name": "Glajena podpisana moč omrežja"
+      },
+      "smoothed_import_power": {
+        "name": "Glajena moč samo uvoza"
       },
       "current_interval_import_average": {
         "name": "Povprečni uvoz v trenutni fiksni četrtini"
@@ -106,7 +120,10 @@
         "name": "Glajena napoved končne moči"
       },
       "forecast_utilization_pct": {
-        "name": "Napovedana izkoriščenost cilja"
+        "name": "Glajena napovedana izkoriščenost cilja"
+      },
+      "forecast_instant_utilization_pct": {
+        "name": "Trenutna napovedana izkoriščenost cilja"
       },
       "current_utilization_pct": {
         "name": "Dosedanja izkoriščenost cilja"
@@ -116,6 +133,15 @@
       },
       "must_reduce_power": {
         "name": "Moč, ki jo MORATE ZMANJŠATI po proračunu"
+      },
+      "sustained_can_add_power": {
+        "name": "Trajna moč, ki jo LAHKO DODATE"
+      },
+      "sustained_must_reduce_power": {
+        "name": "Trajna moč, ki jo MORATE ZMANJŠATI"
+      },
+      "sustained_forecast_quality": {
+        "name": "Kakovost napovedi trajne obremenitve"
       },
       "interval_elapsed_seconds": {
         "name": "Pretečeni čas trenutne četrtine"

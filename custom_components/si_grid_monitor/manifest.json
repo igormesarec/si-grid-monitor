@@ -1,6 +1,9 @@
 {
   "domain": "si_grid_monitor",
   "name": "SI Grid Monitor",
+  "after_dependencies": [
+    "recorder"
+  ],
   "codeowners": [
     "@igormesarec"
   ],
@@ -10,5 +13,5 @@
   "iot_class": "local_push",
   "issue_tracker": "https://github.com/igormesarec/si-grid-monitor/issues",
   "requirements": [],
-  "version": "0.1.1"
+  "version": "0.2.0"
 }

@@ -1,4 +1,4 @@
-"""Binary sensor entities for SI Grid Monitor V0.1."""
+"""Binary sensor entities for SI Grid Monitor V0.2."""
 
 from __future__ import annotations
 
@@ -53,8 +53,7 @@ async def async_setup_entry(
 
     runtime: GridMonitorRuntime = entry.runtime_data
     async_add_entities(
-        SIGridBinarySensor(runtime, entry, description)
-        for description in BINARY_SENSORS
+        SIGridBinarySensor(runtime, entry, description) for description in BINARY_SENSORS
     )
 
 
@@ -84,9 +83,7 @@ class SIGridBinarySensor(BinarySensorEntity):
         snapshot = self.runtime.snapshot
         if snapshot is None:
             return False
-        return not (
-            self.entity_description.requires_fresh_input and snapshot.input_stale
-        )
+        return not (self.entity_description.requires_fresh_input and snapshot.input_stale)
 
     @property
     def is_on(self) -> bool | None:

@@ -13,20 +13,26 @@ from homeassistant.helpers import selector
 from .const import (
     CONF_POSITIVE_MEANS_IMPORT,
     CONF_POWER_ENTITY,
+    CONF_RETENTION,
     CONF_SAFETY_MARGIN_KW,
+    CONF_SIMULATION_ENABLED,
+    CONF_SIMULATION_TARGET_KW,
     CONF_SMOOTHING_SECONDS,
     CONF_SOURCE_MODE,
+    CONF_SUSTAINED_HORIZON_MINUTES,
     CONF_TARGET_KW,
+    DEFAULT_RETENTION,
     DEFAULT_SAFETY_MARGIN_KW,
     DEFAULT_SMOOTHING_SECONDS,
+    DEFAULT_SUSTAINED_HORIZON_MINUTES,
     DOMAIN,
-    MAX_SMOOTHING_SECONDS,
-    MIN_SMOOTHING_SECONDS,
+    SMOOTHING_PRESETS,
     SOURCE_ALIGNED_QUARTER,
     SOURCE_CUMULATIVE_ENERGY,
     SOURCE_IMPORT_ONLY,
     SOURCE_SEPARATE_POWER,
     SOURCE_SIGNED_POWER,
+    SUSTAINED_HORIZON_PRESETS,
 )
 
 SOURCE_MODES = (
@@ -55,13 +61,11 @@ def _number_selector(
 class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle the SI Grid Monitor setup flow."""
 
-    VERSION = 1
-    MINOR_VERSION = 1
+    VERSION = 2
+    MINOR_VERSION = 0
 
-    async def async_step_user(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
-        """Select a source design; V0.1 activates signed live power only."""
+    async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Select a source design; V0.2 activates signed live power only."""
 
         errors: dict[str, str] = {}
         if user_input is not None:
@@ -84,12 +88,14 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
         return self.async_show_form(step_id="user", data_schema=schema, errors=errors)
 
-    async def async_step_signed_power(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    async def async_step_signed_power(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Configure one signed live grid-power entity."""
 
         if user_input is not None:
+            user_input[CONF_SMOOTHING_SECONDS] = int(user_input[CONF_SMOOTHING_SECONDS])
+            user_input[CONF_SUSTAINED_HORIZON_MINUTES] = int(
+                user_input[CONF_SUSTAINED_HORIZON_MINUTES]
+            )
             entity_id = user_input[CONF_POWER_ENTITY]
             await self.async_set_unique_id(f"signed:{entity_id}")
             self._abort_if_unique_id_configured()
@@ -114,17 +120,29 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(
                         CONF_SAFETY_MARGIN_KW,
                         default=DEFAULT_SAFETY_MARGIN_KW,
-                    ): _number_selector(
-                        minimum=0.0, maximum=1000.0, step=0.01, unit="kW"
-                    ),
+                    ): _number_selector(minimum=0.0, maximum=1000.0, step=0.01, unit="kW"),
                     vol.Required(
                         CONF_SMOOTHING_SECONDS,
                         default=DEFAULT_SMOOTHING_SECONDS,
-                    ): _number_selector(
-                        minimum=MIN_SMOOTHING_SECONDS,
-                        maximum=MAX_SMOOTHING_SECONDS,
-                        step=1.0,
-                        unit="s",
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[str(value) for value in SMOOTHING_PRESETS],
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_RETENTION, default=DEFAULT_RETENTION
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(options=[DEFAULT_RETENTION])
+                    ),
+                    vol.Required(
+                        CONF_SUSTAINED_HORIZON_MINUTES,
+                        default=DEFAULT_SUSTAINED_HORIZON_MINUTES,
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[str(value) for value in SUSTAINED_HORIZON_PRESETS],
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
                     ),
                 }
             ),
@@ -141,45 +159,77 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
-    """Edit V0.1 calculation settings."""
+    """Edit V0.2 calculation settings."""
 
-    async def async_step_init(
-        self, user_input: dict[str, Any] | None = None
-    ) -> FlowResult:
+    async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Manage calculation options."""
 
         if user_input is not None:
+            user_input[CONF_SMOOTHING_SECONDS] = int(user_input[CONF_SMOOTHING_SECONDS])
+            user_input[CONF_SUSTAINED_HORIZON_MINUTES] = int(
+                user_input[CONF_SUSTAINED_HORIZON_MINUTES]
+            )
             return self.async_create_entry(title="", data=user_input)
 
         current = {**self.config_entry.data, **self.config_entry.options}
+        current_smoothing = int(current.get(CONF_SMOOTHING_SECONDS, DEFAULT_SMOOTHING_SECONDS))
+        smoothing_options = list(SMOOTHING_PRESETS)
+        if current_smoothing not in smoothing_options:
+            smoothing_options.append(current_smoothing)
+            smoothing_options.sort()
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(
                 {
                     vol.Required(
-                        CONF_TARGET_KW, default=current[CONF_TARGET_KW]
-                    ): _number_selector(
+                        CONF_POWER_ENTITY, default=current[CONF_POWER_ENTITY]
+                    ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
+                    vol.Required(
+                        CONF_POSITIVE_MEANS_IMPORT,
+                        default=current[CONF_POSITIVE_MEANS_IMPORT],
+                    ): selector.BooleanSelector(),
+                    vol.Required(CONF_TARGET_KW, default=current[CONF_TARGET_KW]): _number_selector(
                         minimum=0.0, maximum=1000.0, step=0.01, unit="kW"
                     ),
                     vol.Required(
                         CONF_SAFETY_MARGIN_KW,
-                        default=current.get(
-                            CONF_SAFETY_MARGIN_KW, DEFAULT_SAFETY_MARGIN_KW
-                        ),
-                    ): _number_selector(
-                        minimum=0.0, maximum=1000.0, step=0.01, unit="kW"
-                    ),
+                        default=current.get(CONF_SAFETY_MARGIN_KW, DEFAULT_SAFETY_MARGIN_KW),
+                    ): _number_selector(minimum=0.0, maximum=1000.0, step=0.01, unit="kW"),
                     vol.Required(
                         CONF_SMOOTHING_SECONDS,
-                        default=current.get(
-                            CONF_SMOOTHING_SECONDS, DEFAULT_SMOOTHING_SECONDS
-                        ),
-                    ): _number_selector(
-                        minimum=MIN_SMOOTHING_SECONDS,
-                        maximum=MAX_SMOOTHING_SECONDS,
-                        step=1.0,
-                        unit="s",
+                        default=str(current_smoothing),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[str(value) for value in smoothing_options],
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
                     ),
+                    vol.Required(
+                        CONF_RETENTION,
+                        default=current.get(CONF_RETENTION, DEFAULT_RETENTION),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(options=[DEFAULT_RETENTION])
+                    ),
+                    vol.Required(
+                        CONF_SUSTAINED_HORIZON_MINUTES,
+                        default=current.get(
+                            CONF_SUSTAINED_HORIZON_MINUTES,
+                            DEFAULT_SUSTAINED_HORIZON_MINUTES,
+                        ),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[str(value) for value in SUSTAINED_HORIZON_PRESETS],
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                        )
+                    ),
+                    vol.Required(
+                        CONF_SIMULATION_ENABLED,
+                        default=current.get(CONF_SIMULATION_ENABLED, False),
+                    ): selector.BooleanSelector(),
+                    vol.Required(
+                        CONF_SIMULATION_TARGET_KW,
+                        default=current.get(CONF_SIMULATION_TARGET_KW, current[CONF_TARGET_KW]),
+                    ): _number_selector(minimum=0.0, maximum=1000.0, step=0.01, unit="kW"),
                 }
             ),
         )

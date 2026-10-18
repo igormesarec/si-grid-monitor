@@ -187,9 +187,9 @@ class CumulativeEnergyAdapter:
         if previous_export is not None or current_export is not None:
             if previous_export is None or current_export is None or export_unit is None:
                 raise AdapterError("both export counter values and unit are required")
-            export_delta = energy_to_kwh(
-                current_export, export_unit
-            ) - energy_to_kwh(previous_export, export_unit)
+            export_delta = energy_to_kwh(current_export, export_unit) - energy_to_kwh(
+                previous_export, export_unit
+            )
             if export_delta < 0:
                 raise AdapterError("cumulative export counter reset or rolled over")
 
@@ -231,9 +231,7 @@ class AlignedQuarterAdapter:
         if import_kwh < 0:
             raise AdapterError("aligned import value must be nonnegative")
 
-        normalized_export = (
-            0.0 if export_kwh is None else _finite_number(export_kwh, "export_kwh")
-        )
+        normalized_export = 0.0 if export_kwh is None else _finite_number(export_kwh, "export_kwh")
         if normalized_export < 0:
             raise AdapterError("aligned export value must be nonnegative")
         return CompletedQuarter(
