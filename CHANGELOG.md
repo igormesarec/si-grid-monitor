@@ -4,6 +4,21 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-10-18
+
+### Changed
+
+- Optimized the transparent local-brand icons at 256 × 256 and 512 × 512
+  (`icon.png` and `icon@2x.png`).
+
+### Documentation
+
+- Documented the known HACS frontend limitation for locally supplied custom-
+  integration icons. Repository-side brand assets do not by themselves ensure
+  that the HACS listing displays the icon.
+
+## [0.1.0] - 2026-10-18
+
 ### Added
 
 - HACS-compatible Home Assistant custom-integration skeleton and UI config flow.
