@@ -9,6 +9,15 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 
+async def async_setup(hass: HomeAssistant, _config: dict[str, Any]) -> bool:
+    """Register the authenticated dashboard transport and bundled assets."""
+
+    from .dashboard import async_setup_dashboard
+
+    await async_setup_dashboard(hass)
+    return True
+
+
 def migrated_v3_settings(
     data: dict[str, Any], options: dict[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -69,6 +78,10 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         ):
             options[CONF_CONTRACTED_POWER_PERIODS] = "[]"
         hass.config_entries.async_update_entry(entry, options=options, version=3, minor_version=1)
+    if entry.version < 4:
+        # V0.4 keeps the schema-5 archive and authoritative serialized schedule
+        # unchanged; only the UI used to manage that schedule changes.
+        hass.config_entries.async_update_entry(entry, version=4, minor_version=0)
     return True
 
 
@@ -77,11 +90,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     from homeassistant.const import Platform
 
+    from .const import DOMAIN
+    from .dashboard import DATA_RUNTIMES, async_register_panel, async_setup_dashboard
     from .runtime import GridMonitorRuntime
+
+    await async_setup_dashboard(hass)
 
     runtime = GridMonitorRuntime(hass, entry)
     entry.runtime_data = runtime
     await runtime.async_start()
+    hass.data[DOMAIN][DATA_RUNTIMES][entry.entry_id] = runtime
+    await async_register_panel(hass)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     await hass.config_entries.async_forward_entry_setups(
         entry, (Platform.SENSOR, Platform.BINARY_SENSOR)
@@ -94,12 +113,19 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     from homeassistant.const import Platform
 
+    from .const import DOMAIN
+    from .dashboard import DATA_RUNTIMES, async_unregister_panel
+
     unload_ok = await hass.config_entries.async_unload_platforms(
         entry, (Platform.SENSOR, Platform.BINARY_SENSOR)
     )
     if unload_ok:
         runtime: Any = entry.runtime_data
         await runtime.async_stop()
+        runtimes = hass.data.get(DOMAIN, {}).get(DATA_RUNTIMES, {})
+        runtimes.pop(entry.entry_id, None)
+        if not runtimes:
+            async_unregister_panel(hass)
     return unload_ok
 
 
