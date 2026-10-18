@@ -1,0 +1,14 @@
+{
+  "domain": "si_grid_monitor",
+  "name": "SI Grid Monitor",
+  "codeowners": [
+    "@igormesarec"
+  ],
+  "config_flow": true,
+  "documentation": "https://github.com/igormesarec/si-grid-monitor",
+  "integration_type": "service",
+  "iot_class": "local_push",
+  "issue_tracker": "https://github.com/igormesarec/si-grid-monitor/issues",
+  "requirements": [],
+  "version": "0.1.0"
+}

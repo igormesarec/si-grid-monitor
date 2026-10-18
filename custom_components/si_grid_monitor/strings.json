@@ -1,0 +1,142 @@
+{
+  "title": "SI Grid Monitor",
+  "config": {
+    "abort": {
+      "already_configured": "This source is already configured."
+    },
+    "error": {
+      "mode_not_available_v0_1": "This source mode is designed but is not connected to Home Assistant in V0.1. Select signed live grid power."
+    },
+    "step": {
+      "user": {
+        "title": "Choose the grid source design",
+        "description": "V0.1 runs with one signed live grid-power sensor. Other modes are visible as planned capability scaffolding and cannot yet be saved.",
+        "data": {
+          "source_mode": "Source mode"
+        }
+      },
+      "signed_power": {
+        "title": "Configure signed live grid power",
+        "description": "Choose a W or kW sensor. SI Grid Monitor normalizes it to positive import and negative export. The target must be your explicitly chosen contractual value; 4.8 kW is not assumed.",
+        "data": {
+          "power_entity": "Grid power sensor",
+          "positive_means_import": "Positive source values mean import",
+          "target_kw": "Contractual target",
+          "safety_margin_kw": "Safety margin",
+          "smoothing_seconds": "Forecast smoothing window"
+        }
+      }
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Calculation settings",
+        "description": "The operational target is the contractual target minus the nonnegative safety margin.",
+        "data": {
+          "target_kw": "Contractual target",
+          "safety_margin_kw": "Safety margin",
+          "smoothing_seconds": "Forecast smoothing window"
+        }
+      }
+    }
+  },
+  "selector": {
+    "source_mode": {
+      "options": {
+        "signed_power": "One signed live grid-power sensor (V0.1)",
+        "separate_power": "Separate live import/export sensors (planned)",
+        "import_only": "Live import-only sensor (planned)",
+        "cumulative_energy": "Cumulative energy counters (planned)",
+        "aligned_quarter": "Aligned completed quarter records (planned)"
+      }
+    }
+  },
+  "entity": {
+    "sensor": {
+      "current_power": {
+        "name": "Current signed grid power"
+      },
+      "import_power": {
+        "name": "Current import power"
+      },
+      "export_power": {
+        "name": "Current export power"
+      },
+      "net_power_15m_rolling": {
+        "name": "Signed rolling 15-minute power"
+      },
+      "import_power_15m_rolling": {
+        "name": "Import-only rolling 15-minute power"
+      },
+      "current_interval_import_average": {
+        "name": "Current fixed-quarter import average"
+      },
+      "current_interval_signed_average": {
+        "name": "Current fixed-quarter signed average"
+      },
+      "last_completed_15m_import_demand": {
+        "name": "Last completed 15-minute import demand"
+      },
+      "last_completed_15m_signed_average": {
+        "name": "Last completed 15-minute signed average"
+      },
+      "quarter_import_kwh_so_far": {
+        "name": "Current quarter imported energy"
+      },
+      "quarter_export_kwh_so_far": {
+        "name": "Current quarter exported energy"
+      },
+      "target_kw": {
+        "name": "Contractual target"
+      },
+      "operational_target_kw": {
+        "name": "Operational target"
+      },
+      "quarter_budget_remaining_kwh": {
+        "name": "Current quarter remaining budget"
+      },
+      "allowed_import_until_end_kw": {
+        "name": "Allowed average import until quarter end"
+      },
+      "forecast_instant_kw": {
+        "name": "Instant final demand forecast"
+      },
+      "forecast_smoothed_kw": {
+        "name": "Smoothed final demand forecast"
+      },
+      "forecast_utilization_pct": {
+        "name": "Forecast target utilization"
+      },
+      "current_utilization_pct": {
+        "name": "So-far target utilization"
+      },
+      "can_add_power": {
+        "name": "CAN ADD budget power"
+      },
+      "must_reduce_power": {
+        "name": "MUST REDUCE budget power"
+      },
+      "interval_elapsed_seconds": {
+        "name": "Current quarter elapsed time"
+      },
+      "interval_remaining_seconds": {
+        "name": "Current quarter remaining time"
+      },
+      "data_quality": {
+        "name": "Calculation data quality"
+      }
+    },
+    "binary_sensor": {
+      "projected_exceedance": {
+        "name": "Projected target exceedance"
+      },
+      "unrecoverable_interval": {
+        "name": "Current quarter target unrecoverable"
+      },
+      "input_stale": {
+        "name": "Grid input stale"
+      }
+    }
+  }
+}
