@@ -9,11 +9,66 @@ if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
 
+def migrated_v3_settings(
+    data: dict[str, Any], options: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Copy a V0.2 effective target into all five V0.3 block targets."""
+
+    from .const import (
+        CONF_ALLOW_PROVISIONAL_TARIFF,
+        CONF_CONTRACTED_POWER_PERIODS,
+        CONF_TARGET_B1_KW,
+        CONF_TARGET_B2_KW,
+        CONF_TARGET_B3_KW,
+        CONF_TARGET_B4_KW,
+        CONF_TARGET_B5_KW,
+        CONF_TARGET_KW,
+        CONF_TARGET_MODE,
+        TARGET_MODE_SHARED,
+    )
+
+    migrated_data = dict(data)
+    migrated_options = dict(options)
+    effective = {**migrated_data, **migrated_options}
+    target = float(effective[CONF_TARGET_KW])
+    additions = {
+        CONF_TARGET_MODE: TARGET_MODE_SHARED,
+        CONF_TARGET_B1_KW: target,
+        CONF_TARGET_B2_KW: target,
+        CONF_TARGET_B3_KW: target,
+        CONF_TARGET_B4_KW: target,
+        CONF_TARGET_B5_KW: target,
+        CONF_ALLOW_PROVISIONAL_TARIFF: False,
+        # Historical settings have no auditable validity dates. Preserve their
+        # values, but require an explicit period before contractual advice.
+        CONF_CONTRACTED_POWER_PERIODS: "[]",
+    }
+    destination = migrated_options if CONF_TARGET_KW in migrated_options else migrated_data
+    for key, value in additions.items():
+        destination.setdefault(key, value)
+    return migrated_data, migrated_options
+
+
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Migrate V0.1 entries without changing saved user preferences."""
+    """Migrate old entries while preserving effective V0.2 preferences."""
 
     if entry.version < 2:
         hass.config_entries.async_update_entry(entry, version=2, minor_version=0)
+    if entry.version < 3:
+        data, options = migrated_v3_settings(dict(entry.data), dict(entry.options))
+        hass.config_entries.async_update_entry(
+            entry, data=data, options=options, version=3, minor_version=1
+        )
+    if entry.version == 3 and entry.minor_version < 1:
+        from .const import CONF_CONTRACTED_POWER_PERIODS
+
+        options = dict(entry.options)
+        if (
+            CONF_CONTRACTED_POWER_PERIODS not in entry.data
+            and CONF_CONTRACTED_POWER_PERIODS not in options
+        ):
+            options[CONF_CONTRACTED_POWER_PERIODS] = "[]"
+        hass.config_entries.async_update_entry(entry, options=options, version=3, minor_version=1)
     return True
 
 

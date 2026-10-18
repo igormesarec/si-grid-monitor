@@ -1,4 +1,4 @@
-"""Sensor entities for SI Grid Monitor V0.2."""
+"""Sensor entities for SI Grid Monitor."""
 
 from __future__ import annotations
 
@@ -18,7 +18,10 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.device_registry import DeviceInfo
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
-from .const import ATTR_BUDGET_HEADROOM_WARNING, CONF_TARGET_KW, DOMAIN
+from .const import (
+    ATTR_BUDGET_HEADROOM_WARNING,
+    DOMAIN,
+)
 from .engine import EngineSnapshot, round_for_display
 from .runtime import GridMonitorRuntime
 
@@ -27,7 +30,7 @@ from .runtime import GridMonitorRuntime
 class SIGridSensorDescription(SensorEntityDescription):
     """Describe an SI Grid Monitor sensor."""
 
-    value_fn: Callable[[EngineSnapshot, GridMonitorRuntime], float | str | None]
+    value_fn: Callable[[EngineSnapshot | None, GridMonitorRuntime], float | int | str | None]
     requires_fresh_input: bool = False
     budget_warning: bool = False
     display_precision: int | None = None
@@ -127,9 +130,7 @@ SENSORS: tuple[SIGridSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda snapshot, runtime: (
-            runtime.engine.completed[-1].import_demand_kw if runtime.engine.completed else None
-        ),
+        value_fn=lambda snapshot, runtime: runtime.last_completed_import_demand_kw,
     ),
     SIGridSensorDescription(
         key="last_completed_15m_signed_average",
@@ -137,9 +138,7 @@ SENSORS: tuple[SIGridSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
         device_class=SensorDeviceClass.POWER,
         state_class=SensorStateClass.MEASUREMENT,
-        value_fn=lambda snapshot, runtime: (
-            runtime.engine.completed[-1].signed_average_kw if runtime.engine.completed else None
-        ),
+        value_fn=lambda snapshot, runtime: runtime.last_completed_signed_average_kw,
     ),
     SIGridSensorDescription(
         key="quarter_import_kwh_so_far",
@@ -162,7 +161,139 @@ SENSORS: tuple[SIGridSensorDescription, ...] = (
         translation_key="target_kw",
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
         device_class=SensorDeviceClass.POWER,
-        value_fn=lambda snapshot, runtime: float(runtime.settings[CONF_TARGET_KW]),
+        value_fn=lambda snapshot, runtime: runtime.effective_target_kw,
+    ),
+    SIGridSensorDescription(
+        key="current_tariff_block",
+        translation_key="current_tariff_block",
+        value_fn=lambda snapshot, runtime: (
+            f"B{runtime.current_tariff.block}"
+            if runtime.current_tariff is not None and runtime.current_tariff.block is not None
+            else None
+        ),
+    ),
+    SIGridSensorDescription(
+        key="current_tariff_season",
+        translation_key="current_tariff_season",
+        value_fn=lambda snapshot, runtime: (
+            runtime.current_tariff.season.value if runtime.current_tariff is not None else None
+        ),
+    ),
+    SIGridSensorDescription(
+        key="current_tariff_day_type",
+        translation_key="current_tariff_day_type",
+        value_fn=lambda snapshot, runtime: (
+            runtime.current_tariff.day_type.value if runtime.current_tariff is not None else None
+        ),
+    ),
+    SIGridSensorDescription(
+        key="current_block_contracted_power",
+        translation_key="current_block_contracted_power",
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=SensorDeviceClass.POWER,
+        value_fn=lambda snapshot, runtime: (
+            runtime.target_for_tariff(runtime.current_tariff)
+            if runtime.current_tariff is not None
+            else None
+        ),
+    ),
+    SIGridSensorDescription(
+        key="next_tariff_block",
+        translation_key="next_tariff_block",
+        value_fn=lambda snapshot, runtime: (
+            f"B{runtime.next_tariff.block}"
+            if runtime.next_tariff is not None and runtime.next_tariff.block is not None
+            else None
+        ),
+    ),
+    SIGridSensorDescription(
+        key="time_to_next_tariff_block",
+        translation_key="time_to_next_tariff_block",
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        device_class=SensorDeviceClass.DURATION,
+        value_fn=lambda snapshot, runtime: runtime.time_to_next_tariff_seconds,
+    ),
+    SIGridSensorDescription(
+        key="next_block_contracted_power",
+        translation_key="next_block_contracted_power",
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=SensorDeviceClass.POWER,
+        value_fn=lambda snapshot, runtime: (
+            runtime.target_for_tariff(runtime.next_tariff)
+            if runtime.next_tariff is not None
+            else None
+        ),
+    ),
+    SIGridSensorDescription(
+        key="tariff_calendar_year",
+        translation_key="tariff_calendar_year",
+        value_fn=lambda snapshot, runtime: (
+            runtime.current_tariff.calendar_year if runtime.current_tariff is not None else None
+        ),
+    ),
+    SIGridSensorDescription(
+        key="tariff_rule_status",
+        translation_key="tariff_rule_status",
+        value_fn=lambda snapshot, runtime: (
+            runtime.current_tariff.rule_status.value
+            if runtime.current_tariff is not None
+            else "unavailable"
+        ),
+    ),
+    SIGridSensorDescription(
+        key="contracted_power_b1",
+        translation_key="contracted_power_b1",
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=SensorDeviceClass.POWER,
+        value_fn=lambda snapshot, runtime: (
+            runtime.current_block_targets_kw[0]
+            if runtime.current_block_targets_kw is not None
+            else None
+        ),
+    ),
+    SIGridSensorDescription(
+        key="contracted_power_b2",
+        translation_key="contracted_power_b2",
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=SensorDeviceClass.POWER,
+        value_fn=lambda snapshot, runtime: (
+            runtime.current_block_targets_kw[1]
+            if runtime.current_block_targets_kw is not None
+            else None
+        ),
+    ),
+    SIGridSensorDescription(
+        key="contracted_power_b3",
+        translation_key="contracted_power_b3",
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=SensorDeviceClass.POWER,
+        value_fn=lambda snapshot, runtime: (
+            runtime.current_block_targets_kw[2]
+            if runtime.current_block_targets_kw is not None
+            else None
+        ),
+    ),
+    SIGridSensorDescription(
+        key="contracted_power_b4",
+        translation_key="contracted_power_b4",
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=SensorDeviceClass.POWER,
+        value_fn=lambda snapshot, runtime: (
+            runtime.current_block_targets_kw[3]
+            if runtime.current_block_targets_kw is not None
+            else None
+        ),
+    ),
+    SIGridSensorDescription(
+        key="contracted_power_b5",
+        translation_key="contracted_power_b5",
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=SensorDeviceClass.POWER,
+        value_fn=lambda snapshot, runtime: (
+            runtime.current_block_targets_kw[4]
+            if runtime.current_block_targets_kw is not None
+            else None
+        ),
     ),
     SIGridSensorDescription(
         key="operational_target_kw",
@@ -299,6 +430,42 @@ SENSORS: tuple[SIGridSensorDescription, ...] = (
     ),
 )
 
+TARIFF_ONLY_SENSOR_KEYS = {
+    "current_tariff_block",
+    "current_tariff_season",
+    "current_tariff_day_type",
+    "current_block_contracted_power",
+    "next_tariff_block",
+    "time_to_next_tariff_block",
+    "next_block_contracted_power",
+    "tariff_calendar_year",
+    "tariff_rule_status",
+    "contracted_power_b1",
+    "contracted_power_b2",
+    "contracted_power_b3",
+    "contracted_power_b4",
+    "contracted_power_b5",
+}
+
+CONTRACTUAL_SENSOR_KEYS = {
+    "target_kw",
+    "operational_target_kw",
+    "quarter_budget_remaining_kwh",
+    "allowed_import_until_end_kw",
+    "forecast_instant_kw",
+    "forecast_smoothed_kw",
+    "forecast_utilization_pct",
+    "forecast_instant_utilization_pct",
+    "current_utilization_pct",
+    "can_add_power",
+    "must_reduce_power",
+}
+
+ARCHIVED_SENSOR_KEYS = {
+    "last_completed_15m_import_demand",
+    "last_completed_15m_signed_average",
+}
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -340,8 +507,14 @@ class SIGridSensor(SensorEntity):
     @property
     def available(self) -> bool:
         snapshot = self.runtime.snapshot
+        if self.entity_description.key in TARIFF_ONLY_SENSOR_KEYS:
+            return self.entity_description.value_fn(snapshot, self.runtime) is not None
+        if self.entity_description.key in ARCHIVED_SENSOR_KEYS:
+            return self.entity_description.value_fn(snapshot, self.runtime) is not None
         if snapshot is None:
             return False
+        if self.entity_description.key in CONTRACTUAL_SENSOR_KEYS:
+            return self.runtime.current_contractual_available
         if self.entity_description.key in {
             "sustained_can_add_power",
             "sustained_must_reduce_power",
@@ -357,9 +530,11 @@ class SIGridSensor(SensorEntity):
         return not (self.entity_description.requires_fresh_input and snapshot.input_stale)
 
     @property
-    def native_value(self) -> float | str | None:
+    def native_value(self) -> float | int | str | None:
         snapshot = self.runtime.snapshot
-        if snapshot is None:
+        if snapshot is None and self.entity_description.key not in (
+            TARIFF_ONLY_SENSOR_KEYS | ARCHIVED_SENSOR_KEYS
+        ):
             return None
         value = self.entity_description.value_fn(snapshot, self.runtime)
         precision = self.entity_description.display_precision
@@ -375,16 +550,20 @@ class SIGridSensor(SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
         snapshot = self.runtime.snapshot
-        if snapshot is None:
-            return {}
-        attributes: dict[str, Any] = {
-            "quality": snapshot.quality.value,
-            "coverage_seconds": round(snapshot.coverage_seconds, 3),
-            "gap_seconds": round(snapshot.gap_seconds, 3),
-            "input_stale": snapshot.input_stale,
-            "simulation_enabled": bool(self.runtime.settings.get("simulation_enabled", False)),
-        }
-        if self.entity_description.key.endswith("15m_rolling"):
+        attributes: dict[str, Any] = {}
+        if snapshot is not None:
+            attributes.update(
+                {
+                    "quality": snapshot.quality.value,
+                    "coverage_seconds": round(snapshot.coverage_seconds, 3),
+                    "gap_seconds": round(snapshot.gap_seconds, 3),
+                    "input_stale": snapshot.input_stale,
+                    "simulation_enabled": bool(
+                        self.runtime.settings.get("simulation_enabled", False)
+                    ),
+                }
+            )
+        if snapshot is not None and self.entity_description.key.endswith("15m_rolling"):
             window = (
                 snapshot.rolling_15m_import
                 if self.entity_description.key.startswith("import")
@@ -397,11 +576,11 @@ class SIGridSensor(SensorEntity):
                     "rolling_gap_seconds": round(window.gap_seconds, 3),
                 }
             )
-        if self.entity_description.budget_warning:
+        if snapshot is not None and self.entity_description.budget_warning:
             attributes["safety_warning"] = ATTR_BUDGET_HEADROOM_WARNING
             if snapshot.projection.unrecoverable:
                 attributes["advice_status"] = "cannot_restore_target"
-        if self.entity_description.key.startswith("sustained_"):
+        if snapshot is not None and self.entity_description.key.startswith("sustained_"):
             forecast = self.runtime.sustained_forecast
             if forecast is not None:
                 attributes.update(
@@ -418,7 +597,30 @@ class SIGridSensor(SensorEntity):
                         "reason": forecast.reason,
                     }
                 )
-        if self.entity_description.key in {
+            else:
+                attributes["reason"] = self.runtime.sustained_status_reason
+        if (
+            "tariff" in self.entity_description.key
+            or "block_contracted" in self.entity_description.key
+        ):
+            tariff = (
+                self.runtime.next_tariff
+                if self.entity_description.key.startswith("next")
+                else self.runtime.current_tariff
+            )
+            if tariff is not None:
+                attributes.update(
+                    {
+                        "rule_version": tariff.rule_version,
+                        "rule_status": tariff.rule_status.value,
+                        "source_reference": tariff.source_url,
+                        "holiday_name": tariff.holiday_name,
+                        "local_datetime": tariff.local_datetime,
+                        "utc_offset_seconds": tariff.utc_offset_seconds,
+                        "fold": tariff.fold,
+                    }
+                )
+        if snapshot is not None and self.entity_description.key in {
             "forecast_smoothed_kw",
             "forecast_utilization_pct",
         }:
@@ -432,6 +634,43 @@ class SIGridSensor(SensorEntity):
                     "forecast_basis": "time_weighted_import_only_power",
                 }
             )
+        if (
+            self.entity_description.key in CONTRACTUAL_SENSOR_KEYS
+            or "tariff" in self.entity_description.key
+            or "block_contracted" in self.entity_description.key
+        ):
+            attributes.update(
+                {
+                    "contractual_available": self.runtime.current_contractual_available,
+                    "contractual_confirmed": self.runtime.current_contractual_confirmed,
+                    "contractual_status_reason": self.runtime.contractual_status_reason,
+                }
+            )
+            assignment = self.runtime.current_assignment
+            if assignment is not None:
+                attributes.update(
+                    {
+                        "target_effective_from": assignment.effective_from,
+                        "target_effective_to": assignment.effective_to,
+                        "target_provenance": assignment.provenance,
+                        "target_recorded_on": assignment.recorded_on,
+                    }
+                )
+        if self.entity_description.key in {
+            "last_completed_15m_import_demand",
+            "last_completed_15m_signed_average",
+        }:
+            archived = self.runtime.archived_last_completed
+            if not self.runtime.engine.completed and archived is not None:
+                attributes.update(
+                    {
+                        "quality": archived.quality,
+                        "provenance": archived.provenance,
+                        "quarter_start_utc": archived.start_utc,
+                        "quarter_end_utc": archived.end_utc,
+                        "restored_from_archive": True,
+                    }
+                )
         return attributes
 
     async def async_added_to_hass(self) -> None:

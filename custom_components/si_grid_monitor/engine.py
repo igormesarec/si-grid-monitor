@@ -90,9 +90,9 @@ class CompletedQuarter:
 
 @dataclass(frozen=True, slots=True)
 class Projection:
-    operational_target_kw: float
-    budget_kwh: float
-    budget_remaining_kwh: float
+    operational_target_kw: float | None
+    budget_kwh: float | None
+    budget_remaining_kwh: float | None
     allowed_remaining_import_kw: float | None
     forecast_instant_kw: float | None
     forecast_smoothed_kw: float | None
@@ -101,7 +101,7 @@ class Projection:
     current_utilization_pct: float | None
     can_add_kw: float | None
     must_reduce_kw: float | None
-    unrecoverable: bool
+    unrecoverable: bool | None
     projected_exceedance: bool | None
 
     @property
@@ -258,6 +258,31 @@ def calculate_projection(
         must_reduce_kw=must_reduce,
         unrecoverable=unrecoverable,
         projected_exceedance=projected_exceedance,
+    )
+
+
+def unavailable_projection() -> Projection:
+    """Return an explicitly unavailable contractual projection.
+
+    Physical import/export accumulation and rolling measurements do not depend
+    on a tariff target.  This placeholder keeps those measurements publishable
+    without inventing contractual advice.
+    """
+
+    return Projection(
+        operational_target_kw=None,
+        budget_kwh=None,
+        budget_remaining_kwh=None,
+        allowed_remaining_import_kw=None,
+        forecast_instant_kw=None,
+        forecast_smoothed_kw=None,
+        forecast_instant_utilization_pct=None,
+        forecast_smoothed_utilization_pct=None,
+        current_utilization_pct=None,
+        can_add_kw=None,
+        must_reduce_kw=None,
+        unrecoverable=None,
+        projected_exceedance=None,
     )
 
 
@@ -473,7 +498,7 @@ class FixedQuarterEngine:
         self,
         *,
         now: datetime,
-        target_kw: float,
+        target_kw: float | None,
         safety_margin_kw: float = 0.0,
         smoothing_seconds: int = 120,
     ) -> EngineSnapshot:
@@ -493,14 +518,18 @@ class FixedQuarterEngine:
             end=now_utc, window_seconds=smoothing_seconds
         )
         smoothed_import_power = smoothed_import.value_kw if smoothed_import.complete else None
-        projection = calculate_projection(
-            target_kw=target_kw,
-            safety_margin_kw=safety_margin_kw,
-            import_kwh=self.import_kwh,
-            elapsed_hours=max(0.0, elapsed_seconds / 3600.0),
-            remaining_hours=max(0.0, remaining_seconds / 3600.0),
-            current_signed_power_kw=current_power,
-            smoothed_import_power_kw=smoothed_import_power,
+        projection = (
+            unavailable_projection()
+            if target_kw is None
+            else calculate_projection(
+                target_kw=target_kw,
+                safety_margin_kw=safety_margin_kw,
+                import_kwh=self.import_kwh,
+                elapsed_hours=max(0.0, elapsed_seconds / 3600.0),
+                remaining_hours=max(0.0, remaining_seconds / 3600.0),
+                current_signed_power_kw=current_power,
+                smoothed_import_power_kw=smoothed_import_power,
+            )
         )
         elapsed_hours = elapsed_seconds / 3600.0
         quality = (

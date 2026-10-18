@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from typing import Any
 
 from homeassistant.components.binary_sensor import BinarySensorEntity, BinarySensorEntityDescription
 from homeassistant.config_entries import ConfigEntry
@@ -83,6 +84,11 @@ class SIGridBinarySensor(BinarySensorEntity):
         snapshot = self.runtime.snapshot
         if snapshot is None:
             return False
+        if self.entity_description.key in {
+            "projected_exceedance",
+            "unrecoverable_interval",
+        }:
+            return self.runtime.current_contractual_available
         return not (self.entity_description.requires_fresh_input and snapshot.input_stale)
 
     @property
@@ -91,6 +97,23 @@ class SIGridBinarySensor(BinarySensorEntity):
         if snapshot is None:
             return None
         return self.entity_description.value_fn(snapshot)
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        if self.entity_description.key not in {
+            "projected_exceedance",
+            "unrecoverable_interval",
+        }:
+            return {}
+        tariff = self.runtime.current_tariff
+        return {
+            "contractual_available": self.runtime.current_contractual_available,
+            "contractual_confirmed": self.runtime.current_contractual_confirmed,
+            "contractual_status_reason": self.runtime.contractual_status_reason,
+            "tariff_rule_status": (
+                tariff.rule_status.value if tariff is not None else "unavailable"
+            ),
+        }
 
     async def async_added_to_hass(self) -> None:
         """Subscribe to runtime updates."""

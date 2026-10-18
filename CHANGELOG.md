@@ -4,8 +4,58 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-18
+
+### Added
+
+- Versioned Slovenian tariff calendar package with dedicated 2026–2030 rule
+  modules, Europe/Ljubljana DST handling and official work-free holidays.
+- Official URO 2026 and 2027 hourly block tables. The amended 2027 schedule is
+  effective 1 January 2027.
+- Explicit unavailable/provisional status for 2028–2030. The 2027 pattern is
+  continued only when the user deliberately enables provisional rules.
+- Five independent contracted-power settings, shared/per-block editing and an
+  automatic V0.2 migration that copies the old target to B1–B5.
+- Current/next block, season, day type, block target, transition countdown,
+  calendar year, rule status and five contracted-power sensors.
+- Daily, weekly, monthly, yearly, next-transition and upcoming-quarter calendar
+  query methods for future dashboard use.
+- SQLite schema 5 tariff, date-bound target and five-target configuration epochs.
+- A documented, date-bound real-world 2026 B1–B5 validation fixture and backend
+  contracted-power period model; fixture values remain user configuration and
+  are never substituted for defaults or migrated V0.2 targets.
+- A validated Options-flow JSON editor for multiple non-overlapping assignments,
+  including separate 2026–2030 validity periods and immutable target provenance.
+
+### Correctness
+
+- Current and sustained import-only calculations select the target independently
+  for every applicable fixed quarter.
+- Runtime calculations, target sensors, sustained forecasts and SQLite rows use
+  the dated assignment. Expiry leaves physical monitoring/archive active while
+  contractual outputs explicitly become unavailable.
+- Automated acceptance coverage verifies target selection, live advice,
+  forecasts, tariff transitions and archived confirmed exceedances against the
+  selected block target for the documented 2026 fixture.
+- Historical measurements and targets are not rewritten when calendar metadata
+  is added. Unknown rules/configuration and incomplete quarters cannot create
+  confirmed exceedances.
+
 ### Fixed
 
+- Missing or disabled provisional tariff rules no longer interrupt physical
+  import/export metering, fixed-quarter completion, SQLite writes or checkpoint
+  saving; only contractual forecasts and advice become unavailable.
+- Provisional-rule exceedances are stored as estimates with an explicit reason
+  and are excluded from legally confirmed exceedance counts.
+- Calendar annotation preserves historical `exceeded` and `excess_kw` values;
+  verification status and confirmed exceedance are stored separately.
+- The last completed quarter is restored from SQLite for sensor presentation
+  after restart, including its quality and provenance.
+- Tariff-policy changes create configuration epochs and completed rows retain the
+  policy that applied when they were recorded.
+- V0.2 targets remain preserved in their legacy fields, but migration does not
+  invent validity dates or treat them as a confirmed dated assignment.
 - Recorder backfill now replays each historical source/sign configuration epoch
   and its effective contractual target instead of applying current settings to
   older measurements. Unknown or mixed provenance suppresses exceedance claims.

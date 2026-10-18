@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any
 
 import voluptuous as vol
@@ -11,6 +12,10 @@ from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
 from .const import (
+    CONF_ALLOW_PROVISIONAL_TARIFF,
+    CONF_ASSIGNMENT_END_DATE,
+    CONF_ASSIGNMENT_START_DATE,
+    CONF_CONTRACTED_POWER_PERIODS,
     CONF_POSITIVE_MEANS_IMPORT,
     CONF_POWER_ENTITY,
     CONF_RETENTION,
@@ -20,7 +25,13 @@ from .const import (
     CONF_SMOOTHING_SECONDS,
     CONF_SOURCE_MODE,
     CONF_SUSTAINED_HORIZON_MINUTES,
+    CONF_TARGET_B1_KW,
+    CONF_TARGET_B2_KW,
+    CONF_TARGET_B3_KW,
+    CONF_TARGET_B4_KW,
+    CONF_TARGET_B5_KW,
     CONF_TARGET_KW,
+    CONF_TARGET_MODE,
     DEFAULT_RETENTION,
     DEFAULT_SAFETY_MARGIN_KW,
     DEFAULT_SMOOTHING_SECONDS,
@@ -33,6 +44,13 @@ from .const import (
     SOURCE_SEPARATE_POWER,
     SOURCE_SIGNED_POWER,
     SUSTAINED_HORIZON_PRESETS,
+    TARGET_MODE_PER_BLOCK,
+    TARGET_MODE_SHARED,
+)
+from .contracted_power import (
+    ContractedPowerPeriod,
+    ContractedPowerSchedule,
+    contracted_power_schedule_from_json,
 )
 
 SOURCE_MODES = (
@@ -58,14 +76,18 @@ def _number_selector(
     )
 
 
+def _as_date(value: date | str) -> date:
+    return value if isinstance(value, date) else date.fromisoformat(value)
+
+
 class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Handle the SI Grid Monitor setup flow."""
 
-    VERSION = 2
-    MINOR_VERSION = 0
+    VERSION = 3
+    MINOR_VERSION = 1
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        """Select a source design; V0.2 activates signed live power only."""
+        """Select a source design; V0.3 activates signed live power only."""
 
         errors: dict[str, str] = {}
         if user_input is not None:
@@ -91,18 +113,45 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_signed_power(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Configure one signed live grid-power entity."""
 
+        errors: dict[str, str] = {}
         if user_input is not None:
             user_input[CONF_SMOOTHING_SECONDS] = int(user_input[CONF_SMOOTHING_SECONDS])
             user_input[CONF_SUSTAINED_HORIZON_MINUTES] = int(
                 user_input[CONF_SUSTAINED_HORIZON_MINUTES]
             )
             entity_id = user_input[CONF_POWER_ENTITY]
-            await self.async_set_unique_id(f"signed:{entity_id}")
-            self._abort_if_unique_id_configured()
-            return self.async_create_entry(
-                title=f"SI Grid Monitor ({entity_id})",
-                data={CONF_SOURCE_MODE: SOURCE_SIGNED_POWER, **user_input},
+            target = float(user_input[CONF_TARGET_KW])
+            try:
+                period = ContractedPowerPeriod(
+                    effective_from=_as_date(user_input.pop(CONF_ASSIGNMENT_START_DATE)),
+                    effective_to=_as_date(user_input.pop(CONF_ASSIGNMENT_END_DATE)),
+                    block_targets_kw=(target, target, target, target, target),
+                    provenance="user_configured",
+                )
+            except ValueError:
+                errors["base"] = "invalid_contracted_power_periods"
+            else:
+                user_input[CONF_CONTRACTED_POWER_PERIODS] = ContractedPowerSchedule(
+                    (period,)
+                ).to_json()
+            user_input.update(
+                {
+                    CONF_TARGET_MODE: TARGET_MODE_SHARED,
+                    CONF_TARGET_B1_KW: target,
+                    CONF_TARGET_B2_KW: target,
+                    CONF_TARGET_B3_KW: target,
+                    CONF_TARGET_B4_KW: target,
+                    CONF_TARGET_B5_KW: target,
+                    CONF_ALLOW_PROVISIONAL_TARIFF: False,
+                }
             )
+            if not errors:
+                await self.async_set_unique_id(f"signed:{entity_id}")
+                self._abort_if_unique_id_configured()
+                return self.async_create_entry(
+                    title=f"SI Grid Monitor ({entity_id})",
+                    data={CONF_SOURCE_MODE: SOURCE_SIGNED_POWER, **user_input},
+                )
 
         return self.async_show_form(
             step_id="signed_power",
@@ -117,6 +166,8 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(CONF_TARGET_KW): _number_selector(
                         minimum=0.0, maximum=1000.0, step=0.01, unit="kW"
                     ),
+                    vol.Required(CONF_ASSIGNMENT_START_DATE): selector.DateSelector(),
+                    vol.Required(CONF_ASSIGNMENT_END_DATE): selector.DateSelector(),
                     vol.Required(
                         CONF_SAFETY_MARGIN_KW,
                         default=DEFAULT_SAFETY_MARGIN_KW,
@@ -146,6 +197,7 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     ),
                 }
             ),
+            errors=errors,
         )
 
     @staticmethod
@@ -159,20 +211,43 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
 
 class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
-    """Edit V0.2 calculation settings."""
+    """Edit calculation and tariff settings."""
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Manage calculation options."""
 
+        errors: dict[str, str] = {}
         if user_input is not None:
             user_input[CONF_SMOOTHING_SECONDS] = int(user_input[CONF_SMOOTHING_SECONDS])
             user_input[CONF_SUSTAINED_HORIZON_MINUTES] = int(
                 user_input[CONF_SUSTAINED_HORIZON_MINUTES]
             )
-            return self.async_create_entry(title="", data=user_input)
+            if user_input[CONF_TARGET_MODE] == TARGET_MODE_SHARED:
+                shared = float(user_input[CONF_TARGET_KW])
+                for key in (
+                    CONF_TARGET_B1_KW,
+                    CONF_TARGET_B2_KW,
+                    CONF_TARGET_B3_KW,
+                    CONF_TARGET_B4_KW,
+                    CONF_TARGET_B5_KW,
+                ):
+                    user_input[key] = shared
+            try:
+                user_input[CONF_CONTRACTED_POWER_PERIODS] = contracted_power_schedule_from_json(
+                    user_input[CONF_CONTRACTED_POWER_PERIODS]
+                ).to_json()
+            except ValueError:
+                errors["base"] = "invalid_contracted_power_periods"
+            else:
+                return self.async_create_entry(title="", data=user_input)
 
-        current = {**self.config_entry.data, **self.config_entry.options}
+        current = (
+            user_input
+            if user_input is not None
+            else {**self.config_entry.data, **self.config_entry.options}
+        )
         current_smoothing = int(current.get(CONF_SMOOTHING_SECONDS, DEFAULT_SMOOTHING_SECONDS))
+        legacy_target = float(current[CONF_TARGET_KW])
         smoothing_options = list(SMOOTHING_PRESETS)
         if current_smoothing not in smoothing_options:
             smoothing_options.append(current_smoothing)
@@ -191,6 +266,44 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
                     vol.Required(CONF_TARGET_KW, default=current[CONF_TARGET_KW]): _number_selector(
                         minimum=0.0, maximum=1000.0, step=0.01, unit="kW"
                     ),
+                    vol.Required(
+                        CONF_TARGET_MODE,
+                        default=current.get(CONF_TARGET_MODE, TARGET_MODE_SHARED),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[TARGET_MODE_SHARED, TARGET_MODE_PER_BLOCK],
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                            translation_key="target_mode",
+                        )
+                    ),
+                    vol.Required(
+                        CONF_TARGET_B1_KW,
+                        default=current.get(CONF_TARGET_B1_KW, legacy_target),
+                    ): _number_selector(minimum=0.0, maximum=1000.0, step=0.01, unit="kW"),
+                    vol.Required(
+                        CONF_TARGET_B2_KW,
+                        default=current.get(CONF_TARGET_B2_KW, legacy_target),
+                    ): _number_selector(minimum=0.0, maximum=1000.0, step=0.01, unit="kW"),
+                    vol.Required(
+                        CONF_TARGET_B3_KW,
+                        default=current.get(CONF_TARGET_B3_KW, legacy_target),
+                    ): _number_selector(minimum=0.0, maximum=1000.0, step=0.01, unit="kW"),
+                    vol.Required(
+                        CONF_TARGET_B4_KW,
+                        default=current.get(CONF_TARGET_B4_KW, legacy_target),
+                    ): _number_selector(minimum=0.0, maximum=1000.0, step=0.01, unit="kW"),
+                    vol.Required(
+                        CONF_TARGET_B5_KW,
+                        default=current.get(CONF_TARGET_B5_KW, legacy_target),
+                    ): _number_selector(minimum=0.0, maximum=1000.0, step=0.01, unit="kW"),
+                    vol.Required(
+                        CONF_ALLOW_PROVISIONAL_TARIFF,
+                        default=current.get(CONF_ALLOW_PROVISIONAL_TARIFF, False),
+                    ): selector.BooleanSelector(),
+                    vol.Required(
+                        CONF_CONTRACTED_POWER_PERIODS,
+                        default=current.get(CONF_CONTRACTED_POWER_PERIODS, "[]"),
+                    ): selector.TextSelector(selector.TextSelectorConfig(multiline=True)),
                     vol.Required(
                         CONF_SAFETY_MARGIN_KW,
                         default=current.get(CONF_SAFETY_MARGIN_KW, DEFAULT_SAFETY_MARGIN_KW),
@@ -232,4 +345,5 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
                     ): _number_selector(minimum=0.0, maximum=1000.0, step=0.01, unit="kW"),
                 }
             ),
+            errors=errors,
         )

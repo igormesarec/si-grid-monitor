@@ -5,12 +5,13 @@
       "already_configured": "This source is already configured."
     },
     "error": {
-      "mode_not_available_v0_1": "This source mode remains planned but is not connected to Home Assistant in V0.2. Select signed live grid power."
+      "mode_not_available_v0_1": "This source mode remains planned but is not connected to Home Assistant in V0.3. Select signed live grid power.",
+      "invalid_contracted_power_periods": "Contracted-power assignments are invalid, overlapping, or have an end date before the start date."
     },
     "step": {
       "user": {
         "title": "Choose the grid source design",
-        "description": "V0.2 runs with one signed live grid-power sensor. Other modes remain planned and cannot yet be saved.",
+        "description": "V0.3 runs with one signed live grid-power sensor. Other modes remain planned and cannot yet be saved.",
         "data": {
           "source_mode": "Source mode"
         }
@@ -22,6 +23,8 @@
           "power_entity": "Grid power sensor",
           "positive_means_import": "Positive source values mean import",
           "target_kw": "Contractual target",
+          "assignment_start_date": "Contracted-power validity start",
+          "assignment_end_date": "Contracted-power validity end",
           "safety_margin_kw": "Safety margin",
           "smoothing_seconds": "Forecast smoothing window",
           "sustained_horizon_minutes": "Sustained load forecast horizon",
@@ -34,11 +37,19 @@
     "step": {
       "init": {
         "title": "Calculation settings",
-        "description": "Change source and polarity without deleting the integration. Simulation thresholds are excluded from genuine contractual exceedance statistics.",
+        "description": "Change settings without deleting the integration. Contractual calculations use the validated JSON assignments below; dates are inclusive and periods must not overlap. The separate legacy target fields remain for upgrade compatibility. Simulation thresholds are excluded from genuine contractual exceedance statistics.",
         "data": {
           "power_entity": "Grid power sensor",
           "positive_means_import": "Positive source values mean import",
           "target_kw": "Contractual target",
+          "target_mode": "Contracted-power mode",
+          "target_b1_kw": "Block 1 contracted power",
+          "target_b2_kw": "Block 2 contracted power",
+          "target_b3_kw": "Block 3 contracted power",
+          "target_b4_kw": "Block 4 contracted power",
+          "target_b5_kw": "Block 5 contracted power",
+          "allow_provisional_tariff": "Allow provisional continuation for unverified years",
+          "contracted_power_periods": "Date-bound contracted-power assignments (JSON)",
           "safety_margin_kw": "Safety margin",
           "smoothing_seconds": "Forecast smoothing window",
           "sustained_horizon_minutes": "Sustained load forecast horizon",
@@ -52,11 +63,17 @@
   "selector": {
     "source_mode": {
       "options": {
-        "signed_power": "One signed live grid-power sensor (V0.2)",
+        "signed_power": "One signed live grid-power sensor (V0.3)",
         "separate_power": "Separate live import/export sensors (planned)",
         "import_only": "Live import-only sensor (planned)",
         "cumulative_energy": "Cumulative energy counters (planned)",
         "aligned_quarter": "Aligned completed quarter records (planned)"
+      }
+    },
+    "target_mode": {
+      "options": {
+        "shared": "Use one value for all five blocks",
+        "per_block": "Set each block separately"
       }
     }
   },
@@ -102,7 +119,49 @@
         "name": "Current quarter exported energy"
       },
       "target_kw": {
-        "name": "Contractual target"
+        "name": "Current block contractual target"
+      },
+      "current_tariff_block": {
+        "name": "Current tariff block"
+      },
+      "current_tariff_season": {
+        "name": "Current tariff season"
+      },
+      "current_tariff_day_type": {
+        "name": "Current tariff day type"
+      },
+      "current_block_contracted_power": {
+        "name": "Current block contracted power"
+      },
+      "next_tariff_block": {
+        "name": "Next tariff block"
+      },
+      "time_to_next_tariff_block": {
+        "name": "Time until next tariff block"
+      },
+      "next_block_contracted_power": {
+        "name": "Next block contracted power"
+      },
+      "tariff_calendar_year": {
+        "name": "Tariff calendar year"
+      },
+      "tariff_rule_status": {
+        "name": "Tariff rule status"
+      },
+      "contracted_power_b1": {
+        "name": "Contracted power B1"
+      },
+      "contracted_power_b2": {
+        "name": "Contracted power B2"
+      },
+      "contracted_power_b3": {
+        "name": "Contracted power B3"
+      },
+      "contracted_power_b4": {
+        "name": "Contracted power B4"
+      },
+      "contracted_power_b5": {
+        "name": "Contracted power B5"
       },
       "operational_target_kw": {
         "name": "Operational target"

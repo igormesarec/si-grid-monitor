@@ -1,4 +1,4 @@
-# SI Grid Monitor V0.2 — Real Home Assistant Test Plan
+# SI Grid Monitor V0.3 — Real Home Assistant Test Plan
 
 Use a disposable or backed-up Home Assistant instance. Never infer physical
 connection capacity from CAN ADD values.
@@ -37,6 +37,33 @@ connection capacity from CAN ADD values.
 5. Apply a sudden +3 kW step. Confirm the instantaneous conservative scenario
    changes sustained advice immediately before the smoothed path catches up.
 6. Confirm stale/incomplete history publishes a reason instead of a safe value.
+7. Upgrade a V0.2 entry and confirm its old target remains identically in the
+   legacy B1–B5 fields, but contractual sensors are unavailable because no
+   validity dates were invented. Add an explicit dated assignment in Options,
+   reload and verify current/next target sensors follow block transitions.
+8. Run a sustained forecast across a block boundary and confirm each future
+   quarter uses its own block target, especially when the next target is lower.
+9. Configure the documented values in `REAL_WORLD_VALIDATION.md` (B1 3.50,
+   B2 3.90, B3 4.10, B4/B5 4.20 kW) only in a suitable test entry. During 2026,
+   verify the active target, utilization, forecasts, CAN ADD and MUST REDUCE at
+   representative B1–B5 intervals and immediately across a block transition.
+   Do not apply this user-specific assignment to another installation or year.
+
+## Tariff calendar
+
+1. Compare current block, season and day type with the official URO 2026/2027
+   table and Moj Elektro for the same local interval. Distributor data remains
+   authoritative; report any discrepancy with UTC time, offset and fold.
+2. Check a normal weekday, Saturday, Sunday, weekday holiday and weekend holiday
+   in both seasons. Verify the holiday name remains visible on weekends.
+3. Check 31 December/1 January and the February/March and October/November season
+   transitions. Check the 1 January 2027 rule-version change.
+4. On DST spring-forward and autumn fallback, confirm 23/25 hourly calendar rows,
+   no invented local hour and two distinct repeated 02:00 rows with different
+   offsets/folds.
+5. Keep provisional rules disabled and inspect 2028–2030: status must be
+   unverified and the block unavailable. Enable provisional continuation and
+   confirm every result is visibly labeled provisional, never official.
 
 ## Archive and recorder
 
@@ -61,6 +88,26 @@ connection capacity from CAN ADD values.
 8. Create a missing-data quarter with some observed import. Confirm its partial
    energy remains inspectable but is excluded from valid contractual totals,
    demand maxima, averages and exceedance counts.
+9. Inspect a new schema-5 row for tariff block, calendar year, season, day type,
+   rule version/status/source and the effective immutable block target.
+10. Upgrade a copy of a V0.2 database. Confirm each configuration epoch's common
+    target migrated to B1–B5 and no measurement or existing target was rewritten.
+11. Restart with no current live state and confirm last-completed demand restores
+    from SQLite with its quality and provenance.
+12. With provisional tariffs disabled, cross from 2027-12-31 into 2028 and test
+    representative quarters in 2028–2030. Physical power, energy, archive rows
+    and checkpoints must continue while contractual advice is unavailable.
+13. Enable provisional tariffs and confirm advice includes provisional status
+    and a reason. A provisional exceedance must not increase the confirmed count.
+14. Toggle provisional policy and reload. Previously completed rows must retain
+    their original policy and rule status.
+15. With the documented 2026 fixture configured, inspect completed rows from
+    each block. Confirm they retain the effective target and provenance, and an
+    exceedance is confirmed only against that quarter's official block target.
+16. Advance across 31 December 2026 with only the documented 2026 assignment.
+    Confirm 2027 physical power and archive rows continue, while target,
+    utilization, forecasts and advice are unavailable with an expired/missing
+    assignment reason. Then add a separate 2027 assignment and reload.
 
 ## Lifecycle and observations to report
 

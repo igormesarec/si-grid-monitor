@@ -20,11 +20,13 @@ from homeassistant.util import dt as dt_util
 
 from .adapters import AdapterError, SignedPowerAdapter
 from .archive import (
+    ArchivedQuarterSnapshot,
     ConfigurationEpoch,
     ConfigurationResolution,
     ConfigurationStatus,
     QuarterArchive,
     archive_record_from_quarter,
+    tariff_for_configuration,
 )
 from .backfill import (
     HistoricalPowerReading,
@@ -32,6 +34,8 @@ from .backfill import (
     reconstruct_quarters,
 )
 from .const import (
+    CONF_ALLOW_PROVISIONAL_TARIFF,
+    CONF_CONTRACTED_POWER_PERIODS,
     CONF_POSITIVE_MEANS_IMPORT,
     CONF_POWER_ENTITY,
     CONF_RETENTION,
@@ -40,12 +44,22 @@ from .const import (
     CONF_SIMULATION_TARGET_KW,
     CONF_SMOOTHING_SECONDS,
     CONF_SUSTAINED_HORIZON_MINUTES,
+    CONF_TARGET_B1_KW,
+    CONF_TARGET_B2_KW,
+    CONF_TARGET_B3_KW,
+    CONF_TARGET_B4_KW,
+    CONF_TARGET_B5_KW,
     CONF_TARGET_KW,
     DEFAULT_RETENTION,
     DEFAULT_SAFETY_MARGIN_KW,
     DEFAULT_SMOOTHING_SECONDS,
     DEFAULT_STALE_AFTER_SECONDS,
     DEFAULT_SUSTAINED_HORIZON_MINUTES,
+)
+from .contracted_power import (
+    ContractedPowerPeriod,
+    ContractedPowerSchedule,
+    contracted_power_schedule_from_json,
 )
 from .engine import (
     EPSILON,
@@ -58,6 +72,8 @@ from .engine import (
     quarter_bounds,
 )
 from .sustained import SustainedForecast, calculate_sustained_forecast
+from .tariffs import SlovenianTariffCalendar, TariffClassification
+from .tariffs.models import RuleStatus
 from .task_queue import ArchiveTaskQueue
 
 _LOGGER = logging.getLogger(__name__)
@@ -82,6 +98,26 @@ class GridMonitorRuntime:
         )
         self.snapshot: EngineSnapshot | None = None
         self.sustained_forecast: SustainedForecast | None = None
+        self.tariff_calendar = SlovenianTariffCalendar(
+            allow_provisional=bool(configured.get(CONF_ALLOW_PROVISIONAL_TARIFF, False))
+        )
+        try:
+            self.contracted_power_schedule = contracted_power_schedule_from_json(
+                configured.get(CONF_CONTRACTED_POWER_PERIODS, "[]")
+            )
+            self._contracted_power_configuration_error: str | None = None
+        except ValueError as err:
+            self.contracted_power_schedule = ContractedPowerSchedule(())
+            self._contracted_power_configuration_error = str(err)
+        self.current_tariff: TariffClassification | None = None
+        self.next_tariff: TariffClassification | None = None
+        self.time_to_next_tariff_seconds: float | None = None
+        self._tariff_signature: tuple[object, ...] | None = None
+        self.current_contractual_available = False
+        self.current_contractual_confirmed = False
+        self.contractual_status_reason: str | None = None
+        self.sustained_status_reason: str | None = None
+        self.archived_last_completed: ArchivedQuarterSnapshot | None = None
         self._listeners: set[Callable[[], None]] = set()
         self._unsubscribers: list[Callable[[], None]] = []
         self.namespace = entry.entry_id
@@ -101,8 +137,16 @@ class GridMonitorRuntime:
         """Return effective editable settings."""
 
         data = {**self.entry.data, **self.entry.options}
+        legacy_target = float(data[CONF_TARGET_KW])
         return {
             CONF_TARGET_KW: float(data[CONF_TARGET_KW]),
+            CONF_TARGET_B1_KW: float(data.get(CONF_TARGET_B1_KW, legacy_target)),
+            CONF_TARGET_B2_KW: float(data.get(CONF_TARGET_B2_KW, legacy_target)),
+            CONF_TARGET_B3_KW: float(data.get(CONF_TARGET_B3_KW, legacy_target)),
+            CONF_TARGET_B4_KW: float(data.get(CONF_TARGET_B4_KW, legacy_target)),
+            CONF_TARGET_B5_KW: float(data.get(CONF_TARGET_B5_KW, legacy_target)),
+            CONF_ALLOW_PROVISIONAL_TARIFF: bool(data.get(CONF_ALLOW_PROVISIONAL_TARIFF, False)),
+            CONF_CONTRACTED_POWER_PERIODS: str(data.get(CONF_CONTRACTED_POWER_PERIODS, "[]")),
             CONF_SAFETY_MARGIN_KW: float(data.get(CONF_SAFETY_MARGIN_KW, DEFAULT_SAFETY_MARGIN_KW)),
             CONF_SMOOTHING_SECONDS: int(
                 data.get(CONF_SMOOTHING_SECONDS, DEFAULT_SMOOTHING_SECONDS)
@@ -121,32 +165,87 @@ class GridMonitorRuntime:
         }
 
     @property
-    def effective_target_kw(self) -> float:
+    def effective_target_kw(self) -> float | None:
         settings = self.settings
-        return float(
-            settings[CONF_SIMULATION_TARGET_KW]
-            if settings[CONF_SIMULATION_ENABLED]
-            else settings[CONF_TARGET_KW]
-        )
+        if settings[CONF_SIMULATION_ENABLED]:
+            return float(settings[CONF_SIMULATION_TARGET_KW])
+        tariff = self.current_tariff or self.tariff_calendar.classify(dt_util.utcnow())
+        target = self.target_for_tariff(tariff)
+        return target
+
+    @property
+    def last_completed_import_demand_kw(self) -> float | None:
+        if self.engine.completed:
+            return self.engine.completed[-1].import_demand_kw
+        if self.archived_last_completed is not None:
+            return self.archived_last_completed.import_demand_kw
+        return None
+
+    @property
+    def last_completed_signed_average_kw(self) -> float | None:
+        if self.engine.completed:
+            return self.engine.completed[-1].signed_average_kw
+        if self.archived_last_completed is not None:
+            return self.archived_last_completed.signed_average_kw
+        return None
+
+    @property
+    def current_assignment(self) -> ContractedPowerPeriod | None:
+        tariff = self.current_tariff or self.tariff_calendar.classify(dt_util.utcnow())
+        return self.contracted_power_schedule.period_for(tariff.local_datetime.date())
+
+    @property
+    def current_block_targets_kw(self) -> tuple[float, ...] | None:
+        assignment = self.current_assignment
+        return assignment.block_targets_kw if assignment is not None else None
+
+    def target_for_tariff(self, tariff: TariffClassification) -> float | None:
+        return self.contracted_power_schedule.target_for(tariff)
+
+    def _operational_target_for_quarter(
+        self, start: datetime, _end: datetime, safety_margin_kw: float
+    ) -> float:
+        settings = self.settings
+        if settings[CONF_SIMULATION_ENABLED]:
+            contracted = float(settings[CONF_SIMULATION_TARGET_KW])
+        else:
+            tariff = self.tariff_calendar.classify(start)
+            selected = self.target_for_tariff(tariff)
+            if selected is None:
+                raise CalculationError(
+                    f"tariff target unavailable for {start.astimezone(UTC).isoformat()}"
+                )
+            contracted = selected
+        return max(0.0, contracted - safety_margin_kw)
 
     async def async_start(self) -> None:
         """Read the current state and register state/timer listeners."""
 
         await self.hass.async_add_executor_job(self.archive.open)
         startup_settings = self.settings
+        targets = self.current_block_targets_kw or (None, None, None, None, None)
         self.configuration_epoch = await self.hass.async_add_executor_job(
             partial(
                 self.archive.register_configuration_epoch,
                 namespace=self.namespace,
                 source_id=self.power_entity,
                 positive_means_import=self.positive_means_import,
-                contractual_target_kw=float(startup_settings[CONF_TARGET_KW]),
+                contractual_target_kw=targets[0],
                 safety_margin_kw=float(startup_settings[CONF_SAFETY_MARGIN_KW]),
+                block_targets_kw=targets,
+                allow_provisional_tariff=bool(startup_settings[CONF_ALLOW_PROVISIONAL_TARIFF]),
+                contracted_power_schedule=self.contracted_power_schedule,
                 effective_utc=dt_util.utcnow(),
             )
         )
-        checkpoint = await self.hass.async_add_executor_job(
-            self.archive.load_checkpoint, self.namespace
+        await self.hass.async_add_executor_job(
+            self.archive.classify_existing_quarters,
+            self.namespace,
+            self.tariff_calendar.classify_rule,
+        )
+        checkpoint, self.archived_last_completed = await asyncio.gather(
+            self.hass.async_add_executor_job(self.archive.load_checkpoint, self.namespace),
+            self.hass.async_add_executor_job(self.archive.load_latest_quarter, self.namespace),
         )
         if checkpoint is not None:
             self.engine.restore_checkpoint(checkpoint)
@@ -233,43 +332,107 @@ class GridMonitorRuntime:
 
     @callback
     def _refresh(self, now) -> None:
-        if self.engine.last_sample is None:
-            return
         settings = self.settings
+        now_utc = now.astimezone(UTC)
+        current_tariff = self.tariff_calendar.classify(now_utc)
+        signature = (
+            current_tariff.block,
+            current_tariff.rule_version,
+            current_tariff.rule_status,
+        )
+        if (
+            signature != self._tariff_signature
+            or self.next_tariff is None
+            or self.next_tariff.timestamp_utc <= now_utc
+        ):
+            self.next_tariff = self.tariff_calendar.next_transition(now_utc)
+            self._tariff_signature = signature
+        self.current_tariff = current_tariff
+        self.time_to_next_tariff_seconds = (
+            max(0.0, (self.next_tariff.timestamp_utc - now_utc).total_seconds())
+            if self.next_tariff is not None
+            else None
+        )
+        if self.engine.last_sample is None:
+            for listener in tuple(self._listeners):
+                listener()
+            return
+        target_kw = self.effective_target_kw
+        simulation_enabled = bool(settings[CONF_SIMULATION_ENABLED])
+        self.current_contractual_available = target_kw is not None
+        self.current_contractual_confirmed = (
+            target_kw is not None
+            and not simulation_enabled
+            and current_tariff.rule_status == RuleStatus.OFFICIAL
+        )
+        if simulation_enabled:
+            self.contractual_status_reason = (
+                "simulation threshold is active; results are not contractual"
+            )
+        elif target_kw is None:
+            if self._contracted_power_configuration_error is not None:
+                self.contractual_status_reason = self._contracted_power_configuration_error
+            elif (
+                self.contracted_power_schedule.period_for(current_tariff.local_datetime.date())
+                is None
+            ):
+                self.contractual_status_reason = (
+                    "no confirmed contracted-power assignment covers "
+                    f"{current_tariff.local_datetime.date().isoformat()}"
+                )
+            else:
+                self.contractual_status_reason = (
+                    f"tariff rule status is {current_tariff.rule_status.value}; "
+                    "no enabled contractual target is available"
+                )
+        elif current_tariff.rule_status == RuleStatus.PROVISIONAL:
+            self.contractual_status_reason = "tariff rule is provisional and not legally confirmed"
+        else:
+            self.contractual_status_reason = None
+        self.sustained_status_reason = self.contractual_status_reason
         try:
             self.snapshot = self.engine.snapshot(
                 now=now,
-                target_kw=self.effective_target_kw,
+                target_kw=target_kw,
                 safety_margin_kw=float(settings[CONF_SAFETY_MARGIN_KW]),
                 smoothing_seconds=int(settings[CONF_SMOOTHING_SECONDS]),
             )
-            latest = self.engine.last_sample
-            now_utc = now.astimezone(UTC)
-            smoothing_seconds = int(settings[CONF_SMOOTHING_SECONDS])
-            operational_target = max(
-                0.0,
-                self.effective_target_kw - float(settings[CONF_SAFETY_MARGIN_KW]),
-            )
-            self.sustained_forecast = calculate_sustained_forecast(
-                now=now_utc,
-                current_import_kwh=self.snapshot.quarter_import_kwh,
-                current_unrecoverable=self.snapshot.projection.unrecoverable,
-                current_quarter_complete=self.snapshot.gap_seconds <= EPSILON,
-                recent_segments=self.engine.buffer.segments(
-                    end=now_utc, window_seconds=smoothing_seconds
-                ),
-                latest_signed_kw=self.snapshot.current_signed_power_kw,
-                measurement_age_seconds=(
-                    (now_utc - latest.timestamp_utc).total_seconds() if latest is not None else None
-                ),
-                smoothing_seconds=smoothing_seconds,
-                horizon_minutes=int(settings[CONF_SUSTAINED_HORIZON_MINUTES]),
-                target_for_quarter=lambda _start, _end: operational_target,
-                stale_after_seconds=DEFAULT_STALE_AFTER_SECONDS,
-            )
         except CalculationError as err:
             _LOGGER.warning("Could not refresh SI Grid Monitor: %s", err)
-            return
+            self.snapshot = None
+            self.sustained_forecast = None
+        else:
+            self.sustained_forecast = None
+            if self.current_contractual_available:
+                latest = self.engine.last_sample
+                smoothing_seconds = int(settings[CONF_SMOOTHING_SECONDS])
+                try:
+                    self.sustained_forecast = calculate_sustained_forecast(
+                        now=now_utc,
+                        current_import_kwh=self.snapshot.quarter_import_kwh,
+                        current_unrecoverable=bool(self.snapshot.projection.unrecoverable),
+                        current_quarter_complete=self.snapshot.gap_seconds <= EPSILON,
+                        recent_segments=self.engine.buffer.segments(
+                            end=now_utc, window_seconds=smoothing_seconds
+                        ),
+                        latest_signed_kw=self.snapshot.current_signed_power_kw,
+                        measurement_age_seconds=(
+                            (now_utc - latest.timestamp_utc).total_seconds()
+                            if latest is not None
+                            else None
+                        ),
+                        smoothing_seconds=smoothing_seconds,
+                        horizon_minutes=int(settings[CONF_SUSTAINED_HORIZON_MINUTES]),
+                        target_for_quarter=lambda start, end: self._operational_target_for_quarter(
+                            start,
+                            end,
+                            float(settings[CONF_SAFETY_MARGIN_KW]),
+                        ),
+                        stale_after_seconds=DEFAULT_STALE_AFTER_SECONDS,
+                    )
+                except CalculationError as err:
+                    self.sustained_status_reason = str(err)
+                    _LOGGER.info("Sustained forecast unavailable: %s", err)
         self._drain_completed()
         self._checkpoint_if_due(now)
         for listener in tuple(self._listeners):
@@ -314,9 +477,18 @@ class GridMonitorRuntime:
             quarter=quarter,
             configuration=configuration,
             provenance=provenance,
+            tariff=tariff_for_configuration(quarter.start_utc, configuration),
         )
         async with self._archive_operation_lock:
             await self.hass.async_add_executor_job(self.archive.upsert_quarter, record)
+        self.archived_last_completed = ArchivedQuarterSnapshot(
+            start_utc=quarter.start_utc,
+            end_utc=quarter.end_utc,
+            import_demand_kw=quarter.import_demand_kw,
+            signed_average_kw=quarter.signed_average_kw,
+            quality=quarter.quality.value,
+            provenance=provenance,
+        )
 
     async def _async_backfill_recorder(self) -> None:
         """Backfill missing completed quarters from detailed recorder states."""
@@ -461,11 +633,15 @@ class GridMonitorRuntime:
 
 
 def _resolution_for_epoch(epoch: ConfigurationEpoch) -> ConfigurationResolution:
-    status = (
-        ConfigurationStatus.KNOWN
-        if epoch.contractual_target_kw is not None and epoch.safety_margin_kw is not None
-        else ConfigurationStatus.TARGET_UNKNOWN
-    )
+    if epoch.contracted_power_periods is not None:
+        known = bool(epoch.contracted_power_periods) and epoch.safety_margin_kw is not None
+    else:
+        known = (
+            epoch.contractual_target_kw is not None
+            and epoch.safety_margin_kw is not None
+            and all(target is not None for target in epoch.block_targets_kw)
+        )
+    status = ConfigurationStatus.KNOWN if known else ConfigurationStatus.TARGET_UNKNOWN
     return ConfigurationResolution(
         status=status,
         source_id=epoch.source_id,
@@ -473,4 +649,7 @@ def _resolution_for_epoch(epoch: ConfigurationEpoch) -> ConfigurationResolution:
         source_epoch=epoch.epoch,
         contractual_target_kw=epoch.contractual_target_kw,
         safety_margin_kw=epoch.safety_margin_kw,
+        block_targets_kw=epoch.block_targets_kw,
+        allow_provisional_tariff=epoch.allow_provisional_tariff,
+        contracted_power_periods=epoch.contracted_power_periods,
     )

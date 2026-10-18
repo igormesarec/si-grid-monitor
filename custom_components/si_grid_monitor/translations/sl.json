@@ -5,12 +5,13 @@
       "already_configured": "Ta vir je že nastavljen."
     },
     "error": {
-      "mode_not_available_v0_1": "Ta način vira ostaja načrtovan, vendar v V0.2 še ni povezan s Home Assistantom. Izberite en podpisan senzor trenutne moči."
+      "mode_not_available_v0_1": "Ta način vira ostaja načrtovan, vendar v V0.3 še ni povezan s Home Assistantom. Izberite en podpisan senzor trenutne moči.",
+      "invalid_contracted_power_periods": "Obdobja dogovorjene moči niso veljavna, se prekrivajo ali imajo končni datum pred začetnim."
     },
     "step": {
       "user": {
         "title": "Izberite vrsto vira omrežnih podatkov",
-        "description": "V0.2 deluje z enim podpisanim senzorjem trenutne moči. Drugi načini ostajajo načrtovani in jih še ni mogoče shraniti.",
+        "description": "V0.3 deluje z enim podpisanim senzorjem trenutne moči. Drugi načini ostajajo načrtovani in jih še ni mogoče shraniti.",
         "data": {
           "source_mode": "Način vira"
         }
@@ -22,6 +23,8 @@
           "power_entity": "Senzor moči omrežja",
           "positive_means_import": "Pozitivna vrednost vira pomeni uvoz",
           "target_kw": "Dogovorjena moč",
+          "assignment_start_date": "Začetek veljavnosti dogovorjene moči",
+          "assignment_end_date": "Konec veljavnosti dogovorjene moči",
           "safety_margin_kw": "Varnostna rezerva",
           "smoothing_seconds": "Okno glajenja napovedi",
           "sustained_horizon_minutes": "Obzorje napovedi trajne obremenitve",
@@ -34,11 +37,19 @@
     "step": {
       "init": {
         "title": "Nastavitve izračuna",
-        "description": "Vir in polariteto lahko spremenite brez brisanja integracije. Začasni testni pragovi so izločeni iz dejanske statistike prekoračitev.",
+        "description": "Nastavitve lahko spremenite brez brisanja integracije. Pogodbeni izračuni uporabljajo potrjeni seznam obdobij JSON spodaj; datumi so vključujoči in obdobja se ne smejo prekrivati. Ločena podedovana ciljna polja ostajajo zaradi združljivosti nadgradnje. Začasni testni pragovi so izločeni iz dejanske statistike prekoračitev.",
         "data": {
           "power_entity": "Senzor moči omrežja",
           "positive_means_import": "Pozitivna vrednost vira pomeni uvoz",
           "target_kw": "Dogovorjena moč",
+          "target_mode": "Način dogovorjene moči",
+          "target_b1_kw": "Dogovorjena moč bloka 1",
+          "target_b2_kw": "Dogovorjena moč bloka 2",
+          "target_b3_kw": "Dogovorjena moč bloka 3",
+          "target_b4_kw": "Dogovorjena moč bloka 4",
+          "target_b5_kw": "Dogovorjena moč bloka 5",
+          "allow_provisional_tariff": "Dovoli začasno nadaljevanje za nepotrjena leta",
+          "contracted_power_periods": "Časovno omejene dodelitve dogovorjene moči (JSON)",
           "safety_margin_kw": "Varnostna rezerva",
           "smoothing_seconds": "Okno glajenja napovedi",
           "sustained_horizon_minutes": "Obzorje napovedi trajne obremenitve",
@@ -52,11 +63,17 @@
   "selector": {
     "source_mode": {
       "options": {
-        "signed_power": "En podpisan senzor trenutne moči (V0.2)",
+        "signed_power": "En podpisan senzor trenutne moči (V0.3)",
         "separate_power": "Ločena senzorja uvoza/izvoza (načrtovano)",
         "import_only": "Senzor samo uvozne moči (načrtovano)",
         "cumulative_energy": "Kumulativni števci energije (načrtovano)",
         "aligned_quarter": "Poravnani zaključeni 15-minutni zapisi (načrtovano)"
+      }
+    },
+    "target_mode": {
+      "options": {
+        "shared": "Uporabi eno vrednost za vseh pet blokov",
+        "per_block": "Nastavi vsak blok posebej"
       }
     }
   },
@@ -102,7 +119,49 @@
         "name": "Izvožena energija trenutne četrtine"
       },
       "target_kw": {
-        "name": "Dogovorjena moč"
+        "name": "Dogovorjena moč trenutnega bloka"
+      },
+      "current_tariff_block": {
+        "name": "Trenutni časovni blok"
+      },
+      "current_tariff_season": {
+        "name": "Trenutna tarifna sezona"
+      },
+      "current_tariff_day_type": {
+        "name": "Vrsta trenutnega dne"
+      },
+      "current_block_contracted_power": {
+        "name": "Dogovorjena moč trenutnega bloka"
+      },
+      "next_tariff_block": {
+        "name": "Naslednji časovni blok"
+      },
+      "time_to_next_tariff_block": {
+        "name": "Čas do naslednjega časovnega bloka"
+      },
+      "next_block_contracted_power": {
+        "name": "Dogovorjena moč naslednjega bloka"
+      },
+      "tariff_calendar_year": {
+        "name": "Leto tarifnega koledarja"
+      },
+      "tariff_rule_status": {
+        "name": "Stanje tarifnega pravila"
+      },
+      "contracted_power_b1": {
+        "name": "Dogovorjena moč B1"
+      },
+      "contracted_power_b2": {
+        "name": "Dogovorjena moč B2"
+      },
+      "contracted_power_b3": {
+        "name": "Dogovorjena moč B3"
+      },
+      "contracted_power_b4": {
+        "name": "Dogovorjena moč B4"
+      },
+      "contracted_power_b5": {
+        "name": "Dogovorjena moč B5"
       },
       "operational_target_kw": {
         "name": "Operativna ciljna moč"
