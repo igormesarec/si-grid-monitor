@@ -20,11 +20,6 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import (
     ATTR_BUDGET_HEADROOM_WARNING,
-    CONF_TARGET_B1_KW,
-    CONF_TARGET_B2_KW,
-    CONF_TARGET_B3_KW,
-    CONF_TARGET_B4_KW,
-    CONF_TARGET_B5_KW,
     DOMAIN,
 )
 from .engine import EngineSnapshot, round_for_display
@@ -250,35 +245,55 @@ SENSORS: tuple[SIGridSensorDescription, ...] = (
         translation_key="contracted_power_b1",
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
         device_class=SensorDeviceClass.POWER,
-        value_fn=lambda snapshot, runtime: float(runtime.settings[CONF_TARGET_B1_KW]),
+        value_fn=lambda snapshot, runtime: (
+            runtime.current_block_targets_kw[0]
+            if runtime.current_block_targets_kw is not None
+            else None
+        ),
     ),
     SIGridSensorDescription(
         key="contracted_power_b2",
         translation_key="contracted_power_b2",
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
         device_class=SensorDeviceClass.POWER,
-        value_fn=lambda snapshot, runtime: float(runtime.settings[CONF_TARGET_B2_KW]),
+        value_fn=lambda snapshot, runtime: (
+            runtime.current_block_targets_kw[1]
+            if runtime.current_block_targets_kw is not None
+            else None
+        ),
     ),
     SIGridSensorDescription(
         key="contracted_power_b3",
         translation_key="contracted_power_b3",
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
         device_class=SensorDeviceClass.POWER,
-        value_fn=lambda snapshot, runtime: float(runtime.settings[CONF_TARGET_B3_KW]),
+        value_fn=lambda snapshot, runtime: (
+            runtime.current_block_targets_kw[2]
+            if runtime.current_block_targets_kw is not None
+            else None
+        ),
     ),
     SIGridSensorDescription(
         key="contracted_power_b4",
         translation_key="contracted_power_b4",
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
         device_class=SensorDeviceClass.POWER,
-        value_fn=lambda snapshot, runtime: float(runtime.settings[CONF_TARGET_B4_KW]),
+        value_fn=lambda snapshot, runtime: (
+            runtime.current_block_targets_kw[3]
+            if runtime.current_block_targets_kw is not None
+            else None
+        ),
     ),
     SIGridSensorDescription(
         key="contracted_power_b5",
         translation_key="contracted_power_b5",
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
         device_class=SensorDeviceClass.POWER,
-        value_fn=lambda snapshot, runtime: float(runtime.settings[CONF_TARGET_B5_KW]),
+        value_fn=lambda snapshot, runtime: (
+            runtime.current_block_targets_kw[4]
+            if runtime.current_block_targets_kw is not None
+            else None
+        ),
     ),
     SIGridSensorDescription(
         key="operational_target_kw",
@@ -631,6 +646,16 @@ class SIGridSensor(SensorEntity):
                     "contractual_status_reason": self.runtime.contractual_status_reason,
                 }
             )
+            assignment = self.runtime.current_assignment
+            if assignment is not None:
+                attributes.update(
+                    {
+                        "target_effective_from": assignment.effective_from,
+                        "target_effective_to": assignment.effective_to,
+                        "target_provenance": assignment.provenance,
+                        "target_recorded_on": assignment.recorded_on,
+                    }
+                )
         if self.entity_description.key in {
             "last_completed_15m_import_demand",
             "last_completed_15m_signed_average",

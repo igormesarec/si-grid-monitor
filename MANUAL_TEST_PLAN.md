@@ -37,9 +37,10 @@ connection capacity from CAN ADD values.
 5. Apply a sudden +3 kW step. Confirm the instantaneous conservative scenario
    changes sustained advice immediately before the smoothed path catches up.
 6. Confirm stale/incomplete history publishes a reason instead of a safe value.
-7. Upgrade a V0.2 entry and confirm its old target appears identically in B1–B5.
-   Switch to per-block mode, set five distinct values, reload and verify the
-   current and next target sensors follow block transitions.
+7. Upgrade a V0.2 entry and confirm its old target remains identically in the
+   legacy B1–B5 fields, but contractual sensors are unavailable because no
+   validity dates were invented. Add an explicit dated assignment in Options,
+   reload and verify current/next target sensors follow block transitions.
 8. Run a sustained forecast across a block boundary and confirm each future
    quarter uses its own block target, especially when the next target is lower.
 9. Configure the documented values in `REAL_WORLD_VALIDATION.md` (B1 3.50,
@@ -103,6 +104,10 @@ connection capacity from CAN ADD values.
 15. With the documented 2026 fixture configured, inspect completed rows from
     each block. Confirm they retain the effective target and provenance, and an
     exceedance is confirmed only against that quarter's official block target.
+16. Advance across 31 December 2026 with only the documented 2026 assignment.
+    Confirm 2027 physical power and archive rows continue, while target,
+    utilization, forecasts and advice are unavailable with an expired/missing
+    assignment reason. Then add a separate 2027 assignment and reload.
 
 ## Lifecycle and observations to report
 

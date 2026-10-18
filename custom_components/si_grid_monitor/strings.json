@@ -5,7 +5,8 @@
       "already_configured": "This source is already configured."
     },
     "error": {
-      "mode_not_available_v0_1": "This source mode remains planned but is not connected to Home Assistant in V0.3. Select signed live grid power."
+      "mode_not_available_v0_1": "This source mode remains planned but is not connected to Home Assistant in V0.3. Select signed live grid power.",
+      "invalid_contracted_power_periods": "Contracted-power assignments are invalid, overlapping, or have an end date before the start date."
     },
     "step": {
       "user": {
@@ -22,6 +23,8 @@
           "power_entity": "Grid power sensor",
           "positive_means_import": "Positive source values mean import",
           "target_kw": "Contractual target",
+          "assignment_start_date": "Contracted-power validity start",
+          "assignment_end_date": "Contracted-power validity end",
           "safety_margin_kw": "Safety margin",
           "smoothing_seconds": "Forecast smoothing window",
           "sustained_horizon_minutes": "Sustained load forecast horizon",
@@ -34,7 +37,7 @@
     "step": {
       "init": {
         "title": "Calculation settings",
-        "description": "Change source and polarity without deleting the integration. Simulation thresholds are excluded from genuine contractual exceedance statistics.",
+        "description": "Change settings without deleting the integration. Contractual calculations use the validated JSON assignments below; dates are inclusive and periods must not overlap. The separate legacy target fields remain for upgrade compatibility. Simulation thresholds are excluded from genuine contractual exceedance statistics.",
         "data": {
           "power_entity": "Grid power sensor",
           "positive_means_import": "Positive source values mean import",
@@ -46,6 +49,7 @@
           "target_b4_kw": "Block 4 contracted power",
           "target_b5_kw": "Block 5 contracted power",
           "allow_provisional_tariff": "Allow provisional continuation for unverified years",
+          "contracted_power_periods": "Date-bound contracted-power assignments (JSON)",
           "safety_margin_kw": "Safety margin",
           "smoothing_seconds": "Forecast smoothing window",
           "sustained_horizon_minutes": "Sustained load forecast horizon",

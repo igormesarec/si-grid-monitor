@@ -3,6 +3,7 @@
 from custom_components.si_grid_monitor import migrated_v3_settings
 from custom_components.si_grid_monitor.const import (
     CONF_ALLOW_PROVISIONAL_TARIFF,
+    CONF_CONTRACTED_POWER_PERIODS,
     CONF_POWER_ENTITY,
     CONF_TARGET_KW,
     TARGET_KEYS,
@@ -16,6 +17,7 @@ def test_v02_target_is_copied_to_all_five_blocks_without_losing_settings() -> No
 
     assert all(migrated_options[key] == 5.2 for key in TARGET_KEYS)
     assert migrated_options[CONF_ALLOW_PROVISIONAL_TARIFF] is False
+    assert migrated_options[CONF_CONTRACTED_POWER_PERIODS] == "[]"
     assert migrated_data["custom"] == "keep"
     assert migrated_options["smoothing_seconds"] == 120
 
@@ -24,6 +26,7 @@ def test_v02_480_fixture_is_not_replaced_by_documented_2026_values() -> None:
     migrated_data, migrated_options = migrated_v3_settings({CONF_TARGET_KW: 4.8}, {})
 
     assert tuple(migrated_data[key] for key in TARGET_KEYS) == (4.8,) * 5
+    assert migrated_data[CONF_CONTRACTED_POWER_PERIODS] == "[]"
     assert not any(key in migrated_options for key in TARGET_KEYS)
 
 

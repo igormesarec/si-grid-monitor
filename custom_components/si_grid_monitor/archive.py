@@ -11,11 +11,16 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from .contracted_power import (
+    ContractedPowerPeriod,
+    ContractedPowerSchedule,
+    contracted_power_schedule_from_json,
+)
 from .engine import EPSILON, LJUBLJANA, CompletedQuarter, DataQuality
 from .tariffs.calendar import SlovenianTariffCalendar
 from .tariffs.models import RuleStatus, TariffClassification
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 _QUALITY_RANK = {
     DataQuality.UNAVAILABLE.value: 0,
     DataQuality.INCOMPLETE.value: 1,
@@ -48,6 +53,7 @@ class ConfigurationEpoch:
     safety_margin_kw: float | None
     block_targets_kw: tuple[float | None, ...] = (None, None, None, None, None)
     allow_provisional_tariff: bool | None = None
+    contracted_power_periods: tuple[ContractedPowerPeriod, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,6 +68,7 @@ class ConfigurationResolution:
     safety_margin_kw: float | None = None
     block_targets_kw: tuple[float | None, ...] = (None, None, None, None, None)
     allow_provisional_tariff: bool | None = None
+    contracted_power_periods: tuple[ContractedPowerPeriod, ...] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +107,10 @@ class ArchiveRecord:
     contractual_status: str = "confirmed"
     contractual_status_reason: str | None = None
     confirmed_exceeded: bool | None = None
+    target_effective_from: str | None = None
+    target_effective_to: str | None = None
+    target_provenance: str | None = None
+    target_recorded_on: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,17 +170,26 @@ def archive_record_from_quarter(
         ConfigurationStatus.TARGET_MIXED,
     }
     tariff_target_known = tariff is None or tariff.block is not None
-    target_known = configuration.status == ConfigurationStatus.KNOWN and tariff_target_known
     complete = source_known and quarter.quality not in {
         DataQuality.INCOMPLETE,
         DataQuality.UNAVAILABLE,
     }
+    target_period: ContractedPowerPeriod | None = None
     if tariff is None:
         selected_target = configuration.contractual_target_kw
+    elif configuration.contracted_power_periods is not None:
+        schedule = ContractedPowerSchedule(configuration.contracted_power_periods)
+        target_period = schedule.period_for(tariff.local_datetime.date())
+        selected_target = schedule.target_for(tariff)
     elif tariff.block is None:
         selected_target = None
     else:
         selected_target = configuration.block_targets_kw[tariff.block - 1]
+    target_known = (
+        configuration.status == ConfigurationStatus.KNOWN
+        and tariff_target_known
+        and selected_target is not None
+    )
     target = selected_target if target_known else None
     margin = configuration.safety_margin_kw if target_known else None
     utilization = (
@@ -180,7 +200,14 @@ def archive_record_from_quarter(
     exceeded = (
         quarter.import_demand_kw > target + EPSILON if complete and target is not None else None
     )
-    if configuration.status != ConfigurationStatus.KNOWN:
+    if (
+        tariff is not None
+        and configuration.contracted_power_periods is not None
+        and target_period is None
+    ):
+        contractual_status = "target_assignment_unavailable"
+        contractual_reason = "no confirmed contracted-power assignment covers the quarter date"
+    elif configuration.status != ConfigurationStatus.KNOWN:
         contractual_status = "unknown_configuration"
         contractual_reason = "historical target or source configuration is not auditable"
     elif not complete:
@@ -251,6 +278,18 @@ def archive_record_from_quarter(
         contractual_status=contractual_status,
         contractual_status_reason=contractual_reason,
         confirmed_exceeded=confirmed_exceeded,
+        target_effective_from=(
+            target_period.effective_from.isoformat() if target_period is not None else None
+        ),
+        target_effective_to=(
+            target_period.effective_to.isoformat() if target_period is not None else None
+        ),
+        target_provenance=(target_period.provenance if target_period is not None else None),
+        target_recorded_on=(
+            target_period.recorded_on.isoformat()
+            if target_period is not None and target_period.recorded_on is not None
+            else None
+        ),
     )
 
 
@@ -316,6 +355,7 @@ class QuarterArchive:
         safety_margin_kw: float | None,
         block_targets_kw: tuple[float | None, ...] | None = None,
         allow_provisional_tariff: bool | None = None,
+        contracted_power_schedule: ContractedPowerSchedule | None = None,
         effective_utc: datetime,
     ) -> ConfigurationEpoch:
         """Return a stable epoch, creating one whenever semantics change."""
@@ -324,12 +364,15 @@ class QuarterArchive:
         targets = block_targets_kw or (contractual_target_kw,) * 5
         if len(targets) != 5:
             raise ValueError("five block targets are required")
+        periods_json = (
+            None if contracted_power_schedule is None else contracted_power_schedule.to_json()
+        )
         with self._lock, self._db:
             row = self._db.execute(
                 """SELECT epoch, source_id, positive_means_import, effective_utc,
                           contractual_target_kw, safety_margin_kw,
                           target_b1_kw,target_b2_kw,target_b3_kw,target_b4_kw,target_b5_kw,
-                          allow_provisional_tariff
+                          allow_provisional_tariff,contracted_power_periods_json
                    FROM source_epochs WHERE namespace=? ORDER BY epoch DESC LIMIT 1""",
                 (namespace,),
             ).fetchone()
@@ -344,6 +387,7 @@ class QuarterArchive:
                     for index in range(1, 6)
                 )
                 and _same_optional_bool(row["allow_provisional_tariff"], allow_provisional_tariff)
+                and row["contracted_power_periods_json"] == periods_json
             ):
                 return _epoch_from_row(row)
             epoch = 1 if row is None else int(row["epoch"]) + 1
@@ -352,8 +396,8 @@ class QuarterArchive:
                    (namespace, epoch, source_id, positive_means_import, effective_utc,
                     contractual_target_kw, safety_margin_kw,
                     target_b1_kw,target_b2_kw,target_b3_kw,target_b4_kw,target_b5_kw,
-                    allow_provisional_tariff)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    allow_provisional_tariff,contracted_power_periods_json)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     namespace,
                     epoch,
@@ -364,6 +408,7 @@ class QuarterArchive:
                     safety_margin_kw,
                     *targets,
                     (None if allow_provisional_tariff is None else int(allow_provisional_tariff)),
+                    periods_json,
                 ),
             )
             return ConfigurationEpoch(
@@ -375,6 +420,9 @@ class QuarterArchive:
                 safety_margin_kw=safety_margin_kw,
                 block_targets_kw=targets,
                 allow_provisional_tariff=allow_provisional_tariff,
+                contracted_power_periods=(
+                    None if contracted_power_schedule is None else contracted_power_schedule.periods
+                ),
             )
 
     def list_configuration_epochs(self, namespace: str) -> list[ConfigurationEpoch]:
@@ -385,7 +433,7 @@ class QuarterArchive:
                 """SELECT epoch, source_id, positive_means_import, effective_utc,
                           contractual_target_kw, safety_margin_kw,
                           target_b1_kw,target_b2_kw,target_b3_kw,target_b4_kw,target_b5_kw,
-                          allow_provisional_tariff
+                          allow_provisional_tariff,contracted_power_periods_json
                    FROM source_epochs WHERE namespace=? ORDER BY effective_utc, epoch""",
                 (namespace,),
             ).fetchall()
@@ -418,11 +466,21 @@ class QuarterArchive:
                 source_id=first.source_id if same_source else None,
                 positive_means_import=(first.positive_means_import if same_source else None),
             )
-        if (
-            first.contractual_target_kw is None
-            or first.safety_margin_kw is None
-            or any(target is None for target in first.block_targets_kw)
-        ):
+        schedule = (
+            None
+            if first.contracted_power_periods is None
+            else ContractedPowerSchedule(first.contracted_power_periods)
+        )
+        period = schedule.period_for(start.astimezone(LJUBLJANA).date()) if schedule else None
+        if schedule is not None:
+            target_known = first.safety_margin_kw is not None and period is not None
+        else:
+            target_known = (
+                first.contractual_target_kw is not None
+                and first.safety_margin_kw is not None
+                and all(target is not None for target in first.block_targets_kw)
+            )
+        if not target_known:
             status = ConfigurationStatus.TARGET_UNKNOWN
         else:
             status = ConfigurationStatus.KNOWN
@@ -435,6 +493,7 @@ class QuarterArchive:
             safety_margin_kw=first.safety_margin_kw,
             block_targets_kw=first.block_targets_kw,
             allow_provisional_tariff=first.allow_provisional_tariff,
+            contracted_power_periods=first.contracted_power_periods,
         )
 
     def upsert_quarter(self, record: ArchiveRecord) -> bool:
@@ -505,6 +564,10 @@ class QuarterArchive:
                         else int(record.confirmed_exceeded)
                     )
                 ),
+                record.target_effective_from,
+                record.target_effective_to,
+                record.target_provenance,
+                record.target_recorded_on,
                 _utc_iso(datetime.now(UTC)),
             )
             self._db.execute(
@@ -517,8 +580,10 @@ class QuarterArchive:
                     simulation,tariff_block,tariff_rule_version,tariff_calendar_year,
                     tariff_season,tariff_day_type,tariff_rule_status,tariff_source_url,
                     tariff_policy,contractual_status,contractual_status_reason,
-                    confirmed_exceeded,created_utc)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                    confirmed_exceeded,target_effective_from,target_effective_to,
+                    target_provenance,target_recorded_on,created_utc)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,
+                           ?,?,?,?,?,?,?,?,?)
                    ON CONFLICT(namespace,start_utc) DO UPDATE SET
                     end_utc=excluded.end_utc,start_local=excluded.start_local,
                     utc_offset_seconds=excluded.utc_offset_seconds,fold=excluded.fold,
@@ -545,7 +610,11 @@ class QuarterArchive:
                     tariff_policy=excluded.tariff_policy,
                     contractual_status=excluded.contractual_status,
                     contractual_status_reason=excluded.contractual_status_reason,
-                    confirmed_exceeded=excluded.confirmed_exceeded""",
+                    confirmed_exceeded=excluded.confirmed_exceeded,
+                    target_effective_from=excluded.target_effective_from,
+                    target_effective_to=excluded.target_effective_to,
+                    target_provenance=excluded.target_provenance,
+                    target_recorded_on=excluded.target_recorded_on""",
                 values,
             )
             return existing is None
@@ -740,6 +809,7 @@ class QuarterArchive:
                       safety_margin_kw REAL,target_b1_kw REAL,target_b2_kw REAL,
                       target_b3_kw REAL,target_b4_kw REAL,target_b5_kw REAL,
                       allow_provisional_tariff INTEGER,
+                      contracted_power_periods_json TEXT,
                       PRIMARY KEY(namespace,epoch));
                     CREATE TABLE quarters(
                       namespace TEXT NOT NULL,start_utc TEXT NOT NULL,end_utc TEXT NOT NULL,
@@ -758,6 +828,8 @@ class QuarterArchive:
                       tariff_source_url TEXT,tariff_policy TEXT,
                       contractual_status TEXT NOT NULL,
                       contractual_status_reason TEXT,confirmed_exceeded INTEGER,
+                      target_effective_from TEXT,target_effective_to TEXT,
+                      target_provenance TEXT,target_recorded_on TEXT,
                       created_utc TEXT NOT NULL,
                       PRIMARY KEY(namespace,start_utc));
                     CREATE INDEX idx_quarters_namespace_end
@@ -771,7 +843,7 @@ class QuarterArchive:
                     CREATE TABLE checkpoints(
                       namespace TEXT PRIMARY KEY,payload_json TEXT NOT NULL,
                       updated_utc TEXT NOT NULL);
-                    PRAGMA user_version=4;
+                    PRAGMA user_version=5;
                     """
                 )
             return
@@ -869,6 +941,21 @@ class QuarterArchive:
                     PRAGMA user_version=4;
                     """
                 )
+            version = 4
+        if version == 4:
+            with self._db:
+                self._db.executescript(
+                    """
+                    ALTER TABLE source_epochs
+                      ADD COLUMN contracted_power_periods_json TEXT;
+                    UPDATE source_epochs SET contracted_power_periods_json='[]';
+                    ALTER TABLE quarters ADD COLUMN target_effective_from TEXT;
+                    ALTER TABLE quarters ADD COLUMN target_effective_to TEXT;
+                    ALTER TABLE quarters ADD COLUMN target_provenance TEXT;
+                    ALTER TABLE quarters ADD COLUMN target_recorded_on TEXT;
+                    PRAGMA user_version=5;
+                    """
+                )
 
     @property
     def _db(self) -> sqlite3.Connection:
@@ -900,6 +987,7 @@ def _same_optional_bool(value: object, expected: bool | None) -> bool:
 
 
 def _epoch_from_row(row: sqlite3.Row) -> ConfigurationEpoch:
+    periods_json = row["contracted_power_periods_json"]
     return ConfigurationEpoch(
         epoch=int(row["epoch"]),
         source_id=str(row["source_id"]),
@@ -914,5 +1002,10 @@ def _epoch_from_row(row: sqlite3.Row) -> ConfigurationEpoch:
             None
             if row["allow_provisional_tariff"] is None
             else bool(row["allow_provisional_tariff"])
+        ),
+        contracted_power_periods=(
+            None
+            if periods_json is None
+            else contracted_power_schedule_from_json(str(periods_json)).periods
         ),
     )

@@ -5,7 +5,8 @@
       "already_configured": "Ta vir je že nastavljen."
     },
     "error": {
-      "mode_not_available_v0_1": "Ta način vira ostaja načrtovan, vendar v V0.3 še ni povezan s Home Assistantom. Izberite en podpisan senzor trenutne moči."
+      "mode_not_available_v0_1": "Ta način vira ostaja načrtovan, vendar v V0.3 še ni povezan s Home Assistantom. Izberite en podpisan senzor trenutne moči.",
+      "invalid_contracted_power_periods": "Obdobja dogovorjene moči niso veljavna, se prekrivajo ali imajo končni datum pred začetnim."
     },
     "step": {
       "user": {
@@ -22,6 +23,8 @@
           "power_entity": "Senzor moči omrežja",
           "positive_means_import": "Pozitivna vrednost vira pomeni uvoz",
           "target_kw": "Dogovorjena moč",
+          "assignment_start_date": "Začetek veljavnosti dogovorjene moči",
+          "assignment_end_date": "Konec veljavnosti dogovorjene moči",
           "safety_margin_kw": "Varnostna rezerva",
           "smoothing_seconds": "Okno glajenja napovedi",
           "sustained_horizon_minutes": "Obzorje napovedi trajne obremenitve",
@@ -34,7 +37,7 @@
     "step": {
       "init": {
         "title": "Nastavitve izračuna",
-        "description": "Vir in polariteto lahko spremenite brez brisanja integracije. Začasni testni pragovi so izločeni iz dejanske statistike prekoračitev.",
+        "description": "Nastavitve lahko spremenite brez brisanja integracije. Pogodbeni izračuni uporabljajo potrjeni seznam obdobij JSON spodaj; datumi so vključujoči in obdobja se ne smejo prekrivati. Ločena podedovana ciljna polja ostajajo zaradi združljivosti nadgradnje. Začasni testni pragovi so izločeni iz dejanske statistike prekoračitev.",
         "data": {
           "power_entity": "Senzor moči omrežja",
           "positive_means_import": "Pozitivna vrednost vira pomeni uvoz",
@@ -46,6 +49,7 @@
           "target_b4_kw": "Dogovorjena moč bloka 4",
           "target_b5_kw": "Dogovorjena moč bloka 5",
           "allow_provisional_tariff": "Dovoli začasno nadaljevanje za nepotrjena leta",
+          "contracted_power_periods": "Časovno omejene dodelitve dogovorjene moči (JSON)",
           "safety_margin_kw": "Varnostna rezerva",
           "smoothing_seconds": "Okno glajenja napovedi",
           "sustained_horizon_minutes": "Obzorje napovedi trajne obremenitve",

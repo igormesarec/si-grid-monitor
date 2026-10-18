@@ -35,6 +35,7 @@ from .backfill import (
 )
 from .const import (
     CONF_ALLOW_PROVISIONAL_TARIFF,
+    CONF_CONTRACTED_POWER_PERIODS,
     CONF_POSITIVE_MEANS_IMPORT,
     CONF_POWER_ENTITY,
     CONF_RETENTION,
@@ -54,6 +55,11 @@ from .const import (
     DEFAULT_SMOOTHING_SECONDS,
     DEFAULT_STALE_AFTER_SECONDS,
     DEFAULT_SUSTAINED_HORIZON_MINUTES,
+)
+from .contracted_power import (
+    ContractedPowerPeriod,
+    ContractedPowerSchedule,
+    contracted_power_schedule_from_json,
 )
 from .engine import (
     EPSILON,
@@ -95,6 +101,14 @@ class GridMonitorRuntime:
         self.tariff_calendar = SlovenianTariffCalendar(
             allow_provisional=bool(configured.get(CONF_ALLOW_PROVISIONAL_TARIFF, False))
         )
+        try:
+            self.contracted_power_schedule = contracted_power_schedule_from_json(
+                configured.get(CONF_CONTRACTED_POWER_PERIODS, "[]")
+            )
+            self._contracted_power_configuration_error: str | None = None
+        except ValueError as err:
+            self.contracted_power_schedule = ContractedPowerSchedule(())
+            self._contracted_power_configuration_error = str(err)
         self.current_tariff: TariffClassification | None = None
         self.next_tariff: TariffClassification | None = None
         self.time_to_next_tariff_seconds: float | None = None
@@ -132,6 +146,7 @@ class GridMonitorRuntime:
             CONF_TARGET_B4_KW: float(data.get(CONF_TARGET_B4_KW, legacy_target)),
             CONF_TARGET_B5_KW: float(data.get(CONF_TARGET_B5_KW, legacy_target)),
             CONF_ALLOW_PROVISIONAL_TARIFF: bool(data.get(CONF_ALLOW_PROVISIONAL_TARIFF, False)),
+            CONF_CONTRACTED_POWER_PERIODS: str(data.get(CONF_CONTRACTED_POWER_PERIODS, "[]")),
             CONF_SAFETY_MARGIN_KW: float(data.get(CONF_SAFETY_MARGIN_KW, DEFAULT_SAFETY_MARGIN_KW)),
             CONF_SMOOTHING_SECONDS: int(
                 data.get(CONF_SMOOTHING_SECONDS, DEFAULT_SMOOTHING_SECONDS)
@@ -175,14 +190,17 @@ class GridMonitorRuntime:
         return None
 
     @property
-    def block_targets_kw(self) -> tuple[float, ...]:
-        settings = self.settings
-        return tuple(float(settings[f"target_b{block}_kw"]) for block in range(1, 6))
+    def current_assignment(self) -> ContractedPowerPeriod | None:
+        tariff = self.current_tariff or self.tariff_calendar.classify(dt_util.utcnow())
+        return self.contracted_power_schedule.period_for(tariff.local_datetime.date())
+
+    @property
+    def current_block_targets_kw(self) -> tuple[float, ...] | None:
+        assignment = self.current_assignment
+        return assignment.block_targets_kw if assignment is not None else None
 
     def target_for_tariff(self, tariff: TariffClassification) -> float | None:
-        if tariff.block is None:
-            return None
-        return self.block_targets_kw[tariff.block - 1]
+        return self.contracted_power_schedule.target_for(tariff)
 
     def _operational_target_for_quarter(
         self, start: datetime, _end: datetime, safety_margin_kw: float
@@ -205,7 +223,7 @@ class GridMonitorRuntime:
 
         await self.hass.async_add_executor_job(self.archive.open)
         startup_settings = self.settings
-        targets = self.block_targets_kw
+        targets = self.current_block_targets_kw or (None, None, None, None, None)
         self.configuration_epoch = await self.hass.async_add_executor_job(
             partial(
                 self.archive.register_configuration_epoch,
@@ -216,6 +234,7 @@ class GridMonitorRuntime:
                 safety_margin_kw=float(startup_settings[CONF_SAFETY_MARGIN_KW]),
                 block_targets_kw=targets,
                 allow_provisional_tariff=bool(startup_settings[CONF_ALLOW_PROVISIONAL_TARIFF]),
+                contracted_power_schedule=self.contracted_power_schedule,
                 effective_utc=dt_util.utcnow(),
             )
         )
@@ -350,13 +369,24 @@ class GridMonitorRuntime:
             self.contractual_status_reason = (
                 "simulation threshold is active; results are not contractual"
             )
+        elif target_kw is None:
+            if self._contracted_power_configuration_error is not None:
+                self.contractual_status_reason = self._contracted_power_configuration_error
+            elif (
+                self.contracted_power_schedule.period_for(current_tariff.local_datetime.date())
+                is None
+            ):
+                self.contractual_status_reason = (
+                    "no confirmed contracted-power assignment covers "
+                    f"{current_tariff.local_datetime.date().isoformat()}"
+                )
+            else:
+                self.contractual_status_reason = (
+                    f"tariff rule status is {current_tariff.rule_status.value}; "
+                    "no enabled contractual target is available"
+                )
         elif current_tariff.rule_status == RuleStatus.PROVISIONAL:
             self.contractual_status_reason = "tariff rule is provisional and not legally confirmed"
-        elif target_kw is None:
-            self.contractual_status_reason = (
-                f"tariff rule status is {current_tariff.rule_status.value}; "
-                "no enabled contractual target is available"
-            )
         else:
             self.contractual_status_reason = None
         self.sustained_status_reason = self.contractual_status_reason
@@ -603,13 +633,15 @@ class GridMonitorRuntime:
 
 
 def _resolution_for_epoch(epoch: ConfigurationEpoch) -> ConfigurationResolution:
-    status = (
-        ConfigurationStatus.KNOWN
-        if epoch.contractual_target_kw is not None
-        and epoch.safety_margin_kw is not None
-        and all(target is not None for target in epoch.block_targets_kw)
-        else ConfigurationStatus.TARGET_UNKNOWN
-    )
+    if epoch.contracted_power_periods is not None:
+        known = bool(epoch.contracted_power_periods) and epoch.safety_margin_kw is not None
+    else:
+        known = (
+            epoch.contractual_target_kw is not None
+            and epoch.safety_margin_kw is not None
+            and all(target is not None for target in epoch.block_targets_kw)
+        )
+    status = ConfigurationStatus.KNOWN if known else ConfigurationStatus.TARGET_UNKNOWN
     return ConfigurationResolution(
         status=status,
         source_id=epoch.source_id,
@@ -619,4 +651,5 @@ def _resolution_for_epoch(epoch: ConfigurationEpoch) -> ConfigurationResolution:
         safety_margin_kw=epoch.safety_margin_kw,
         block_targets_kw=epoch.block_targets_kw,
         allow_provisional_tariff=epoch.allow_provisional_tariff,
+        contracted_power_periods=epoch.contracted_power_periods,
     )

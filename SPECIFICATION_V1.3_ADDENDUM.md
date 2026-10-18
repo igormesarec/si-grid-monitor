@@ -33,10 +33,10 @@ Official references:
 
 ## Contracted targets and calculations
 
-V0.3 stores five contracted-power settings, B1 through B5. A V0.2 upgrade copies
-the effective single target into all five fields. Shared mode writes one value to
-all five; per-block mode preserves independent values. Safety margin remains a
-separate operational adjustment.
+V0.3 stores date-bound contracted-power assignments containing B1 through B5.
+A V0.2 upgrade preserves the effective single target in all five legacy fields,
+but does not invent a validity period; those values are not confirmed until the
+user supplies inclusive start/end dates. Safety margin remains separate.
 
 The current fixed quarter uses its classified block target for import-only
 budget, utilization, instant/smoothed forecast, CAN ADD, MUST REDUCE,
@@ -50,14 +50,19 @@ non-overlapping periods so a later year can use different B1–B5 values without
 rewriting history. No assignment is inferred beyond its stated validity. The
 documented user-supplied 2026 acceptance fixture (recorded 17 October 2025) is
 not a product default and does not alter V0.2-to-V0.3 migration semantics.
+The initial setup creates one dated assignment. The interim Options interface is
+a validated JSON editor supporting multiple non-overlapping assignments for
+2026–2030. Expired or missing assignments make contractual results unavailable,
+without stopping physical metering, quarter accumulation or archive writes.
 
 ## Immutable archive provenance
 
-SQLite schema 4 adds tariff calendar year, season, day type, rule verification
-status and source URL to each completed quarter. Existing block, rule version,
-target and utilization fields remain. Configuration epochs now retain all five
-targets. A completed record receives the target and rule effective for that
-quarter and is never silently rewritten after settings or rules change.
+SQLite schema 5 adds tariff calendar year, season, day type, rule verification,
+source URL, assignment dates, target provenance and optional record date to each
+completed quarter. Existing block, rule version, target and utilization fields
+remain. Configuration epochs retain the complete assignment schedule. A
+completed record receives the target and rule effective for that quarter and is
+never silently rewritten after settings or rules change.
 
 V0.2 epochs migrate their known common target into all five target columns.
 Existing quarters with no calendar metadata may be classified once under the

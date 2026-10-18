@@ -113,17 +113,31 @@ unavailable with a reason attribute. If provisional use is enabled, those
 values are explicitly provisional estimates; their exceedances are never added
 to confirmed contractual statistics.
 
-Configure one shared value or B1–B5 independently in integration options. On a
-V0.2 upgrade the previous target is copied into all five blocks. Current-quarter
-calculations use the active block; sustained forecasts classify and select the
-target for every future quarter separately.
+Initial setup creates one assignment from the explicitly entered target and
+inclusive start/end dates. Integration Options expose a validated JSON period
+editor for one or more non-overlapping assignments. Each object contains
+`effective_from`, `effective_to`, five `block_targets_kw` values, `provenance`
+and an optional `recorded_on` date. This interim editor supports separate
+assignments for 2026–2030 without creating extra config entries.
+
+On a V0.2 upgrade the previous target remains copied into all five legacy fields,
+but its validity is unknown, so migration stores no confirmed assignment and
+does not invent dates. Physical measurements and archiving continue while
+contractual sensors remain unavailable until the user adds a dated assignment.
+Current-quarter calculations use the active dated assignment; sustained
+forecasts resolve the independently applicable assignment and block for every
+future quarter.
 
 Contracted-power assignments are user-owned and date-bound independently from
-tariff calendar rules. The backend period model supports different B1–B5 values
-for non-overlapping future validity periods, retaining provenance and the date a
-record was issued. The V0.3 Home Assistant options UI edits the currently
-effective five values; advance scheduling of future assignments is not yet an
-options-flow feature. A 2026 assignment must not be assumed valid for 2027–2030.
+tariff calendar rules. The period model and Options editor retain provenance and
+the date a record was issued. An expired assignment is never carried into a
+later year; a 2026 assignment must not be assumed valid for 2027–2030.
+
+Example Options value:
+
+```json
+[{"effective_from":"2026-01-01","effective_to":"2026-12-31","block_targets_kw":[3.5,3.9,4.1,4.2,4.2],"provenance":"distributor assignment","recorded_on":"2025-10-17"}]
+```
 
 New entities expose current/next block and target, season, day type, transition
 countdown, calendar year, rule status, and contracted power B1–B5. Calendar
@@ -164,7 +178,7 @@ After review and merge, the HACS custom-repository path is:
 3. Go to **Settings → Devices & services → Add integration** and select
    **SI Grid Monitor**.
 4. Select **One signed live grid-power sensor**, choose a W or kW entity, confirm
-   its sign direction, and explicitly enter your contractual target.
+   its sign direction, and enter the target plus its inclusive validity dates.
 5. Verify the live sign: import must be positive and export negative. Source,
    polarity, target, margin, smoothing, simulation threshold, retention and
    sustained horizon can be changed from the integration options.
@@ -206,9 +220,8 @@ and the HACS repository validator.
 - The calendar is legally verified only for 2026 and 2027 as of 18 October 2026.
   Provisional 2028–2030 continuation requires explicit opt-in and may differ from
   rules later published by URO.
-- Date-bound contracted-power periods are represented and tested in the backend,
-  but V0.3 does not yet provide an options-flow editor for scheduling a future
-  assignment before its effective date.
+- The V0.3 multi-period Options editor is validated JSON rather than a polished
+  per-period form. Invalid, overlapping or reversed periods cannot be saved.
 - Completed quarters retain the tariff policy and rule status that applied when
   they were written. Changing provisional-calendar policy does not relabel old
   rows. Legacy rows without policy provenance remain explicitly unknown.

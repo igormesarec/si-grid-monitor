@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import json
 import math
 from dataclasses import dataclass
 from datetime import date
 from itertools import pairwise
+from typing import Any
 
 from .tariffs.models import TariffClassification
 
@@ -67,3 +69,57 @@ class ContractedPowerSchedule:
     def target_for(self, tariff: TariffClassification) -> float | None:
         period = self.period_for(tariff.local_datetime.date())
         return None if period is None else period.target_for(tariff)
+
+    def to_json(self) -> str:
+        """Return the stable options/archive representation."""
+
+        return json.dumps(
+            [
+                {
+                    "effective_from": period.effective_from.isoformat(),
+                    "effective_to": period.effective_to.isoformat(),
+                    "block_targets_kw": list(period.block_targets_kw),
+                    "provenance": period.provenance,
+                    "recorded_on": (
+                        period.recorded_on.isoformat() if period.recorded_on is not None else None
+                    ),
+                }
+                for period in self.periods
+            ],
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+
+
+def contracted_power_schedule_from_json(value: object) -> ContractedPowerSchedule:
+    """Parse and validate the user-visible multi-period JSON setting."""
+
+    if value in (None, ""):
+        return ContractedPowerSchedule(())
+    try:
+        raw: Any = json.loads(value) if isinstance(value, str) else value
+    except json.JSONDecodeError as err:
+        raise ValueError("contracted-power assignments must be valid JSON") from err
+    if not isinstance(raw, list):
+        raise ValueError("contracted-power assignments must be a JSON list")
+    periods: list[ContractedPowerPeriod] = []
+    for index, item in enumerate(raw, start=1):
+        if not isinstance(item, dict):
+            raise ValueError(f"contracted-power assignment {index} must be an object")
+        try:
+            targets = item["block_targets_kw"]
+            if not isinstance(targets, list) or len(targets) != 5:
+                raise ValueError("block_targets_kw must contain five values")
+            recorded = item.get("recorded_on")
+            periods.append(
+                ContractedPowerPeriod(
+                    effective_from=date.fromisoformat(str(item["effective_from"])),
+                    effective_to=date.fromisoformat(str(item["effective_to"])),
+                    block_targets_kw=tuple(float(target) for target in targets),
+                    provenance=str(item.get("provenance") or "user_configured"),
+                    recorded_on=(date.fromisoformat(str(recorded)) if recorded else None),
+                )
+            )
+        except (KeyError, TypeError, ValueError) as err:
+            raise ValueError(f"invalid contracted-power assignment {index}: {err}") from err
+    return ContractedPowerSchedule(tuple(periods))

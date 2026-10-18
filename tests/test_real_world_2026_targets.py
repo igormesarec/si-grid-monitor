@@ -18,6 +18,7 @@ from custom_components.si_grid_monitor.archive import (
 from custom_components.si_grid_monitor.contracted_power import (
     ContractedPowerPeriod,
     ContractedPowerSchedule,
+    contracted_power_schedule_from_json,
 )
 from custom_components.si_grid_monitor.engine import (
     CompletedQuarter,
@@ -106,6 +107,7 @@ def test_archived_exceedances_retain_effective_2026_target_provenance(tmp_path) 
         safety_margin_kw=0.0,
         block_targets_kw=REAL_2026_TARGETS,
         allow_provisional_tariff=False,
+        contracted_power_periods=REAL_SCHEDULE.periods,
     )
 
     for instant, expected_block, target in REPRESENTATIVE_BLOCKS:
@@ -139,6 +141,10 @@ def test_archived_exceedances_retain_effective_2026_target_provenance(tmp_path) 
         assert record.confirmed_exceeded is True
         assert record.contractual_status == "confirmed"
         assert record.tariff_policy == "official_only"
+        assert record.target_effective_from == "2026-01-01"
+        assert record.target_effective_to == "2026-12-31"
+        assert record.target_provenance == REAL_2026_PERIOD.provenance
+        assert record.target_recorded_on == "2025-10-17"
         archive.upsert_quarter(record)
 
     rows = archive.list_quarters(
@@ -157,6 +163,7 @@ def test_archived_exceedances_retain_effective_2026_target_provenance(tmp_path) 
     )
     assert summary.exceeded_count == 5
     assert summary.provisional_exceeded_count == 0
+    assert {row["target_effective_to"] for row in rows} == {"2026-12-31"}
     archive.close()
 
 
@@ -215,3 +222,38 @@ def test_contracted_power_period_does_not_leak_into_future_years() -> None:
     assert tariff_2027.block == 1
     assert multi_year.target_for(tariff_2027) == 5.0
     assert multi_year.period_for(date(2028, 1, 1)) is None
+
+
+def test_options_representation_supports_separate_2026_through_2030_assignments() -> None:
+    periods = tuple(
+        ContractedPowerPeriod(
+            effective_from=date(year, 1, 1),
+            effective_to=date(year, 12, 31),
+            block_targets_kw=tuple(float(year - 2020 + block / 10) for block in range(1, 6)),
+            provenance=f"synthetic-{year}-assignment",
+        )
+        for year in range(2026, 2031)
+    )
+    restored = contracted_power_schedule_from_json(ContractedPowerSchedule(periods).to_json())
+
+    assert restored.periods == periods
+    assert [restored.period_for(date(year, 6, 1)).provenance for year in range(2026, 2031)] == [
+        f"synthetic-{year}-assignment" for year in range(2026, 2031)
+    ]
+
+
+def test_options_representation_rejects_overlapping_or_invalid_periods() -> None:
+    overlapping = (
+        '[{"effective_from":"2026-01-01","effective_to":"2026-12-31",'
+        '"block_targets_kw":[3.5,3.9,4.1,4.2,4.2]},'
+        '{"effective_from":"2026-12-31","effective_to":"2027-12-31",'
+        '"block_targets_kw":[4,4,4,4,4]}]'
+    )
+    with pytest.raises(ValueError, match="must not overlap"):
+        contracted_power_schedule_from_json(overlapping)
+
+    with pytest.raises(ValueError, match="end precedes"):
+        contracted_power_schedule_from_json(
+            '[{"effective_from":"2027-12-31","effective_to":"2027-01-01",'
+            '"block_targets_kw":[4,4,4,4,4]}]'
+        )

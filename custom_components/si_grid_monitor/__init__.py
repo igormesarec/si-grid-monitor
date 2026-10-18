@@ -16,6 +16,7 @@ def migrated_v3_settings(
 
     from .const import (
         CONF_ALLOW_PROVISIONAL_TARIFF,
+        CONF_CONTRACTED_POWER_PERIODS,
         CONF_TARGET_B1_KW,
         CONF_TARGET_B2_KW,
         CONF_TARGET_B3_KW,
@@ -38,6 +39,9 @@ def migrated_v3_settings(
         CONF_TARGET_B4_KW: target,
         CONF_TARGET_B5_KW: target,
         CONF_ALLOW_PROVISIONAL_TARIFF: False,
+        # Historical settings have no auditable validity dates. Preserve their
+        # values, but require an explicit period before contractual advice.
+        CONF_CONTRACTED_POWER_PERIODS: "[]",
     }
     destination = migrated_options if CONF_TARGET_KW in migrated_options else migrated_data
     for key, value in additions.items():
@@ -53,8 +57,18 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if entry.version < 3:
         data, options = migrated_v3_settings(dict(entry.data), dict(entry.options))
         hass.config_entries.async_update_entry(
-            entry, data=data, options=options, version=3, minor_version=0
+            entry, data=data, options=options, version=3, minor_version=1
         )
+    if entry.version == 3 and entry.minor_version < 1:
+        from .const import CONF_CONTRACTED_POWER_PERIODS
+
+        options = dict(entry.options)
+        if (
+            CONF_CONTRACTED_POWER_PERIODS not in entry.data
+            and CONF_CONTRACTED_POWER_PERIODS not in options
+        ):
+            options[CONF_CONTRACTED_POWER_PERIODS] = "[]"
+        hass.config_entries.async_update_entry(entry, options=options, version=3, minor_version=1)
     return True
 
 

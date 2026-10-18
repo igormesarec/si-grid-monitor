@@ -27,4 +27,7 @@ The record does not establish any target for 2027–2030. The period API support
 separate, non-overlapping future periods, but future values must be explicitly
 provided by the user. The existing V0.2 migration still copies its effective
 single target—4.80 kW in the historical test fixture—to all five V0.3 fields; it
-never substitutes the values above.
+never substitutes the values above or invents validity dates. In Home Assistant,
+the 2026 fixture can be entered through the validated multi-period JSON field in
+Integration Options; after 31 December 2026 it expires and contractual advice is
+unavailable until a separate later assignment is configured.

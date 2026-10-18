@@ -20,15 +20,20 @@ All notable changes to SI Grid Monitor will be documented here.
   calendar year, rule status and five contracted-power sensors.
 - Daily, weekly, monthly, yearly, next-transition and upcoming-quarter calendar
   query methods for future dashboard use.
-- SQLite schema 3 tariff provenance and five-target configuration epochs.
+- SQLite schema 5 tariff, date-bound target and five-target configuration epochs.
 - A documented, date-bound real-world 2026 B1–B5 validation fixture and backend
   contracted-power period model; fixture values remain user configuration and
   are never substituted for defaults or migrated V0.2 targets.
+- A validated Options-flow JSON editor for multiple non-overlapping assignments,
+  including separate 2026–2030 validity periods and immutable target provenance.
 
 ### Correctness
 
 - Current and sustained import-only calculations select the target independently
   for every applicable fixed quarter.
+- Runtime calculations, target sensors, sustained forecasts and SQLite rows use
+  the dated assignment. Expiry leaves physical monitoring/archive active while
+  contractual outputs explicitly become unavailable.
 - Automated acceptance coverage verifies target selection, live advice,
   forecasts, tariff transitions and archived confirmed exceedances against the
   selected block target for the documented 2026 fixture.
@@ -49,6 +54,8 @@ All notable changes to SI Grid Monitor will be documented here.
   after restart, including its quality and provenance.
 - Tariff-policy changes create configuration epochs and completed rows retain the
   policy that applied when they were recorded.
+- V0.2 targets remain preserved in their legacy fields, but migration does not
+  invent validity dates or treat them as a confirmed dated assignment.
 - Recorder backfill now replays each historical source/sign configuration epoch
   and its effective contractual target instead of applying current settings to
   older measurements. Unknown or mixed provenance suppresses exceedance claims.
