@@ -131,3 +131,12 @@ disable/enable, removal and clean reinstall. Record Home Assistant version,
 database backend, source update cadence, logs, entity availability, archive row
 counts and any mismatch with official meter quarters. This plan validates
 software behavior only; distributor readings remain authoritative.
+
+## PR #5 UI correction acceptance
+
+1. During initial setup, inspect explanatory text underneath individual fields (sensor polarity, each B1–B5 input, contract dates, margin, smoothing, horizon); repeat in Options. Switch HA locale between English and Slovenian.
+2. On TODAY, verify actual positive import bars, negative average export bars, distinct B1–B5 colors, and a contractual limit marker that changes at block boundaries. Missing intervals must not appear as measured zero.
+3. Click a stored historical quarter. Verify its detailed SQLite summary appears on TODAY (not only OVERVIEW). Click a missing quarter and verify an honest missing/no-record message.
+4. On TARIFF CALENDAR, click arbitrary hours and check block, limit, rule status/version, day type, holiday, UTC offset, and repeated 02:00 DST fold.
+5. On OVERVIEW, verify next-lower-limit information separates 'outside sustained horizon' from available/incomplete horizon-wide forecast advice. A 0.10-kW target reduction must not imply 0.10 kW of load shedding without demand evidence.
+6. Test same screens on small mobile width and dark theme; ensure no stale selection leaks across dates or meter entries.
