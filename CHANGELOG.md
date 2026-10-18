@@ -4,6 +4,27 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-18
+
+- Added a guided six-step setup flow and fixed untouched dropdown defaults.
+- Replaced the user-facing JSON editor with native dated B1-B5 assignment management.
+- Added an automatically provisioned sidebar panel with no Lovelace, YAML, or resource setup.
+- Added authenticated bounded WebSocket queries and responsive Overview, Today, and Tariff Calendar views.
+- Added bounded next-lower-target detection while preserving per-quarter sustained forecasting.
+- Preserved SQLite schema 5, provenance, V0.3 schedules, and entity identities.
+- Corrected TODAY with a mathematically zero-centered shared-kW SVG: import-only
+  demand is above zero, average export is below zero, and block-specific targets
+  form a scaled stepped line across all 92/96/100 DST-aware quarters.
+- Added live-quarter overlays and explicit UPCOMING/MISSING states without
+  promoting projections to completed demand or confirmed exceedances.
+- Unified daily and B1-B5 archive validity rules, separated partial energy, and
+  excluded incomplete, provisional, unknown-configuration and simulation data
+  from confirmed contractual statistics.
+- Isolated multiple meters with entry-scoped archive requests, state resets and
+  asynchronous generation guards; improved exact-quarter/DST archive navigation.
+- Clarified lower-limit transitions versus forecasted reduction and added
+  behavioral Python/Node regression suites plus frontend validation in CI.
+
 ## [0.3.0] - 2026-10-18
 
 ### Added

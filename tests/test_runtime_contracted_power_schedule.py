@@ -103,6 +103,7 @@ class _Hass:
 
 class _Entry:
     entry_id = "runtime-period-test"
+    title = "SI Grid Monitor test"
 
     def __init__(self, data: dict[str, object]) -> None:
         self.data = data
@@ -155,6 +156,28 @@ def _feed_fresh_history(runtime: GridMonitorRuntime, now: datetime) -> None:
     runtime._last_checkpoint_utc = now
 
 
+def test_dashboard_finds_real_fixture_b4_to_b3_lower_target(tmp_path) -> None:
+    runtime, _schedule = _runtime(tmp_path)
+    now = _local_utc(2026, 10, 18, 20, 0)
+    _feed_fresh_history(runtime, now)
+    runtime._refresh(now)
+
+    result = runtime.dashboard_transitions()
+    assert result["current_block"] == 4
+    assert result["current_target_kw"] == 4.20
+    assert result["next_lower_target"]["to_block"] == 3
+    assert result["next_lower_target"]["from_target_kw"] == 4.20
+    assert result["next_lower_target"]["to_target_kw"] == 4.10
+    assert result["next_lower_target"]["decrease_kw"] == pytest.approx(0.10)
+    assert result["next_lower_target"]["direction"] == "decrease"
+    assert result["next_lower_target"]["forecast_status"] in {
+        "reduction_needed",
+        "no_reduction_projected",
+        "unavailable",
+    }
+    assert result["sustained_horizon_minutes"] == 15
+
+
 def test_runtime_expires_2026_assignment_without_reusing_it_in_2027(tmp_path) -> None:
     runtime, schedule = _runtime(tmp_path)
 
@@ -170,6 +193,11 @@ def test_runtime_expires_2026_assignment_without_reusing_it_in_2027(tmp_path) ->
     assert runtime.snapshot is not None
     assert runtime.snapshot.projection.operational_target_kw == 3.50
     assert runtime.sustained_forecast is not None
+    dashboard = runtime.dashboard_current()
+    assert dashboard["available"] is True
+    assert dashboard["tariff"]["target_kw"] == 3.50
+    assert dashboard["quarter"]["import_kwh"] == pytest.approx(runtime.snapshot.quarter_import_kwh)
+    assert dashboard["trace"]
     assert (
         runtime._operational_target_for_quarter(in_2026, in_2026 + timedelta(minutes=15), 0.0)
         == 3.50
@@ -199,6 +227,11 @@ def test_runtime_expires_2026_assignment_without_reusing_it_in_2027(tmp_path) ->
     assert runtime.snapshot.current_signed_power_kw == 3.0
     assert runtime.snapshot.projection.operational_target_kw is None
     assert runtime.sustained_forecast is None
+    dashboard_2027 = runtime.dashboard_current()
+    assert dashboard_2027["available"] is True
+    assert dashboard_2027["power"]["signed_kw"] == 3.0
+    assert dashboard_2027["tariff"]["target_kw"] is None
+    assert dashboard_2027["contractual_available"] is False
     with pytest.raises(ValueError, match="tariff target unavailable"):
         runtime._operational_target_for_quarter(in_2027, in_2027 + timedelta(minutes=15), 0.0)
 

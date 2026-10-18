@@ -202,6 +202,220 @@ class GridMonitorRuntime:
     def target_for_tariff(self, tariff: TariffClassification) -> float | None:
         return self.contracted_power_schedule.target_for(tariff)
 
+    def dashboard_current(self) -> dict[str, object]:
+        """Return a bounded, serializable live view for the authenticated panel."""
+
+        snapshot = self.snapshot
+        tariff = self.current_tariff
+        assignment = self.current_assignment
+        if snapshot is None:
+            return {
+                "entry_id": self.entry.entry_id,
+                "title": self.entry.title,
+                "available": False,
+                "reason": self.contractual_status_reason or "waiting_for_valid_measurement",
+                "trace": [],
+            }
+        projection = snapshot.projection
+        sustained = self.sustained_forecast
+        quarter_start = snapshot.bounds.start_utc
+        trace = [
+            {"timestamp": sample.timestamp_utc.isoformat(), "signed_kw": sample.signed_kw}
+            for sample in self.engine.buffer.samples
+            if sample.timestamp_utc >= quarter_start
+        ]
+        return {
+            "entry_id": self.entry.entry_id,
+            "title": self.entry.title,
+            "available": True,
+            "now_utc": snapshot.now_utc.isoformat(),
+            "quarter": {
+                "start_utc": quarter_start.isoformat(),
+                "end_utc": snapshot.bounds.end_utc.isoformat(),
+                "start_local": snapshot.bounds.start_local.isoformat(),
+                "end_local": snapshot.bounds.end_local.isoformat(),
+                "elapsed_seconds": snapshot.elapsed_seconds,
+                "remaining_seconds": snapshot.remaining_seconds,
+                "import_kwh": snapshot.quarter_import_kwh,
+                "export_kwh": snapshot.quarter_export_kwh,
+                "signed_net_kwh": snapshot.quarter_signed_net_kwh,
+                "import_average_kw": snapshot.current_import_average_kw,
+                "signed_average_kw": snapshot.current_signed_average_kw,
+                "coverage_seconds": snapshot.coverage_seconds,
+                "gap_seconds": snapshot.gap_seconds,
+                "quality": snapshot.quality.value,
+            },
+            "power": {
+                "signed_kw": snapshot.current_signed_power_kw,
+                "import_kw": (
+                    max(0.0, snapshot.current_signed_power_kw)
+                    if snapshot.current_signed_power_kw is not None
+                    else None
+                ),
+                "export_kw": (
+                    max(0.0, -snapshot.current_signed_power_kw)
+                    if snapshot.current_signed_power_kw is not None
+                    else None
+                ),
+                "input_stale": snapshot.input_stale,
+            },
+            "tariff": {
+                "block": tariff.block if tariff else None,
+                "season": tariff.season.value if tariff else None,
+                "day_type": tariff.day_type.value if tariff else None,
+                "rule_status": tariff.rule_status.value if tariff else None,
+                "rule_version": tariff.rule_version if tariff else None,
+                "target_kw": self.effective_target_kw,
+                "assignment_effective_from": (
+                    assignment.effective_from.isoformat() if assignment else None
+                ),
+                "assignment_effective_to": (
+                    assignment.effective_to.isoformat() if assignment else None
+                ),
+            },
+            "projection": {
+                "operational_target_kw": projection.operational_target_kw,
+                "budget_kwh": projection.budget_kwh,
+                "budget_remaining_kwh": projection.budget_remaining_kwh,
+                "allowed_remaining_import_kw": projection.allowed_remaining_import_kw,
+                "forecast_instant_kw": projection.forecast_instant_kw,
+                "forecast_smoothed_kw": projection.forecast_smoothed_kw,
+                "forecast_instant_utilization_pct": (projection.forecast_instant_utilization_pct),
+                "forecast_smoothed_utilization_pct": (projection.forecast_smoothed_utilization_pct),
+                "current_utilization_pct": projection.current_utilization_pct,
+                "can_add_kw": projection.can_add_kw,
+                "must_reduce_kw": projection.must_reduce_kw,
+                "unrecoverable": projection.unrecoverable,
+                "projected_exceedance": projection.projected_exceedance,
+            },
+            "sustained": (
+                {
+                    "can_add_kw": sustained.can_add_kw,
+                    "must_reduce_kw": sustained.must_reduce_kw,
+                    "quality": sustained.quality.value,
+                    "horizon_minutes": sustained.horizon_minutes,
+                    "smoothing_seconds": sustained.smoothing_seconds,
+                    "coverage_seconds": sustained.coverage_seconds,
+                    "limiting_quarter_start_utc": (
+                        sustained.limiting_quarter_start_utc.isoformat()
+                        if sustained.limiting_quarter_start_utc
+                        else None
+                    ),
+                    "limiting_target_kw": sustained.limiting_target_kw,
+                    "reason": sustained.reason,
+                    "assumption": sustained.assumption,
+                }
+                if sustained
+                else {"quality": "unavailable", "reason": self.sustained_status_reason}
+            ),
+            "contractual_available": self.current_contractual_available,
+            "contractual_confirmed": self.current_contractual_confirmed,
+            "contractual_status_reason": self.contractual_status_reason,
+            "last_completed_import_demand_kw": self.last_completed_import_demand_kw,
+            "last_completed_signed_average_kw": self.last_completed_signed_average_kw,
+            "trace": trace,
+            "detailed_trace_provenance": "bounded_runtime_samples",
+        }
+
+    def dashboard_transitions(
+        self, *, limit: int = 3, lookahead_days: int = 31
+    ) -> dict[str, object]:
+        """Return tariff changes and the next verified lower contracted target."""
+
+        now = (self.snapshot.now_utc if self.snapshot else dt_util.utcnow()).astimezone(UTC)
+        current = self.tariff_calendar.classify(now)
+        current_target = self.target_for_tariff(current)
+        transitions: list[dict[str, object]] = []
+        lower: dict[str, object] | None = None
+        previous = current
+        cursor = quarter_bounds(now).end_utc
+        end = now + timedelta(days=lookahead_days)
+        while cursor <= end and (len(transitions) < limit or lower is None):
+            candidate = self.tariff_calendar.classify(cursor)
+            if (candidate.block, candidate.rule_status) != (
+                previous.block,
+                previous.rule_status,
+            ):
+                target = self.target_for_tariff(candidate)
+                item = {
+                    "timestamp_utc": cursor.isoformat(),
+                    "local_datetime": candidate.local_datetime.isoformat(),
+                    "from_block": previous.block,
+                    "to_block": candidate.block,
+                    "from_target_kw": self.target_for_tariff(previous),
+                    "to_target_kw": target,
+                    "rule_status": candidate.rule_status.value,
+                    "seconds_until": max(0.0, (cursor - now).total_seconds()),
+                    "difference_kw": (
+                        target - self.target_for_tariff(previous)
+                        if target is not None and self.target_for_tariff(previous) is not None
+                        else None
+                    ),
+                    "direction": (
+                        "decrease"
+                        if target is not None
+                        and self.target_for_tariff(previous) is not None
+                        and target < self.target_for_tariff(previous)
+                        else "increase"
+                        if target is not None
+                        and self.target_for_tariff(previous) is not None
+                        and target > self.target_for_tariff(previous)
+                        else "unchanged"
+                        if target is not None and self.target_for_tariff(previous) is not None
+                        else "unknown"
+                    ),
+                }
+                if len(transitions) < limit:
+                    transitions.append(item)
+                if (
+                    lower is None
+                    and current_target is not None
+                    and target is not None
+                    and target < current_target
+                    and candidate.rule_status == RuleStatus.OFFICIAL
+                ):
+                    lower = {
+                        **item,
+                        "decrease_kw": current_target - target,
+                        "inside_sustained_horizon": (
+                            (cursor - now).total_seconds()
+                            <= int(self.settings[CONF_SUSTAINED_HORIZON_MINUTES]) * 60
+                        ),
+                        "forecast_status": (
+                            "reduction_needed"
+                            if self.sustained_forecast is not None
+                            and self.sustained_forecast.quality.value == "available"
+                            and (self.sustained_forecast.must_reduce_kw or 0.0) > EPSILON
+                            else "no_reduction_projected"
+                            if self.sustained_forecast is not None
+                            and self.sustained_forecast.quality.value == "available"
+                            else "unavailable"
+                        ),
+                        "forecast_reason": (
+                            self.sustained_forecast.reason
+                            if self.sustained_forecast is not None
+                            else self.sustained_status_reason
+                        ),
+                    }
+                previous = candidate
+            cursor += timedelta(minutes=15)
+        return {
+            "current_block": current.block,
+            "current_target_kw": current_target,
+            "transitions": transitions,
+            "next_lower_target": lower,
+            "lookahead_days": lookahead_days,
+            "sustained_horizon_minutes": int(
+                self.settings[CONF_SUSTAINED_HORIZON_MINUTES]
+            ),
+            "sustained_limiting_quarter_start_utc": (
+                self.sustained_forecast.limiting_quarter_start_utc.isoformat()
+                if self.sustained_forecast is not None
+                and self.sustained_forecast.limiting_quarter_start_utc is not None
+                else None
+            ),
+        }
+
     def _operational_target_for_quarter(
         self, start: datetime, _end: datetime, safety_margin_kw: float
     ) -> float:

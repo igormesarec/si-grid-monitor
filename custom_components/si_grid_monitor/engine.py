@@ -320,6 +320,12 @@ class TimeWeightedBuffer:
         while len(self._samples) > 1 and self._samples[1].timestamp_utc < cutoff:
             self._samples.pop(0)
 
+    @property
+    def samples(self) -> tuple[PowerSample, ...]:
+        """Return an immutable view for the local authenticated dashboard."""
+
+        return tuple(self._samples)
+
     def averages(
         self, *, end: datetime, window_seconds: int
     ) -> tuple[WindowAverage, WindowAverage]:
