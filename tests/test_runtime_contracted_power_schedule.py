@@ -169,6 +169,13 @@ def test_dashboard_finds_real_fixture_b4_to_b3_lower_target(tmp_path) -> None:
     assert result["next_lower_target"]["from_target_kw"] == 4.20
     assert result["next_lower_target"]["to_target_kw"] == 4.10
     assert result["next_lower_target"]["decrease_kw"] == pytest.approx(0.10)
+    assert result["next_lower_target"]["direction"] == "decrease"
+    assert result["next_lower_target"]["forecast_status"] in {
+        "reduction_needed",
+        "no_reduction_projected",
+        "unavailable",
+    }
+    assert result["sustained_horizon_minutes"] == 15
 
 
 def test_runtime_expires_2026_assignment_without_reusing_it_in_2027(tmp_path) -> None:

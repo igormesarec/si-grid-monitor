@@ -140,3 +140,9 @@ software behavior only; distributor readings remain authoritative.
 4. On TARIFF CALENDAR, click arbitrary hours and check block, limit, rule status/version, day type, holiday, UTC offset, and repeated 02:00 DST fold.
 5. On OVERVIEW, verify next-lower-limit information separates 'outside sustained horizon' from available/incomplete horizon-wide forecast advice. A 0.10-kW target reduction must not imply 0.10 kW of load shedding without demand evidence.
 6. Test same screens on small mobile width and dark theme; ensure no stale selection leaks across dates or meter entries.
+7. Use a quarter with 0.75 kWh imported and 0.25 kWh exported. Confirm the chart shows +3.00 kW import above zero, -1.00 kW average export below zero and +4.20 kW target on the same Y-axis scale.
+8. Keep TODAY open during a quarter boundary. Confirm the previous LIVE slot becomes its archived completed row after refresh and the new interval becomes LIVE; neither projected exceedance is added to confirmed exceedances.
+9. Switch rapidly between two configured meters while TODAY and archive requests are in flight. Confirm the active-meter label changes, every prior selection clears and a delayed response cannot repopulate the new meter with old data.
+10. On spring-forward, normal and autumn-fallback dates verify 92, 96 and 100 fixed-quarter slots. For the repeated local hour, verify the archive detail labels show distinct UTC offsets.
+11. Compare the sum of B1-B5 valid counts, import/export energy and confirmed exceedances with the daily totals. Add incomplete, provisional, unknown-configuration and simulation rows in a disposable test archive and confirm none become confirmed contractual exceedances.
+12. Disconnect/reconnect the Home Assistant frontend and reload the integration. Confirm there is one refresh timer, one sidebar item, automatic retry after a temporary WebSocket error, and no per-second Recorder writes from the countdown.

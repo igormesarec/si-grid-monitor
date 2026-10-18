@@ -22,6 +22,12 @@ jobs:
       - run: python -m pytest
       - run: python -m ruff check .
       - run: python -m compileall -q custom_components
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - run: node --check custom_components/si_grid_monitor/frontend/dashboard.js
+      - run: node --check custom_components/si_grid_monitor/frontend/dashboard-model.mjs
+      - run: node --test frontend_tests/*.test.mjs
 
   hassfest:
     name: hassfest

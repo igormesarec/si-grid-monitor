@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -142,6 +143,105 @@ class ArchiveSummary:
     average_import_demand_kw: float | None
     minimum_signed_average_kw: float | None
     maximum_signed_average_kw: float | None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveRowValidity:
+    """Shared archive/dashboard interpretation of one immutable quarter row."""
+
+    included: bool
+    measured_valid: bool
+    incomplete: bool
+    unknown_configuration: bool
+    contractual_eligible: bool
+    confirmed_exceeded: bool
+    provisional_exceeded: bool
+
+
+_VALID_MEASUREMENT_QUALITIES = {
+    DataQuality.MEASURED_ALIGNED.value,
+    DataQuality.COUNTER_DERIVED.value,
+    DataQuality.RECONSTRUCTED.value,
+}
+_MEASURABLE_CONFIGURATION_STATUSES = {
+    ConfigurationStatus.KNOWN.value,
+    ConfigurationStatus.TARGET_UNKNOWN.value,
+    ConfigurationStatus.TARGET_MIXED.value,
+}
+
+
+def archive_row_validity(
+    row: Mapping[str, Any], *, include_simulation: bool = False
+) -> ArchiveRowValidity:
+    """Classify a row without changing its original target or tariff provenance."""
+
+    simulation = bool(row["simulation"])
+    included = include_simulation or not simulation
+    quality = str(row["quality"])
+    configuration_status = str(row["configuration_status"])
+    measured_valid = (
+        included
+        and quality in _VALID_MEASUREMENT_QUALITIES
+        and configuration_status in _MEASURABLE_CONFIGURATION_STATUSES
+    )
+    contractual_eligible = (
+        measured_valid
+        and not simulation
+        and configuration_status == ConfigurationStatus.KNOWN.value
+        and row["contractual_target_kw"] is not None
+        and row["contractual_status"] == "confirmed"
+    )
+    return ArchiveRowValidity(
+        included=included,
+        measured_valid=measured_valid,
+        incomplete=included
+        and quality in {DataQuality.INCOMPLETE.value, DataQuality.UNAVAILABLE.value},
+        unknown_configuration=included
+        and configuration_status not in _MEASURABLE_CONFIGURATION_STATUSES,
+        contractual_eligible=contractual_eligible,
+        confirmed_exceeded=contractual_eligible and row["confirmed_exceeded"] == 1,
+        provisional_exceeded=(
+            measured_valid
+            and not simulation
+            and row["contractual_status"] == "provisional_estimate"
+            and row["exceeded"] == 1
+        ),
+    )
+
+
+def summarize_archive_rows(
+    rows: list[Mapping[str, Any]], *, include_simulation: bool = False
+) -> ArchiveSummary:
+    """Aggregate rows using the same auditable validity rules everywhere."""
+
+    classified = [
+        (row, archive_row_validity(row, include_simulation=include_simulation))
+        for row in rows
+    ]
+    included = [(row, validity) for row, validity in classified if validity.included]
+    valid = [row for row, validity in included if validity.measured_valid]
+    partial = [row for row, validity in included if not validity.measured_valid]
+    demands = [float(row["import_demand_kw"]) for row in valid]
+    signed = [float(row["signed_average_kw"]) for row in valid]
+    return ArchiveSummary(
+        valid_count=len(valid),
+        incomplete_count=sum(validity.incomplete for _, validity in included),
+        exceeded_count=sum(validity.confirmed_exceeded for _, validity in included),
+        provisional_exceeded_count=sum(
+            validity.provisional_exceeded for _, validity in included
+        ),
+        unknown_configuration_count=sum(
+            validity.unknown_configuration for _, validity in included
+        ),
+        import_kwh=sum(float(row["import_kwh"]) for row in valid),
+        export_kwh=sum(float(row["export_kwh"]) for row in valid),
+        partial_observed_import_kwh=sum(float(row["import_kwh"]) for row in partial),
+        partial_observed_export_kwh=sum(float(row["export_kwh"]) for row in partial),
+        maximum_import_demand_kw=max(demands, default=None),
+        average_import_demand_kw=sum(demands) / len(demands) if demands else None,
+        minimum_signed_average_kw=min(signed, default=None),
+        maximum_signed_average_kw=max(signed, default=None),
+    )
 
 
 def tariff_for_configuration(
@@ -740,59 +840,15 @@ class QuarterArchive:
     ) -> ArchiveSummary:
         """Aggregate valid quarters without promoting partial observations."""
 
-        simulation_clause = "" if include_simulation else "AND simulation=0"
-        valid = """quality IN ('measured_aligned','counter_derived','reconstructed')
-                   AND configuration_status IN ('known','target_unknown','target_mixed')"""
         with self._lock:
-            row = self._db.execute(
-                f"""SELECT
-                    SUM(CASE WHEN {valid} THEN 1 ELSE 0 END) valid_count,
-                    SUM(CASE WHEN quality IN ('incomplete','unavailable') THEN 1 ELSE 0 END)
-                        incomplete_count,
-                    SUM(CASE WHEN configuration_status NOT IN
-                        ('known','target_unknown','target_mixed') THEN 1 ELSE 0 END)
-                        unknown_configuration_count,
-                    SUM(CASE WHEN {valid} AND confirmed_exceeded=1
-                        AND simulation=0 THEN 1 ELSE 0 END)
-                        exceeded_count,
-                    SUM(CASE WHEN {valid} AND contractual_status='provisional_estimate'
-                        AND exceeded=1 AND simulation=0 THEN 1 ELSE 0 END)
-                        provisional_exceeded_count,
-                    COALESCE(SUM(CASE WHEN {valid} THEN import_kwh ELSE 0 END),0)
-                        import_kwh,
-                    COALESCE(SUM(CASE WHEN {valid} THEN export_kwh ELSE 0 END),0)
-                        export_kwh,
-                    COALESCE(SUM(CASE WHEN NOT ({valid}) THEN import_kwh ELSE 0 END),0)
-                        partial_observed_import_kwh,
-                    COALESCE(SUM(CASE WHEN NOT ({valid}) THEN export_kwh ELSE 0 END),0)
-                        partial_observed_export_kwh,
-                    MAX(CASE WHEN {valid} THEN import_demand_kw END)
-                        maximum_import_demand_kw,
-                    AVG(CASE WHEN {valid} THEN import_demand_kw END)
-                        average_import_demand_kw,
-                    MIN(CASE WHEN {valid} THEN signed_average_kw END)
-                        minimum_signed_average_kw,
-                    MAX(CASE WHEN {valid} THEN signed_average_kw END)
-                        maximum_signed_average_kw
-                   FROM quarters WHERE namespace=? AND start_utc>=? AND start_utc<?
-                   {simulation_clause}""",
+            rows = list(
+                self._db.execute(
+                    """SELECT * FROM quarters WHERE namespace=? AND start_utc>=?
+                       AND start_utc<? ORDER BY start_utc""",
                 (namespace, _utc_iso(start_utc), _utc_iso(end_utc)),
-            ).fetchone()
-        return ArchiveSummary(
-            valid_count=int(row["valid_count"] or 0),
-            incomplete_count=int(row["incomplete_count"] or 0),
-            exceeded_count=int(row["exceeded_count"] or 0),
-            provisional_exceeded_count=int(row["provisional_exceeded_count"] or 0),
-            unknown_configuration_count=int(row["unknown_configuration_count"] or 0),
-            import_kwh=float(row["import_kwh"]),
-            export_kwh=float(row["export_kwh"]),
-            partial_observed_import_kwh=float(row["partial_observed_import_kwh"]),
-            partial_observed_export_kwh=float(row["partial_observed_export_kwh"]),
-            maximum_import_demand_kw=_optional_float(row["maximum_import_demand_kw"]),
-            average_import_demand_kw=_optional_float(row["average_import_demand_kw"]),
-            minimum_signed_average_kw=_optional_float(row["minimum_signed_average_kw"]),
-            maximum_signed_average_kw=_optional_float(row["maximum_signed_average_kw"]),
-        )
+                ).fetchall()
+            )
+        return summarize_archive_rows(rows, include_simulation=include_simulation)
 
     def _migrate(self) -> None:
         version = self.schema_version

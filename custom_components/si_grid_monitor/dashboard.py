@@ -22,6 +22,7 @@ from .const import (
     PANEL_URL_PATH,
     VERSION,
 )
+from .dashboard_models import build_day_view
 from .engine import quarter_starts_for_local_day
 
 DATA_RUNTIMES = "runtimes"
@@ -183,73 +184,23 @@ async def ws_day(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> N
         return
     starts = quarter_starts_for_local_day(local_date)
     start, end = starts[0], starts[-1] + timedelta(minutes=15)
-    rows, summary = await asyncio.gather(
-        hass.async_add_executor_job(runtime.archive.list_quarters, runtime.namespace, start, end),
-        hass.async_add_executor_job(runtime.archive.summarize, runtime.namespace, start, end),
+    stored = await hass.async_add_executor_job(
+        runtime.archive.list_quarters, runtime.namespace, start, end
     )
-    by_start = {str(row["start_utc"]): _row(row) for row in rows}
-    quarters: list[dict[str, Any]] = []
-    for quarter_start in starts:
-        key = quarter_start.isoformat()
-        stored = by_start.get(key)
-        tariff = runtime.tariff_calendar.classify(quarter_start)
-        quarters.append(
-            stored
-            or {
-                "start_utc": key,
-                "end_utc": (quarter_start + timedelta(minutes=15)).isoformat(),
-                "quality": "missing",
-                "tariff_block": tariff.block,
-                "contractual_target_kw": runtime.target_for_tariff(tariff),
-            }
-        )
-    calendar_hours = runtime.tariff_calendar.daily_view(local_date)
-    block_summary: list[dict[str, Any]] = []
-    for block in range(1, 6):
-        block_rows = [row for row in rows if row["tariff_block"] == block]
-        valid = [row for row in block_rows if row["quality"] not in {"incomplete", "unavailable"}]
-        block_start = next(
-            (item for item in starts if runtime.tariff_calendar.classify(item).block == block),
-            None,
-        )
-        periods = [
-            item["local_datetime"].strftime("%H:%M")
-            for item in calendar_hours
-            if item["block"] == block
-        ]
-        block_summary.append(
-            {
-                "block": block,
-                "active": block_start is not None,
-                "periods": periods,
-                "target_kw": (
-                    runtime.target_for_tariff(runtime.tariff_calendar.classify(block_start))
-                    if block_start is not None
-                    else None
-                ),
-                "valid_count": len(valid),
-                "maximum_import_demand_kw": max(
-                    (float(row["import_demand_kw"]) for row in valid), default=None
-                ),
-                "average_import_demand_kw": (
-                    sum(float(row["import_demand_kw"]) for row in valid) / len(valid)
-                    if valid
-                    else None
-                ),
-                "import_kwh": sum(float(row["import_kwh"]) for row in valid),
-                "export_kwh": sum(float(row["export_kwh"]) for row in valid),
-                "confirmed_exceedances": sum(row["confirmed_exceeded"] == 1 for row in valid),
-            }
-        )
+    rows = [_row(row) for row in stored]
+    live = runtime.dashboard_current()
+    now = datetime.fromisoformat(str(live.get("now_utc"))).astimezone(UTC) if live.get(
+        "now_utc"
+    ) else datetime.now(UTC)
     connection.send_result(
         msg["id"],
-        {
-            "date": local_date.isoformat(),
-            "expected_quarters": len(starts),
-            "quarters": quarters,
-            "summary": {**_json(summary), "missing_count": len(starts) - len(rows)},
-            "blocks": block_summary,
-        },
+        build_day_view(
+            runtime=runtime,
+            local_date=local_date,
+            rows=rows,
+            now_utc=now,
+            live=live,
+        ),
     )
 
 

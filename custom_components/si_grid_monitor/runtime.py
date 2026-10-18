@@ -346,6 +346,24 @@ class GridMonitorRuntime:
                     "to_target_kw": target,
                     "rule_status": candidate.rule_status.value,
                     "seconds_until": max(0.0, (cursor - now).total_seconds()),
+                    "difference_kw": (
+                        target - self.target_for_tariff(previous)
+                        if target is not None and self.target_for_tariff(previous) is not None
+                        else None
+                    ),
+                    "direction": (
+                        "decrease"
+                        if target is not None
+                        and self.target_for_tariff(previous) is not None
+                        and target < self.target_for_tariff(previous)
+                        else "increase"
+                        if target is not None
+                        and self.target_for_tariff(previous) is not None
+                        and target > self.target_for_tariff(previous)
+                        else "unchanged"
+                        if target is not None and self.target_for_tariff(previous) is not None
+                        else "unknown"
+                    ),
                 }
                 if len(transitions) < limit:
                     transitions.append(item)
@@ -363,6 +381,21 @@ class GridMonitorRuntime:
                             (cursor - now).total_seconds()
                             <= int(self.settings[CONF_SUSTAINED_HORIZON_MINUTES]) * 60
                         ),
+                        "forecast_status": (
+                            "reduction_needed"
+                            if self.sustained_forecast is not None
+                            and self.sustained_forecast.quality.value == "available"
+                            and (self.sustained_forecast.must_reduce_kw or 0.0) > EPSILON
+                            else "no_reduction_projected"
+                            if self.sustained_forecast is not None
+                            and self.sustained_forecast.quality.value == "available"
+                            else "unavailable"
+                        ),
+                        "forecast_reason": (
+                            self.sustained_forecast.reason
+                            if self.sustained_forecast is not None
+                            else self.sustained_status_reason
+                        ),
                     }
                 previous = candidate
             cursor += timedelta(minutes=15)
@@ -372,6 +405,15 @@ class GridMonitorRuntime:
             "transitions": transitions,
             "next_lower_target": lower,
             "lookahead_days": lookahead_days,
+            "sustained_horizon_minutes": int(
+                self.settings[CONF_SUSTAINED_HORIZON_MINUTES]
+            ),
+            "sustained_limiting_quarter_start_utc": (
+                self.sustained_forecast.limiting_quarter_start_utc.isoformat()
+                if self.sustained_forecast is not None
+                and self.sustained_forecast.limiting_quarter_start_utc is not None
+                else None
+            ),
         }
 
     def _operational_target_for_quarter(

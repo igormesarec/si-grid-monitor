@@ -28,7 +28,8 @@ def test_dashboard_bundle_is_self_contained_and_uses_authenticated_websocket() -
     assert "si_grid_monitor/entries" in bundle
     assert "https://" not in bundle
     assert "localStorage" not in bundle
-    assert "setInterval(()=>this._tick(),1000)" in bundle
+    assert "setInterval(() => this._tick(), 1000)" in bundle
+    assert "RequestGate" in bundle
 
 
 def test_master_specification_is_not_replaced_by_v04_addendum() -> None:
@@ -66,13 +67,10 @@ def test_today_and_calendar_expose_interactive_details_and_target() -> None:
     assert "this._historicalCard()" in bundle
     assert 'data-hour=' in bundle
     assert "Selected hour" in bundle
-    assert "this._selectedHourUtc=x.dataset.hour" in bundle
-    # Same B1..B5 CSS convention for all daily intervals, with a stepped
-    # contractual limit reference computed from each individual quarter.
-    assert 'class="bar b${esc(q.tariff_block||0)}' in bundle
-    assert 'class="target-segment"' in bundle
-    assert "q.contractual_target_kw" in bundle
-    assert "No archived summary for this interval" in bundle
+    assert "this._selectedHourUtc = element.dataset.hour" in bundle
+    assert 'class="target-step"' in bundle
+    assert "todayChartModel(quarters)" in bundle
+    assert "No archived summary exists" in bundle
 
 
 def test_future_limit_message_distinguishes_forecast_horizon() -> None:
@@ -80,6 +78,6 @@ def test_future_limit_message_distinguishes_forecast_horizon() -> None:
         ROOT / "custom_components/si_grid_monitor/frontend/dashboard.js"
     ).read_text(encoding="utf-8")
     assert "lower.inside_sustained_horizon" in bundle
-    assert "Horizon-wide sustained MUST REDUCE" in bundle
+    assert "Forecast reduction needed" in bundle
     assert "outside the sustained forecast horizon" in bundle
-    assert "forecast advice unavailable" in bundle
+    assert "Forecast unavailable" in bundle
