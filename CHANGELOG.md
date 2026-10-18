@@ -4,6 +4,41 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-18
+
+### Added
+
+- Permanent namespaced SQLite quarter archive with WAL, migrations, indexes,
+  quality-ranked idempotent upserts, source epochs and restart checkpoints.
+- Detailed Home Assistant recorder reconstruction using the same import-only
+  integration engine as live calculations; gaps remain incomplete.
+- Separate instant and 120-second-default smoothed import-only forecasts and
+  two-decimal utilization entities.
+- Editable source, sign, target, safety margin, smoothing, simulation threshold,
+  retention and sustained-horizon options without deleting the config entry.
+- Sustained CAN ADD, sustained MUST REDUCE and sustained forecast-quality
+  entities for 15/30/60/120-minute horizons.
+- Conservative sustained forecasting across a repeating recent signed path and
+  a latest-instantaneous scenario, with per-quarter target-provider API.
+- English and Slovenian UI strings, automated acceptance tests, V1.2 addendum
+  and a real-Home-Assistant manual test plan.
+
+### Correctness
+
+- Contractual demand, utilization, forecasts, budgets, archive, reconstruction,
+  exceedance detection and statistics use imported energy only. Export is stored
+  separately and never nets imported demand.
+- Simulation thresholds are not written into genuine contractual history.
+- Full internal precision is retained; published percentages and power advice
+  use two-decimal display precision.
+
+### Not yet implemented
+
+- Official Slovenian five-block tariff/calendar selection, dashboard tabs,
+  notifications, public archive query/export UI and predictive PV/weather models.
+- Real-device Home Assistant lifecycle and long-duration soak validation remain
+  required before release.
+
 ## [0.1.1] - 2026-10-18
 
 ### Changed
