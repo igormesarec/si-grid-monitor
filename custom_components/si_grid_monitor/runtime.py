@@ -60,9 +60,12 @@ class GridMonitorRuntime:
         self.power_entity = str(configured[CONF_POWER_ENTITY])
         self.positive_means_import = bool(configured[CONF_POSITIVE_MEANS_IMPORT])
         self.adapter = SignedPowerAdapter(positive_means_import=self.positive_means_import)
+        self.source_semantics_id = (
+            f"{self.power_entity}|positive_means_import={self.positive_means_import}"
+        )
         self.engine = FixedQuarterEngine(
             stale_after_seconds=DEFAULT_STALE_AFTER_SECONDS,
-            source_id=self.power_entity,
+            source_id=self.source_semantics_id,
         )
         self.snapshot: EngineSnapshot | None = None
         self.sustained_forecast: SustainedForecast | None = None
@@ -223,6 +226,7 @@ class GridMonitorRuntime:
                 now=now_utc,
                 current_import_kwh=self.snapshot.quarter_import_kwh,
                 current_unrecoverable=self.snapshot.projection.unrecoverable,
+                current_quarter_complete=self.snapshot.gap_seconds <= EPSILON,
                 recent_segments=self.engine.buffer.segments(
                     end=now_utc, window_seconds=smoothing_seconds
                 ),
@@ -275,7 +279,7 @@ class GridMonitorRuntime:
             gap_seconds=quarter.gap_seconds,
             quality=quarter.quality.value,
             provenance=provenance,
-            source_id=quarter.source_id,
+            source_id=self.power_entity,
             source_epoch=self.source_epoch,
             contractual_target_kw=float(settings[CONF_TARGET_KW]),
             safety_margin_kw=float(settings[CONF_SAFETY_MARGIN_KW]),
@@ -300,7 +304,13 @@ class GridMonitorRuntime:
             latest = await self.hass.async_add_executor_job(
                 self.archive.latest_quarter_end, self.namespace
             )
-            start = latest or datetime(1970, 1, 1, tzinfo=UTC)
+            # Revisit the newest stored quarter so detailed recorder states can
+            # improve a crash-affected incomplete live record.
+            start = (
+                latest - timedelta(minutes=15)
+                if latest is not None
+                else datetime(1970, 1, 1, tzinfo=UTC)
+            )
             history = await get_instance(self.hass).async_add_executor_job(
                 partial(
                     get_significant_states,
@@ -333,7 +343,7 @@ class GridMonitorRuntime:
             quarters = reconstruct_quarters(
                 samples,
                 end_utc=end,
-                source_id=self.power_entity,
+                source_id=self.source_semantics_id,
                 stale_after_seconds=DEFAULT_STALE_AFTER_SECONDS,
             )
             for quarter in quarters:

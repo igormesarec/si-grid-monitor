@@ -342,6 +342,18 @@ class SIGridSensor(SensorEntity):
         snapshot = self.runtime.snapshot
         if snapshot is None:
             return False
+        if self.entity_description.key in {
+            "sustained_can_add_power",
+            "sustained_must_reduce_power",
+        }:
+            forecast = self.runtime.sustained_forecast
+            if forecast is None:
+                return False
+            return (
+                forecast.can_add_kw is not None
+                if self.entity_description.key == "sustained_can_add_power"
+                else forecast.must_reduce_kw is not None
+            )
         return not (self.entity_description.requires_fresh_input and snapshot.input_stale)
 
     @property

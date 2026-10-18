@@ -66,6 +66,7 @@ def calculate_sustained_forecast(
     horizon_minutes: int,
     target_for_quarter: TargetProvider,
     stale_after_seconds: float,
+    current_quarter_complete: bool = True,
 ) -> SustainedForecast:
     """Forecast a constant load/reduction against every intersecting quarter.
 
@@ -88,6 +89,12 @@ def calculate_sustained_forecast(
         return _unavailable(ForecastQuality.UNAVAILABLE, "no_valid_measurement", common)
     if measurement_age_seconds > stale_after_seconds:
         return _unavailable(ForecastQuality.STALE, "source_measurement_stale", common)
+    if not current_quarter_complete:
+        return _unavailable(
+            ForecastQuality.INSUFFICIENT_COVERAGE,
+            "current_quarter_energy_incomplete",
+            common,
+        )
     if coverage + EPSILON < smoothing_seconds or not recent_segments:
         return _unavailable(
             ForecastQuality.INSUFFICIENT_COVERAGE,

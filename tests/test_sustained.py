@@ -139,6 +139,22 @@ def test_stale_and_insufficient_measurements_are_not_safe_values() -> None:
     assert incomplete.quality == ForecastQuality.INSUFFICIENT_COVERAGE
     assert incomplete.can_add_kw is None
 
+    missing_quarter_energy = calculate_sustained_forecast(
+        now=datetime(2026, 10, 18, 10, 10, tzinfo=UTC),
+        current_import_kwh=0.0,
+        current_unrecoverable=False,
+        recent_segments=(PowerSegment(120, 0.0),),
+        latest_signed_kw=0.0,
+        measurement_age_seconds=0.0,
+        smoothing_seconds=120,
+        horizon_minutes=60,
+        target_for_quarter=lambda _start, _end: 4.8,
+        stale_after_seconds=60,
+        current_quarter_complete=False,
+    )
+    assert missing_quarter_energy.quality == ForecastQuality.INSUFFICIENT_COVERAGE
+    assert missing_quarter_energy.reason == "current_quarter_energy_incomplete"
+
 
 def test_partial_final_quarter_that_cannot_be_recovered_is_unavailable() -> None:
     result = forecast(pattern=(PowerSegment(120, 20.0),), latest=20.0)
