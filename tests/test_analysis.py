@@ -101,12 +101,8 @@ def test_period_boundaries_use_local_calendar_and_half_open_utc() -> None:
     assert week.end_local.date() == date(2027, 1, 4)
     assert next_period(previous_period(week)).start_utc == week.start_utc
 
-    first_repeated = resolve_period(
-        PeriodType.HOUR, datetime(2026, 10, 25, 0, 30, tzinfo=UTC)
-    )
-    second_repeated = resolve_period(
-        PeriodType.HOUR, datetime(2026, 10, 25, 1, 30, tzinfo=UTC)
-    )
+    first_repeated = resolve_period(PeriodType.HOUR, datetime(2026, 10, 25, 0, 30, tzinfo=UTC))
+    second_repeated = resolve_period(PeriodType.HOUR, datetime(2026, 10, 25, 1, 30, tzinfo=UTC))
     assert first_repeated.start_local.hour == second_repeated.start_local.hour == 2
     assert first_repeated.start_utc != second_repeated.start_utc
     assert "CEST" in first_repeated.label
@@ -332,6 +328,19 @@ def test_exceedance_report_keeps_each_quarter_and_excludes_unconfirmed(
     assert report["items"][0]["excess_percentage"] == pytest.approx(12.5)
     assert report["items"][0]["excess_energy_kwh"] == pytest.approx(0.15)
     assert report["summary"]["most_affected_block"] == 2
+    second_page = exceedance_report(
+        archive,
+        "meter-a",
+        bounds,
+        now_utc=bounds.end_utc + timedelta(days=1),
+        classifier=calendar.classify,
+        sort_by="excess_kw",
+        direction="desc",
+        page=2,
+        page_size=2,
+    )
+    assert len(second_page["items"]) == 1
+    assert second_page["items"][0]["import_demand_kw"] == pytest.approx(5.1)
 
 
 def test_exceedance_tolerance_and_page_validation(archive: QuarterArchive) -> None:
@@ -351,7 +360,7 @@ def test_exceedance_tolerance_and_page_validation(archive: QuarterArchive) -> No
         now_utc=bounds.end_utc + timedelta(minutes=1),
     )
     assert report["summary"]["exceedance_count"] == 1
-    with pytest.raises(ValueError, match="page must be positive"):
+    with pytest.raises(ValueError, match="page must be between"):
         exceedance_report(
             archive,
             "meter-a",

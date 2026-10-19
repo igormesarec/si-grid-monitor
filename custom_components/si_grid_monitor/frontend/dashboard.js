@@ -118,6 +118,14 @@ export class SIGridMonitorPanel extends HTMLElement {
     this._error = null;
   }
 
+  _resetAnalysisScroll() {
+    this._chartScrollPositions = {
+      ...this._chartScrollPositions,
+      period: 0,
+      exceedances: 0,
+    };
+  }
+
   async _call(type, extra = {}, entryId = this._entryId) {
     if (!entryId) throw new Error("No SI Grid Monitor meter is selected");
     return this._hass.connection.sendMessagePromise({
@@ -311,6 +319,7 @@ export class SIGridMonitorPanel extends HTMLElement {
   async _setDate(value) {
     this._selectedDate = value;
     if (["period", "blocks", "exceedances"].includes(this._tab)) {
+      this._resetAnalysisScroll();
       this._periodAnchor = value;
       if (this._periodType === "custom") {
         this._customStart = value;
@@ -893,6 +902,7 @@ export class SIGridMonitorPanel extends HTMLElement {
     );
     if (!moved) return;
     this._periodAnchor = moved.anchor;
+    this._resetAnalysisScroll();
     this._selectedDate = /^\d{4}-\d{2}-\d{2}$/.test(moved.anchor)
       ? moved.anchor : localDate(new Date(moved.anchor));
     if (moved.customStart) this._customStart = moved.customStart;
@@ -968,6 +978,7 @@ export class SIGridMonitorPanel extends HTMLElement {
     root.querySelector("[data-retry-calendar]")?.addEventListener("click", () => this._loadTab());
     root.querySelector("[data-retry-period]")?.addEventListener("click", () => this._loadTab());
     root.querySelector("[data-period-type]")?.addEventListener("change", event => {
+      this._resetAnalysisScroll();
       this._periodType = event.target.value;
       this._periodAnchor = this._periodType === "hour"
         ? new Date().toISOString() : this._selectedDate;
@@ -978,6 +989,7 @@ export class SIGridMonitorPanel extends HTMLElement {
       this._loadTab();
     });
     root.querySelector("[data-period-block]")?.addEventListener("change", event => {
+      this._resetAnalysisScroll();
       this._periodBlock = event.target.value;
       this._period = null;
       this._blocks = null;
@@ -992,6 +1004,7 @@ export class SIGridMonitorPanel extends HTMLElement {
       });
     });
     root.querySelector("[data-period-current]")?.addEventListener("click", () => {
+      this._resetAnalysisScroll();
       this._selectedDate = localDate();
       this._periodAnchor = new Date().toISOString();
       if (this._periodType === "custom") {
@@ -1006,6 +1019,7 @@ export class SIGridMonitorPanel extends HTMLElement {
     });
     for (const field of ["start", "end"]) {
       root.querySelector(`[data-custom-${field}]`)?.addEventListener("change", event => {
+        this._resetAnalysisScroll();
         if (field === "start") this._customStart = event.target.value;
         else this._customEnd = event.target.value;
         this._periodAnchor = this._customStart;
@@ -1135,6 +1149,11 @@ export class SIGridMonitorPanel extends HTMLElement {
   _render() {
     if (!this.shadowRoot) return;
     const activeElement = this.shadowRoot.activeElement;
+    const analysisKey = [
+      "periodType", "periodBlock", "periodMove", "periodCurrent",
+      "customStart", "customEnd", "chartMode", "exceedanceSort",
+      "exceedanceDirection", "exceedancePage",
+    ].find(key => activeElement?.dataset && key in activeElement.dataset);
     const focusState = activeElement?.dataset?.todayControl
       ? {type: "today-control", value: activeElement.dataset.todayControl}
       : activeElement?.dataset?.quarter
@@ -1145,7 +1164,9 @@ export class SIGridMonitorPanel extends HTMLElement {
             ? {type: "block", value: activeElement.dataset.block}
             : activeElement?.dataset?.exceedanceQuarter
               ? {type: "exceedance", value: activeElement.dataset.exceedanceQuarter}
-              : null;
+              : analysisKey
+                ? {type: "analysis", key: analysisKey, value: activeElement.dataset[analysisKey]}
+                : null;
     const priorTimelineScroll = this.shadowRoot.querySelector(".timeline")?.scrollLeft;
     if (priorTimelineScroll != null) this._calendarScrollLeft = priorTimelineScroll;
     const priorTodayScroll = this.shadowRoot.querySelector("[data-today-scroll]")?.scrollLeft;
@@ -1197,7 +1218,10 @@ export class SIGridMonitorPanel extends HTMLElement {
             : focusState?.type === "exceedance"
               ? [...this.shadowRoot.querySelectorAll("[data-exceedance-quarter]")]
                 .find(element => element.dataset.exceedanceQuarter === focusState.value)
-              : null;
+              : focusState?.type === "analysis"
+                ? [...this.shadowRoot.querySelectorAll("button,select,input")]
+                  .find(element => element.dataset[focusState.key] === focusState.value)
+                : null;
     focusTarget?.focus({preventScroll: true});
     this._tick();
   }

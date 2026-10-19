@@ -394,6 +394,7 @@ def test_exceedance_command_rejects_unsafe_sort_and_pagination(tmp_path: Path) -
         {"sort_by": "start_utc; DROP TABLE quarters"},
         {"direction": "sideways"},
         {"page": 0},
+        {"page": 1_000_001},
         {"page_size": 101},
     ):
         connection = _Connection()

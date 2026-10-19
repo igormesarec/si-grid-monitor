@@ -461,8 +461,8 @@ def exceedance_report(
 ) -> dict[str, Any]:
     """Build one paginated contractual exceedance report."""
 
-    if page < 1:
-        raise ValueError("page must be positive")
+    if not 1 <= page <= 1_000_000:
+        raise ValueError("page must be between 1 and 1000000")
     completed_cutoff = quarter_bounds(now_utc).start_utc
     completed_end = max(bounds.start_utc, min(bounds.end_utc, completed_cutoff))
     aggregate = archive.aggregate_period(

@@ -296,3 +296,13 @@ test("delayed PERIOD-family response cannot cross a meter switch", async () => {
   assert.equal(panel._entryId, "meter-b");
   assert.equal(panel._blocks, null);
 });
+
+test("analysis scrolling survives refresh and resets only for a new selection", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._chartScrollPositions = {power: 12, energy: 34, period: 456, exceedances: 78};
+  assert.equal(panel._chartScrollPositions.period, 456);
+  panel._resetAnalysisScroll();
+  assert.deepEqual(panel._chartScrollPositions, {
+    power: 12, energy: 34, period: 0, exceedances: 0,
+  });
+});
