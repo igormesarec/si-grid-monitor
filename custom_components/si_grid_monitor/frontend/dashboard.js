@@ -18,6 +18,9 @@ const esc = value => String(value ?? "").replace(/[&<>"']/g, character => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;",
 })[character]);
 const localDate = value => ljubljanaDate(value);
+const localTime = value => new Intl.DateTimeFormat("en-GB", {
+  timeZone: "Europe/Ljubljana", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+}).format(new Date(value));
 
 class SIGridMonitorPanel extends HTMLElement {
   constructor() {
@@ -248,20 +251,27 @@ class SIGridMonitorPanel extends HTMLElement {
     const end = Date.parse(live.quarter.end_utc);
     const tariff = live.tariff;
     const forecast = live.projection;
+    const forecastEnergyConsistent = forecast.forecast_smoothed_kw == null
+      || forecast.forecast_smoothed_kw * 0.25 + 0.001 >= live.quarter.import_kwh;
     const model = livePowerChartModel({
       trace,
       nowUtc: live.now_utc,
       quarterEndUtc: live.quarter.end_utc,
       contractualTargetKw: tariff.contractual_target_kw,
-      operationalTargetKw: tariff.safety_margin_kw > 0
+      contractualSafetyTargetKw: tariff.safety_margin_kw > 0
         ? tariff.contractual_operational_target_kw : null,
+      operationalTargetKw: forecast.operational_target_kw,
       simulationTargetKw: tariff.simulation_enabled ? tariff.simulation_target_kw : null,
       windowSeconds: live.sustained?.smoothing_seconds || 120,
       staleAfterSeconds: live.trace_stale_after_seconds || 60,
-      futureImportPowerKw: forecast.smoothed_future_import_kw,
+      futureImportPowerKw: forecastEnergyConsistent
+        ? forecast.smoothed_future_import_kw : null,
       futureAnchorUtc: forecast.smoothed_future_anchor_utc,
-      forecastQuality: forecast.smoothed_future_quality,
-      forecastReason: forecast.smoothed_future_reason,
+      forecastQuality: forecastEnergyConsistent
+        ? forecast.smoothed_future_quality : "unavailable",
+      forecastReason: forecastEnergyConsistent
+        ? forecast.smoothed_future_reason
+        : "projected final energy is below energy already imported",
     });
     const maxKw = model.gridLimitKw;
     const x = timestamp => 44 + (Date.parse(timestamp) - start) / (end - start) * 1036;
@@ -270,17 +280,20 @@ class SIGridMonitorPanel extends HTMLElement {
     const paths = (segments, className) => segments
       .filter(points => points.length > 1)
       .map(points => `<polyline class="${className}" points="${path(points)}"/>`).join("");
-    const reference = (value, className, label) => value == null ? "" :
-      `<line class="${className}" x1="44" x2="1080" y1="${y(value)}" y2="${y(value)}"/><text class="reference-label" x="1076" y="${y(value) - 4}" text-anchor="end">${esc(label)} ${fmt(value)} kW</text>`;
-    const contractual = reference(
-      tariff.contractual_target_kw, "contractual-target", "Contractual limit",
+    const reference = (value, className) => value == null ? "" :
+      `<line class="${className}" x1="44" x2="1080" y1="${y(value)}" y2="${y(value)}"/>`;
+    const contractual = reference(tariff.contractual_target_kw, "contractual-target");
+    const contractualSafety = tariff.safety_margin_kw > 0
+      ? reference(tariff.contractual_operational_target_kw, "contractual-safety-target") : "";
+    const simulation = tariff.simulation_enabled
+      ? reference(tariff.simulation_target_kw, "simulation-target") : "";
+    const showOperational = forecast.operational_target_kw != null && (
+      tariff.simulation_enabled
+      || tariff.contractual_operational_target_kw == null
+      || Math.abs(forecast.operational_target_kw - tariff.contractual_operational_target_kw) > 0.0001
     );
-    const operational = tariff.safety_margin_kw > 0 ? reference(
-      tariff.contractual_operational_target_kw, "operational-target", "Operational target",
-    ) : "";
-    const simulation = tariff.simulation_enabled ? reference(
-      tariff.simulation_target_kw, "simulation-target", "SIMULATION threshold",
-    ) : "";
+    const operational = showOperational
+      ? reference(forecast.operational_target_kw, "operational-target") : "";
     const labelEvery = Math.max(1, Math.ceil(maxKw / 8));
     const grid = model.gridValues.map(value => `<g><line class="power-grid ${value === 0 ? "zero" : ""}" x1="44" x2="1080" y1="${y(value)}" y2="${y(value)}"/>${value % labelEvery === 0 ? `<text x="5" y="${y(value) + 4}">${value > 0 ? "+" : value < 0 ? "−" : ""}${Math.abs(value)} kW</text>` : ""}</g>`).join("");
     const future = model.futureForecast.length
@@ -288,7 +301,15 @@ class SIGridMonitorPanel extends HTMLElement {
     const forecastNote = model.futureForecast.length
       ? `Dashed blue uses the backend's ${fmt(forecast.smoothed_future_import_kw)} kW future import-power assumption (${esc(model.forecastQuality)}${model.forecastReason ? `: ${esc(model.forecastReason)}` : ""}). Projected final quarter-average demand: ${fmt(forecast.forecast_smoothed_kw)} kW.`
       : `Forecast continuation unavailable: ${esc(model.forecastReason || "no supported forecast")}`;
-    return `<div><svg viewBox="0 0 1120 245" role="img" aria-label="Live import and export power with measured smoothing, future import-power assumption, one-kilowatt support lines, and separate contractual and operational targets">${grid}${contractual}${operational}${simulation}${paths(model.actualImportSegments, "import-trace")}${paths(model.actualExportSegments, "export-trace")}${paths(model.smoothedImportSegments, "smoothed-trace")}${future}<text class="legend-label" x="50" y="230">Import red · Export green · Historical smoothing solid blue · Future assumption dashed blue</text></svg><p class="chart-key">${forecastNote}</p></div>`;
+    const legend = [
+      ["import", "Actual import"], ["export", "Actual export"],
+      ["smooth", "Historical smoothing"], ["future", "Future assumption"],
+      ...(tariff.contractual_target_kw == null ? [] : [["contract", `Distributor limit ${fmt(tariff.contractual_target_kw)} kW`]]),
+      ...(tariff.safety_margin_kw > 0 && tariff.contractual_operational_target_kw != null ? [["contract-safety", `Contract safety reference ${fmt(tariff.contractual_operational_target_kw)} kW`]] : []),
+      ...(tariff.simulation_enabled ? [["simulation", `SIMULATION threshold ${fmt(tariff.simulation_target_kw)} kW`]] : []),
+      ...(showOperational ? [["operational", `Engine operational target ${fmt(forecast.operational_target_kw)} kW`]] : []),
+    ].map(([kind, label]) => `<span><i class="swatch ${kind}"></i>${esc(label)}</span>`).join("");
+    return `<style>.contractual-safety-target,.energy-contractual-safety-target{stroke:#ea580c;stroke-width:2;stroke-dasharray:2 3}.operational-target,.energy-operational-target{stroke:#0891b2;stroke-width:2.4;stroke-dasharray:10 3 2 3}.simulation-target,.energy-simulation-target{stroke:#8b5cf6;stroke-width:2;stroke-dasharray:12 4}.chart-legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin:8px 0;font-size:.78rem;color:var(--secondary-text-color)}.chart-legend span{display:inline-flex;align-items:center;gap:6px}.swatch{display:inline-block;width:24px;height:0;border-top:3px solid}.swatch.import,.swatch.energy-actual{border-color:#dc2626}.swatch.export{border-color:#16a34a}.swatch.smooth{border-color:#38bdf8}.swatch.future,.swatch.energy-projection{border-color:#0284c7;border-top-style:dashed}.swatch.contract{border-color:#f59e0b;border-top-style:dashed}.swatch.contract-safety{border-color:#ea580c;border-top-style:dotted}.swatch.simulation{border-color:#8b5cf6;border-top-style:dashed}.swatch.operational{border-color:#0891b2;border-top-style:dashed}.time-label{font-size:12px}.axis-title{font-size:13px}@media(max-width:700px){.chart-legend{font-size:.72rem;gap:7px 12px}.chart-key{font-size:.72rem;line-height:1.35}.time-label{font-size:13px}.axis-title{font-size:14px}.live-chart svg,.energy-progress svg{min-height:190px}}</style><div class="live-chart"><svg viewBox="0 0 1120 260" role="img" aria-label="Live import and export power with measured smoothing, future import-power assumption, one-kilowatt support lines, and separate contractual and operational targets">${grid}${contractual}${contractualSafety}${simulation}${operational}${paths(model.actualImportSegments, "import-trace")}${paths(model.actualExportSegments, "export-trace")}${paths(model.smoothedImportSegments, "smoothed-trace")}${future}<text class="axis-title" x="8" y="14">Power (kW)</text><text class="time-label" x="44" y="246">${esc(localTime(live.quarter.start_utc))}</text><text class="time-label" x="1080" y="246" text-anchor="end">${esc(localTime(live.quarter.end_utc))}</text></svg><div class="chart-legend">${legend}</div><p class="chart-key">${forecastNote}</p></div>`;
   }
 
   _energyChart(live) {
@@ -301,8 +322,9 @@ class SIGridMonitorPanel extends HTMLElement {
       nowUtc: live.now_utc,
       importKwh: quarter.import_kwh,
       contractualTargetKw: live.tariff.contractual_target_kw,
-      operationalTargetKw: live.tariff.safety_margin_kw > 0
+      contractualSafetyTargetKw: live.tariff.safety_margin_kw > 0
         ? live.tariff.contractual_operational_target_kw : null,
+      operationalTargetKw: forecast.operational_target_kw,
       simulationTargetKw: live.tariff.simulation_target_kw,
       simulationEnabled: live.tariff.simulation_enabled,
       forecastSmoothedKw: forecast.forecast_smoothed_kw,
@@ -315,22 +337,31 @@ class SIGridMonitorPanel extends HTMLElement {
       energy.usedKwh,
       energy.projectedFinalKwh || 0,
       energy.contractualLimitKwh || 0,
+      energy.contractualSafetyTargetKwh || 0,
       energy.operationalTargetKwh || 0,
       energy.simulationTargetKwh || 0,
     ) * 1.12;
     const x = timestamp => 48 + (Date.parse(timestamp) - start) / (end - start) * 1028;
     const y = value => 205 - Number(value) / maxKwh * 170;
     const points = values => values.map(point => `${x(point.timestamp)},${y(point.kwh)}`).join(" ");
-    const reference = (value, className, label) => value == null ? "" : `<line class="${className}" x1="48" x2="1076" y1="${y(value)}" y2="${y(value)}"/><text class="reference-label" x="1072" y="${y(value) - 4}" text-anchor="end">${esc(label)} ${fmt(value)} kWh</text>`;
+    const reference = (value, className) => value == null ? "" :
+      `<line class="${className}" x1="48" x2="1076" y1="${y(value)}" y2="${y(value)}"/>`;
     const contractual = reference(
-      energy.contractualLimitKwh, "energy-contractual-limit", "Contractual limit",
+      energy.contractualLimitKwh, "energy-contractual-limit",
     );
-    const operational = reference(
-      energy.operationalTargetKwh, "energy-operational-target", "Operational target",
+    const contractualSafety = reference(
+      energy.contractualSafetyTargetKwh, "energy-contractual-safety-target",
     );
     const simulation = reference(
-      energy.simulationTargetKwh, "energy-simulation-target", "SIMULATION threshold",
+      energy.simulationTargetKwh, "energy-simulation-target",
     );
+    const showOperational = energy.operationalTargetKwh != null && (
+      live.tariff.simulation_enabled
+      || energy.contractualSafetyTargetKwh == null
+      || Math.abs(energy.operationalTargetKwh - energy.contractualSafetyTargetKwh) > 0.0001
+    );
+    const operational = showOperational
+      ? reference(energy.operationalTargetKwh, "energy-operational-target") : "";
     const projection = energy.projection.length ? `<polyline class="energy-projection" points="${points(energy.projection)}"/>` : "";
     const actual = energy.actual.length
       ? `<polyline class="energy-actual" points="${points(energy.actual)}"/>` : "";
@@ -340,7 +371,14 @@ class SIGridMonitorPanel extends HTMLElement {
     const projectionNote = energy.projection.length
       ? "Dashed purple is an estimate from the authoritative current point, not a measurement."
       : esc(energy.projectionReason);
-    return `<section class="energy-progress"><h3>Quarter energy progress</h3><svg viewBox="0 0 1120 235" role="img" aria-label="Cumulative import-only quarter energy in kilowatt-hours, with gaps left undisguised">${contractual}${operational}${simulation}<line class="energy-zero" x1="48" x2="1076" y1="${y(0)}" y2="${y(0)}"/>${actual}${projection}<circle class="energy-current" cx="${x(energy.currentPoint.timestamp)}" cy="${y(energy.currentPoint.kwh)}" r="5"/><text x="5" y="${y(0) + 4}">0 kWh</text><text x="5" y="${y(maxKwh) + 4}">${fmt(maxKwh)} kWh</text></svg><div class="grid">${this._metric("Used so far", fmt(energy.usedKwh), "kWh")}${this._metric("Projected final energy", fmt(energy.projectedFinalKwh), "kWh")}${this._metric("Distributor contractual limit", fmt(energy.contractualLimitKwh), "kWh")}${this._metric("Operational energy target", fmt(energy.operationalTargetKwh), "kWh")}${this._metric("Remaining operational budget", fmt(forecast.budget_remaining_kwh), "kWh")}</div><p class="chart-key">${trajectoryNote} ${projectionNote} Export contributes zero and never reduces imported energy.</p></section>`;
+    const legend = [
+      ["energy-actual", "Imported energy"], ["energy-projection", "Projected energy"],
+      ...(energy.contractualLimitKwh == null ? [] : [["contract", `Distributor limit ${fmt(energy.contractualLimitKwh)} kWh`]]),
+      ...(energy.contractualSafetyTargetKwh == null ? [] : [["contract-safety", `Contract safety reference ${fmt(energy.contractualSafetyTargetKwh)} kWh`]]),
+      ...(energy.simulationTargetKwh == null ? [] : [["simulation", `SIMULATION threshold ${fmt(energy.simulationTargetKwh)} kWh`]]),
+      ...(showOperational ? [["operational", `Engine operational target ${fmt(energy.operationalTargetKwh)} kWh`]] : []),
+    ].map(([kind, label]) => `<span><i class="swatch ${kind}"></i>${esc(label)}</span>`).join("");
+    return `<section class="energy-progress"><h3>Quarter energy progress</h3><svg viewBox="0 0 1120 260" role="img" aria-label="Cumulative import-only quarter energy in kilowatt-hours, with gaps left undisguised and separate contractual, safety, simulation, and engine targets">${contractual}${contractualSafety}${simulation}${operational}<line class="energy-zero" x1="48" x2="1076" y1="${y(0)}" y2="${y(0)}"/>${actual}${projection}<circle class="energy-current" cx="${x(energy.currentPoint.timestamp)}" cy="${y(energy.currentPoint.kwh)}" r="5"/><text class="axis-title" x="8" y="14">Energy (kWh)</text><text x="5" y="${y(0) + 4}">0</text><text x="5" y="${y(maxKwh) + 4}">${fmt(maxKwh)}</text><text class="time-label" x="48" y="246">${esc(localTime(quarter.start_utc))}</text><text class="time-label" x="1076" y="246" text-anchor="end">${esc(localTime(quarter.end_utc))}</text></svg><div class="chart-legend">${legend}</div><div class="grid">${this._metric("Used so far", fmt(energy.usedKwh), "kWh")}${this._metric("Projected final energy", fmt(energy.projectedFinalKwh), "kWh")}${this._metric("Distributor contractual limit", fmt(energy.contractualLimitKwh), "kWh")}${this._metric("Contract safety reference", fmt(energy.contractualSafetyTargetKwh), "kWh")}${live.tariff.simulation_enabled ? this._metric("SIMULATION threshold", fmt(energy.simulationTargetKwh), "kWh") : ""}${this._metric("Engine operational energy target", fmt(energy.operationalTargetKwh), "kWh")}${this._metric("Remaining operational budget", fmt(forecast.budget_remaining_kwh), "kWh")}</div><p class="chart-key">${trajectoryNote} ${projectionNote} Export contributes zero and never reduces imported energy.</p></section>`;
   }
 
   _overview() {
@@ -352,9 +390,23 @@ class SIGridMonitorPanel extends HTMLElement {
     const tariff = live.tariff;
     const forecast = live.projection;
     const sustained = live.sustained || {};
+    const instantProjectionConsistent = forecast.forecast_instant_kw != null
+      && forecast.forecast_instant_kw * 0.25 + 0.001 >= quarter.import_kwh;
+    const smoothedProjectionConsistent = forecast.forecast_smoothed_kw != null
+      && forecast.forecast_smoothed_kw * 0.25 + 0.001 >= quarter.import_kwh;
+    const displayedInstantForecast = instantProjectionConsistent
+      ? forecast.forecast_instant_kw : null;
+    const displayedSmoothedForecast = smoothedProjectionConsistent
+      ? forecast.forecast_smoothed_kw : null;
+    const projectionWarning = (
+      (forecast.forecast_instant_kw != null && !instantProjectionConsistent)
+      || (forecast.forecast_smoothed_kw != null && !smoothedProjectionConsistent)
+    )
+      ? `<p class="error">Projection unavailable: projected final imported energy is below energy already imported. The diagnostic backend value is retained but not presented as a valid forecast.</p>`
+      : "";
     return `<section class="card hero"><div class="herohead"><div><p class="eyebrow">CURRENT FIXED 15-MINUTE INTERVAL</p><h2>${esc(quarter.start_local.slice(0, 10))} · ${esc(quarter.start_local.slice(11, 16))}–${esc(quarter.end_local.slice(11, 16))}</h2><p>B${esc(tariff.block)} · ${fmt(tariff.target_kw)} kW · ${esc(quarter.quality)}</p></div><div class="count" data-countdown>--:--</div></div>
       <div class="direction"><div class="import"><span>IMPORT</span><b>${fmt(power.import_kw)} kW</b></div><div class="export"><span>EXPORT</span><b>${fmt(power.export_kw)} kW</b></div></div>${this._liveChart(live)}${this._energyChart(live)}
-      <div class="grid">${this._metric("Signed grid power", fmt(power.signed_kw), "kW")}${this._metric("Imported so far", fmt(quarter.import_kwh), "kWh")}${this._metric("Exported so far", fmt(quarter.export_kwh), "kWh")}${this._metric("Import average", fmt(quarter.import_average_kw), "kW")}${this._metric("Instant projected final quarter average", fmt(forecast.forecast_instant_kw), "kW")}${this._metric("Smoothed projected final quarter average", fmt(forecast.forecast_smoothed_kw), "kW")}${this._metric("Utilization", fmt(forecast.current_utilization_pct), "%")}${this._metric("Remaining budget", fmt(forecast.budget_remaining_kwh), "kWh")}${this._metric("Allowed remainder", fmt(forecast.allowed_remaining_import_kw), "kW")}${this._metric("CAN ADD THIS QUARTER", fmt(forecast.can_add_kw), "kW", "good")}${this._metric("MUST REDUCE THIS QUARTER", fmt(forecast.must_reduce_kw), "kW", forecast.must_reduce_kw > 0 ? "bad" : "")}${this._metric("SUSTAINED CAN ADD", fmt(sustained.can_add_kw), "kW", "accent")}${this._metric("SUSTAINED MUST REDUCE", fmt(sustained.must_reduce_kw), "kW", sustained.must_reduce_kw > 0 ? "bad" : "")}${this._metric("Forecast quality", sustained.quality || "unavailable")}</div>
+      <div class="grid">${this._metric("Signed grid power", fmt(power.signed_kw), "kW")}${this._metric("Imported so far", fmt(quarter.import_kwh), "kWh")}${this._metric("Exported so far", fmt(quarter.export_kwh), "kWh")}${this._metric("Import average", fmt(quarter.import_average_kw), "kW")}${this._metric("Instant projected final quarter average", fmt(displayedInstantForecast), "kW")}${this._metric("Smoothed projected final quarter average", fmt(displayedSmoothedForecast), "kW")}${this._metric("Utilization", fmt(forecast.current_utilization_pct), "%")}${this._metric("Remaining budget", fmt(forecast.budget_remaining_kwh), "kWh")}${this._metric("Allowed remainder", fmt(forecast.allowed_remaining_import_kw), "kW")}${this._metric("CAN ADD THIS QUARTER", fmt(forecast.can_add_kw), "kW", "good")}${this._metric("MUST REDUCE THIS QUARTER", fmt(forecast.must_reduce_kw), "kW", forecast.must_reduce_kw > 0 ? "bad" : "")}${this._metric("SUSTAINED CAN ADD", fmt(sustained.can_add_kw), "kW", "accent")}${this._metric("SUSTAINED MUST REDUCE", fmt(sustained.must_reduce_kw), "kW", sustained.must_reduce_kw > 0 ? "bad" : "")}${this._metric("Forecast quality", sustained.quality || "unavailable")}</div>${projectionWarning}
       <p class="safety">15-minute energy-budget headroom is not physical breaker, phase, grid-connection or inverter capacity.</p></section>
       ${this._transitionCard()}<section class="card"><div class="row"><h2>Quarter archive</h2><button data-prev>Previous quarter</button><button data-next>Next quarter</button><button data-live>Current / live</button></div>${this._historicalCard()}</section>`;
   }

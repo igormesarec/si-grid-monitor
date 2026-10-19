@@ -98,3 +98,20 @@ def test_v041_setup_exposes_simulation_without_manual_schedule_json() -> None:
         settings = translations["options"]["step"]["settings"]["data"]
         assert {"simulation_enabled", "simulation_target_kw"} <= set(calculation)
         assert {"simulation_enabled", "simulation_target_kw"} <= set(settings)
+
+
+def test_v041_live_charts_label_distinct_targets_and_mobile_axes() -> None:
+    bundle = (ROOT / "custom_components/si_grid_monitor/frontend/dashboard.js").read_text(
+        encoding="utf-8"
+    )
+    for label in (
+        "Distributor limit",
+        "Contract safety reference",
+        "SIMULATION threshold",
+        "Engine operational target",
+        "Power (kW)",
+        "Energy (kWh)",
+    ):
+        assert label in bundle
+    assert "projected final imported energy is below energy already imported" in bundle
+    assert ".chart-legend{display:flex;flex-wrap:wrap" in bundle

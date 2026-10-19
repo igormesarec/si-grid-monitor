@@ -175,14 +175,16 @@ software behavior only; distributor readings remain authoritative.
    historical-smoothed line stops at the forecast anchor and the dashed blue
    future assumption continues to the exact quarter boundary. Confirm the
    separately labeled projected final quarter average is not plotted as an
-   instantaneous power value.
+   instantaneous power value. Repeat with 15-, 30- and 55-second source update
+   intervals and confirm the solid line reaches the same backend anchor.
 9. Create a sensor gap longer than the stale limit and restart HA mid-quarter.
    Confirm measured power paths remain broken across the gap. The energy chart
    must show the authoritative current imported-kWh point and explain why its
    preceding trajectory is unavailable instead of distributing prior energy.
-10. Configure 4.20 kW contracted power and a 0.20 kW safety margin. Confirm both
-    charts separately label 4.20 kW / 1.05 kWh as the distributor contractual
-    limit and 4.00 kW / 1.00 kWh as the operational target.
+10. Configure 3.50 kW contracted power, a 0.20 kW safety margin and a 2.50 kW
+    simulation threshold. Confirm both charts separately identify 3.50 kW as
+    the distributor limit, 3.30 kW as its safety reference, 2.50 kW as the
+    simulation threshold and 2.30 kW as the target actually used by the engine.
 11. With 0.30 kWh imported and a 2.80 kW smoothed final-demand forecast, verify
     the dashed energy projection begins at exactly 0.30 kWh and ends at 0.70
     kWh. It must never fall when the source exports.
@@ -191,4 +193,12 @@ software behavior only; distributor readings remain authoritative.
     line. Disable the assignment/provisional rule and confirm no contractual
     line is invented.
 13. Repeat on narrow mobile, tablet and desktop layouts in light/dark themes;
-    labels must remain readable and the 1 kW positive/negative grid symmetric.
+    axes, kW/kWh units, time endpoints, wrapping legends and forecast lines must
+    remain readable, reference labels must not overlap and the 1 kW
+    positive/negative grid must remain symmetric.
+14. Inject or capture a diagnostic forecast whose projected final energy is
+    lower than imported energy already accumulated. Confirm neither chart nor
+    metric presents that projection; an explanatory unavailable reason appears.
+15. Exercise normal updates, a stale gap, sufficient recovery coverage, a fixed
+    quarter rollover and a mid-quarter restart. Confirm no smoothing line bridges
+    unsupported time and a new quarter starts from its own backend total.

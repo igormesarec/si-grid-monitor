@@ -147,35 +147,43 @@ function importPower(sample) {
 
 const ENERGY_RECONCILIATION_TOLERANCE_KWH = 0.001;
 
-export function smoothedImportSeries(trace, windowSeconds = 120, staleAfterSeconds = 60) {
+function timeWeightedImportAverage(trace, end, windowMs, staleMs) {
+  const start = end - windowMs;
+  let energyKwMs = 0;
+  let coverageMs = 0;
+  for (let cursor = 0; cursor < trace.length; cursor += 1) {
+    const sampleStart = sampleTime(trace[cursor]);
+    if (sampleStart >= end) break;
+    const nextStart = cursor + 1 < trace.length ? sampleTime(trace[cursor + 1]) : end;
+    const segmentStart = Math.max(start, sampleStart);
+    const segmentEnd = Math.min(end, nextStart, sampleStart + staleMs);
+    if (segmentEnd > segmentStart) {
+      const duration = segmentEnd - segmentStart;
+      energyKwMs += importPower(trace[cursor]) * duration;
+      coverageMs += duration;
+    }
+  }
+  return {
+    import_kw: coverageMs > 0 ? energyKwMs / coverageMs : null,
+    coverage_seconds: coverageMs / 1000,
+    complete: windowMs - coverageMs <= 1,
+  };
+}
+
+export function smoothedImportSeries(
+  trace, windowSeconds = 120, staleAfterSeconds = 60, anchorUtc = null,
+) {
   if (!trace.length) return [];
   const windowMs = Math.max(1, Number(windowSeconds)) * 1000;
   const staleMs = Math.max(1, Number(staleAfterSeconds)) * 1000;
-  return trace.map((sample, index) => {
-    const end = sampleTime(sample);
-    const start = end - windowMs;
-    let energyKwMs = 0;
-    let coverageMs = 0;
-    for (let cursor = 0; cursor <= index; cursor += 1) {
-      const segmentStart = Math.max(start, sampleTime(trace[cursor]));
-      const segmentEnd = Math.min(
-        end,
-        cursor < index ? sampleTime(trace[cursor + 1]) : end,
-        sampleTime(trace[cursor]) + staleMs,
-      );
-      if (segmentEnd > segmentStart) {
-        const duration = segmentEnd - segmentStart;
-        energyKwMs += importPower(trace[cursor]) * duration;
-        coverageMs += duration;
-      }
-    }
-    return {
-      timestamp: sample.timestamp,
-      import_kw: coverageMs > 0 ? energyKwMs / coverageMs : importPower(sample),
-      coverage_seconds: coverageMs / 1000,
-      complete: windowMs - coverageMs <= 1,
-    };
-  });
+  const sorted = [...trace].sort((left, right) => sampleTime(left) - sampleTime(right));
+  const ends = sorted.map(sample => sampleTime(sample));
+  const anchor = anchorUtc ? new Date(anchorUtc).getTime() : NaN;
+  if (Number.isFinite(anchor) && anchor >= ends.at(-1) && !ends.includes(anchor)) ends.push(anchor);
+  return ends.map(end => ({
+    timestamp: new Date(end).toISOString(),
+    ...timeWeightedImportAverage(sorted, end, windowMs, staleMs),
+  }));
 }
 
 function powerSegments(trace, nowUtc, staleAfterSeconds, valueForSample) {
@@ -219,6 +227,7 @@ export function livePowerChartModel({
   nowUtc,
   quarterEndUtc,
   contractualTargetKw = null,
+  contractualSafetyTargetKw = null,
   operationalTargetKw = null,
   simulationTargetKw = null,
   windowSeconds = 120,
@@ -235,7 +244,9 @@ export function livePowerChartModel({
     const signed = Number(sample.signed_kw);
     return signed < 0 ? signed : 0;
   });
-  const smoothedImport = smoothedImportSeries(trace, windowSeconds, staleAfterSeconds)
+  const smoothedImport = smoothedImportSeries(
+    trace, windowSeconds, staleAfterSeconds, nowUtc,
+  )
     .filter(sample => sample.complete)
     .map(sample => ({timestamp: sample.timestamp, kw: sample.import_kw}));
   const smoothedImportSegments = splitTimedPoints(smoothedImport, staleAfterSeconds);
@@ -252,6 +263,7 @@ export function livePowerChartModel({
     ] : [];
   const magnitudes = [
     Number(contractualTargetKw) || 0,
+    Number(contractualSafetyTargetKw) || 0,
     Number(operationalTargetKw) || 0,
     Number(simulationTargetKw) || 0,
   ];
@@ -287,6 +299,7 @@ export function quarterEnergyModel({
   nowUtc,
   importKwh,
   contractualTargetKw,
+  contractualSafetyTargetKw,
   operationalTargetKw,
   simulationTargetKw = null,
   simulationEnabled = false,
@@ -348,10 +361,12 @@ export function quarterEnergyModel({
       {timestamp: new Date(end).toISOString(), kwh: displayedProjectedFinalKwh},
     ],
     usedKwh,
-    projectedFinalKwh: displayedProjectedFinalKwh,
-    backendProjectedFinalKwh: projectedFinalKwh,
+    projectedFinalKwh: projectionConsistent ? displayedProjectedFinalKwh : null,
+    diagnosticProjectedFinalKwh: projectedFinalKwh,
     contractualLimitKwh: contractualTargetKw == null
       ? null : Math.max(0, Number(contractualTargetKw)) * 0.25,
+    contractualSafetyTargetKwh: contractualSafetyTargetKw == null
+      ? null : Math.max(0, Number(contractualSafetyTargetKw)) * 0.25,
     operationalTargetKwh: operationalTargetKw == null
       ? null : Math.max(0, Number(operationalTargetKw)) * 0.25,
     simulationTargetKwh: simulationEnabled && simulationTargetKw != null

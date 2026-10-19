@@ -28,6 +28,9 @@ def _install_homeassistant_import_stubs() -> None:
     core.callback = lambda function: function  # type: ignore[attr-defined]
     helpers = types.ModuleType("homeassistant.helpers")
     helpers.__path__ = []  # type: ignore[attr-defined]
+    config_validation = types.ModuleType("homeassistant.helpers.config_validation")
+    config_validation.config_entry_only_config_schema = lambda _domain: None  # type: ignore[attr-defined]
+    helpers.config_validation = config_validation  # type: ignore[attr-defined]
     event = types.ModuleType("homeassistant.helpers.event")
     event.async_track_state_change_event = lambda *_args, **_kwargs: None  # type: ignore[attr-defined]
     event.async_track_state_report_event = lambda *_args, **_kwargs: None  # type: ignore[attr-defined]
@@ -43,6 +46,7 @@ def _install_homeassistant_import_stubs() -> None:
         "homeassistant.const": const,
         "homeassistant.core": core,
         "homeassistant.helpers": helpers,
+        "homeassistant.helpers.config_validation": config_validation,
         "homeassistant.helpers.event": event,
         "homeassistant.util": util,
         "homeassistant.util.dt": dt,
@@ -85,7 +89,10 @@ from custom_components.si_grid_monitor.engine import (  # noqa: E402
     quarter_bounds,
 )
 from custom_components.si_grid_monitor.runtime import GridMonitorRuntime  # noqa: E402
-from custom_components.si_grid_monitor.tariffs.calendar import LJUBLJANA  # noqa: E402
+from custom_components.si_grid_monitor.tariffs.calendar import (  # noqa: E402
+    LJUBLJANA,
+    SlovenianTariffCalendar,
+)
 
 
 class _Config:
@@ -330,3 +337,34 @@ def test_dashboard_keeps_contractual_operational_and_simulation_targets_distinct
     assert dashboard["projection"]["smoothed_future_quality"] == "simulation"
     assert dashboard["contractual_confirmed"] is False
     assert "not contractual" in dashboard["contractual_status_reason"]
+
+
+def test_dashboard_keeps_provisional_target_separate_from_confirmed_contract(
+    tmp_path,
+) -> None:
+    runtime, _schedule = _runtime(tmp_path)
+    runtime.tariff_calendar = SlovenianTariffCalendar(allow_provisional=True)
+    runtime.contracted_power_schedule = ContractedPowerSchedule(
+        (
+            ContractedPowerPeriod(
+                effective_from=date(2028, 1, 1),
+                effective_to=date(2028, 12, 31),
+                block_targets_kw=(3.5, 3.9, 4.1, 4.2, 4.2),
+                provenance="unconfirmed future assignment fixture",
+            ),
+        )
+    )
+    runtime.entry.options = {CONF_SAFETY_MARGIN_KW: 0.20}
+    now = _local_utc(2028, 1, 3, 7, 10)
+    _feed_fresh_history(runtime, now)
+    runtime._refresh(now)
+
+    dashboard = runtime.dashboard_current()
+    assert dashboard["tariff"]["rule_status"] == "provisional"
+    assert dashboard["tariff"]["contractual_target_kw"] is None
+    assert dashboard["tariff"]["contractual_operational_target_kw"] is None
+    assert dashboard["tariff"]["target_kw"] == pytest.approx(3.5)
+    assert dashboard["projection"]["operational_target_kw"] == pytest.approx(3.3)
+    assert dashboard["projection"]["smoothed_future_quality"] == "provisional"
+    assert "provisional" in dashboard["projection"]["smoothed_future_reason"]
+    assert dashboard["contractual_confirmed"] is False

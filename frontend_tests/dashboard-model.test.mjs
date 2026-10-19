@@ -12,6 +12,7 @@ import {
   quarterEnergyModel,
   quarterNavigation,
   selectTimelineHour,
+  smoothedImportSeries,
   todayChartModel,
 } from "../custom_components/si_grid_monitor/frontend/dashboard-model.mjs";
 
@@ -149,6 +150,57 @@ test("live chart separates measured paths, smoothing, and backend future assumpt
   ]);
 });
 
+test("time-weighted smoothing reaches the backend anchor at varied sensor intervals", () => {
+  for (const intervalSeconds of [15, 30, 55]) {
+    const anchorMs = Date.parse("2026-01-01T00:05:00Z");
+    const trace = [];
+    for (let timestamp = anchorMs - 180000; timestamp <= anchorMs; timestamp += intervalSeconds * 1000) {
+      trace.push({timestamp: new Date(timestamp).toISOString(), signed_kw: 2.75});
+    }
+    const series = smoothedImportSeries(
+      trace, 120, 60, new Date(anchorMs).toISOString(),
+    );
+    assert.equal(series.at(-1).timestamp, "2026-01-01T00:05:00.000Z");
+    assert.equal(series.at(-1).complete, true);
+    assert.ok(Math.abs(series.at(-1).import_kw - 2.75) < 1e-12);
+  }
+
+  const weighted = smoothedImportSeries([
+    {timestamp: "2026-01-01T00:00:00Z", signed_kw: 1},
+    {timestamp: "2026-01-01T00:00:30Z", signed_kw: -8},
+    {timestamp: "2026-01-01T00:01:00Z", signed_kw: 3},
+    {timestamp: "2026-01-01T00:01:30Z", signed_kw: 5},
+  ], 120, 60, "2026-01-01T00:02:00Z");
+  assert.equal(weighted.at(-1).complete, true);
+  assert.ok(Math.abs(weighted.at(-1).import_kw - 2.25) < 1e-12);
+});
+
+test("smoothing leaves stale gaps open and resumes only after full valid coverage", () => {
+  const trace = [
+    {timestamp: "2026-01-01T00:00:00Z", signed_kw: 2},
+    {timestamp: "2026-01-01T00:00:30Z", signed_kw: 2},
+    {timestamp: "2026-01-01T00:04:00Z", signed_kw: 4},
+    {timestamp: "2026-01-01T00:04:30Z", signed_kw: 4},
+    {timestamp: "2026-01-01T00:05:00Z", signed_kw: 4},
+    {timestamp: "2026-01-01T00:05:30Z", signed_kw: 4},
+  ];
+  const stale = smoothedImportSeries(trace, 120, 60, "2026-01-01T00:04:30Z");
+  assert.equal(stale.at(-1).complete, false);
+  const recovered = smoothedImportSeries(trace, 120, 60, "2026-01-01T00:06:00Z");
+  assert.equal(recovered.at(-1).complete, true);
+  assert.equal(recovered.at(-1).import_kw, 4);
+
+  const chart = livePowerChartModel({
+    trace,
+    nowUtc: "2026-01-01T00:06:00Z",
+    quarterEndUtc: "2026-01-01T00:15:00Z",
+    windowSeconds: 120,
+    staleAfterSeconds: 60,
+  });
+  assert.equal(chart.smoothedImportSegments.length, 1);
+  assert.equal(chart.smoothedImportSegments.at(-1).at(-1).timestamp, "2026-01-01T00:06:00.000Z");
+});
+
 test("power forecast omits unavailable assumptions and never bridges a stale gap", () => {
   const model = livePowerChartModel({
     trace: [
@@ -274,6 +326,9 @@ test("partial or inconsistent traces never fabricate prior cumulative energy", (
   assert.equal(inconsistent.currentPoint.kwh, 0.5);
   assert.equal(inconsistent.projectionConsistent, false);
   assert.deepEqual(inconsistent.projection, []);
+  assert.equal(inconsistent.projectedFinalKwh, null);
+  assert.equal(inconsistent.diagnosticProjectedFinalKwh, 0.25);
+  assert.match(inconsistent.projectionReason, /below energy already imported/);
 });
 
 test("simulation target is explicit and quarter rollover starts from the new backend total", () => {
@@ -283,15 +338,35 @@ test("simulation target is explicit and quarter rollover starts from the new bac
     quarterEndUtc: "2026-01-01T00:30:00Z",
     nowUtc: "2026-01-01T00:16:00Z",
     importKwh: 0.05,
-    contractualTargetKw: null,
-    operationalTargetKw: null,
+    contractualTargetKw: 3.5,
+    contractualSafetyTargetKw: 3.3,
+    operationalTargetKw: 2.3,
     simulationTargetKw: 2.5,
     simulationEnabled: true,
     forecastSmoothedKw: 2.0,
     staleAfterSeconds: 60,
   });
   assert.equal(model.currentPoint.kwh, 0.05);
-  assert.equal(model.contractualLimitKwh, null);
-  assert.equal(model.operationalTargetKwh, null);
+  assert.equal(model.contractualLimitKwh, 0.875);
+  assert.equal(model.contractualSafetyTargetKwh, 0.825);
+  assert.equal(model.operationalTargetKwh, 0.575);
   assert.equal(model.simulationTargetKwh, 0.625);
+});
+
+test("missing contracts stay absent while provisional engine targets remain explicit", () => {
+  const model = quarterEnergyModel({
+    trace: [{timestamp: "2028-01-01T00:00:00Z", signed_kw: 2}],
+    quarterStartUtc: "2028-01-01T00:00:00Z",
+    quarterEndUtc: "2028-01-01T00:15:00Z",
+    nowUtc: "2028-01-01T00:01:00Z",
+    importKwh: 1 / 30,
+    contractualTargetKw: null,
+    contractualSafetyTargetKw: null,
+    operationalTargetKw: 3.3,
+    forecastSmoothedKw: 2,
+    staleAfterSeconds: 60,
+  });
+  assert.equal(model.contractualLimitKwh, null);
+  assert.equal(model.contractualSafetyTargetKwh, null);
+  assert.equal(model.operationalTargetKwh, 0.825);
 });

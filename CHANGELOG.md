@@ -17,11 +17,20 @@ All notable changes to SI Grid Monitor will be documented here.
 - Separated historical smoothed import from the dashed future-power assumption
   supplied by the engine; the final 15-minute average remains a labeled result,
   never an instantaneous power series.
+- Aligned the last historical smoothing point with the backend forecast anchor
+  using the engine's time-weighted, stale-limited coverage rules across varying
+  sensor update intervals; gaps are never bridged.
 - Made cumulative-energy history gap-aware: only fully supported, reconciled
   traces are connected, while incomplete/restarted traces show the authoritative
   backend point without fabricating earlier energy.
-- Distinguished the verified distributor limit, safety-margin operational
-  target and temporary simulation threshold on both live charts.
+- Distinguished the verified distributor limit, contractual safety reference,
+  temporary simulation threshold and actual engine operational target on both
+  live charts (for example 3.50 - 0.20 versus 2.50 - 0.20 = 2.30 kW).
+- Suppressed a projected line and user-facing value whenever its final imported
+  energy is lower than energy already imported, while retaining the raw value
+  internally for diagnosis and showing the reason.
+- Added wrapping legends, explicit power/energy units, local time endpoints and
+  non-overlapping reference labels for narrow Android light/dark layouts.
 - Exposed the existing temporary simulation threshold through setup and Options
   without changing dated assignments or confirmed archive statistics.
 - Kept SQLite schema 5, configuration epochs, entity identities and archived
