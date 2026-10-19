@@ -215,8 +215,7 @@ def summarize_archive_rows(
     """Aggregate rows using the same auditable validity rules everywhere."""
 
     classified = [
-        (row, archive_row_validity(row, include_simulation=include_simulation))
-        for row in rows
+        (row, archive_row_validity(row, include_simulation=include_simulation)) for row in rows
     ]
     included = [(row, validity) for row, validity in classified if validity.included]
     valid = [row for row, validity in included if validity.measured_valid]
@@ -227,12 +226,8 @@ def summarize_archive_rows(
         valid_count=len(valid),
         incomplete_count=sum(validity.incomplete for _, validity in included),
         exceeded_count=sum(validity.confirmed_exceeded for _, validity in included),
-        provisional_exceeded_count=sum(
-            validity.provisional_exceeded for _, validity in included
-        ),
-        unknown_configuration_count=sum(
-            validity.unknown_configuration for _, validity in included
-        ),
+        provisional_exceeded_count=sum(validity.provisional_exceeded for _, validity in included),
+        unknown_configuration_count=sum(validity.unknown_configuration for _, validity in included),
         import_kwh=sum(float(row["import_kwh"]) for row in valid),
         export_kwh=sum(float(row["export_kwh"]) for row in valid),
         partial_observed_import_kwh=sum(float(row["import_kwh"]) for row in partial),
@@ -845,7 +840,7 @@ class QuarterArchive:
                 self._db.execute(
                     """SELECT * FROM quarters WHERE namespace=? AND start_utc>=?
                        AND start_utc<? ORDER BY start_utc""",
-                (namespace, _utc_iso(start_utc), _utc_iso(end_utc)),
+                    (namespace, _utc_iso(start_utc), _utc_iso(end_utc)),
                 ).fetchall()
             )
         return summarize_archive_rows(rows, include_simulation=include_simulation)

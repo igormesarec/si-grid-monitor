@@ -234,8 +234,7 @@ class GridMonitorRuntime:
         )
         smoothed_future_import_kw = (
             snapshot.smoothed_import.value_kw
-            if projection.forecast_smoothed_kw is not None
-            and snapshot.smoothed_import.complete
+            if projection.forecast_smoothed_kw is not None and snapshot.smoothed_import.complete
             else None
         )
         if smoothed_future_import_kw is not None and (
@@ -260,6 +259,14 @@ class GridMonitorRuntime:
             for sample in self.engine.buffer.samples
             if sample.timestamp_utc >= quarter_start
         ]
+        source_age_seconds = (
+            max(
+                0.0,
+                (snapshot.now_utc - self.engine.buffer.samples[-1].timestamp_utc).total_seconds(),
+            )
+            if self.engine.buffer.samples
+            else None
+        )
         return {
             "entry_id": self.entry.entry_id,
             "title": self.entry.title,
@@ -294,6 +301,7 @@ class GridMonitorRuntime:
                     else None
                 ),
                 "input_stale": snapshot.input_stale,
+                "source_age_seconds": source_age_seconds,
             },
             "tariff": {
                 "block": tariff.block if tariff else None,
@@ -307,9 +315,7 @@ class GridMonitorRuntime:
                 "safety_margin_kw": safety_margin_kw,
                 "simulation_enabled": simulation_enabled,
                 "simulation_target_kw": (
-                    float(settings[CONF_SIMULATION_TARGET_KW])
-                    if simulation_enabled
-                    else None
+                    float(settings[CONF_SIMULATION_TARGET_KW]) if simulation_enabled else None
                 ),
                 "assignment_effective_from": (
                     assignment.effective_from.isoformat() if assignment else None
@@ -472,9 +478,7 @@ class GridMonitorRuntime:
             "transitions": transitions,
             "next_lower_target": lower,
             "lookahead_days": lookahead_days,
-            "sustained_horizon_minutes": int(
-                self.settings[CONF_SUSTAINED_HORIZON_MINUTES]
-            ),
+            "sustained_horizon_minutes": int(self.settings[CONF_SUSTAINED_HORIZON_MINUTES]),
             "sustained_limiting_quarter_start_utc": (
                 self.sustained_forecast.limiting_quarter_start_utc.isoformat()
                 if self.sustained_forecast is not None

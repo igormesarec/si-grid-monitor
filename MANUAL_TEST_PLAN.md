@@ -1,4 +1,4 @@
-# SI Grid Monitor V0.4.1 - Real Home Assistant Test Plan
+# SI Grid Monitor V0.4.2 - Real Home Assistant Test Plan
 
 Use a disposable or backed-up Home Assistant instance. Never infer physical
 connection capacity from CAN ADD values.
@@ -221,3 +221,38 @@ software behavior only; distributor readings remain authoritative.
     scroll the cumulative energy chart and wait for refresh. Confirm it remains
     styled and scrollable. Switching meters must reset both chart positions;
     ordinary refreshes within the same meter and quarter must not.
+
+## V0.4.2 real-world dashboard acceptance
+
+Use `sensor.solaredge_m1_ac_power`. Update through HACS, restart Home Assistant,
+then refresh the browser or fully reopen the Android companion app. Do not
+delete the integration entry or its SQLite file.
+
+1. With continuous coverage, confirm the solid red imported-energy curve ends
+   exactly at Used so far. After an early or restart gap followed by fresh data,
+   confirm only the supported recent red suffix appears. Stale data must show a
+   point and explanation, never a line across the gap.
+2. Confirm the cumulative projection and legend swatch are identically dashed
+   purple. Check all reference patterns in light/dark themes; coincident
+   distributor and operational values must use one combined reference.
+3. During import only, confirm the live power axis starts at 0 kW and no green
+   zero-export trace appears. Genuine export must expand the axis below zero;
+   import above contract must expand upward without clipping.
+4. With a 3.90 kW target, confirm the quarter-energy reference is `0.975 kWh`.
+5. Confirm Current-quarter forecast status is distinct from Sustained forecast
+   quality, and stale or insufficient history has a readable reason/source age.
+6. On Today, exercise Previous/Next, dropdown, broad SVG slots, touch and
+   keyboard. Archived rows must load SQLite details; live stays live; upcoming
+   says Not measured yet; missing never becomes zero.
+7. Verify 92, 96 and 100 choices on spring-DST, normal and autumn-DST days.
+   Repeated 02:xx intervals must differ by GMT offset (CET/CEST).
+8. Scroll Today and Tariff Calendar to a late item and wait through multiple
+   10-second refreshes. Selection, scroll and keyboard focus must remain stable.
+9. Confirm valid completed energy, separately observed incomplete energy, live
+   energy, valid-demand average and contributing counts remain separate.
+10. Confirm the electrical-capacity warning remains prominent near CAN ADD.
+11. Restart/reload and verify schema-5 rows, configuration epochs, entity IDs
+    and dated contracts survived unchanged.
+
+Automated model/DOM tests cover state transitions and geometry. Android theme
+rendering and live SolarEdge cadence still require the real-instance checks.

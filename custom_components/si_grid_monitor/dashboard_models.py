@@ -18,9 +18,7 @@ def _completed_display_row(row: dict[str, Any]) -> dict[str, Any]:
         "measurement_valid": validity.measured_valid,
         "contractual_eligible": validity.contractual_eligible,
         "confirmed_exceeded": validity.confirmed_exceeded,
-        "export_average_kw": (
-            float(row["export_kwh"]) / 0.25 if validity.measured_valid else None
-        ),
+        "export_average_kw": (float(row["export_kwh"]) / 0.25 if validity.measured_valid else None),
         "projected_import_demand_kw": None,
     }
 
@@ -43,9 +41,7 @@ def _live_display_row(live: dict[str, Any]) -> dict[str, Any]:
         "export_kwh": quarter.get("export_kwh"),
         "import_demand_kw": quarter.get("import_average_kw"),
         "export_average_kw": (
-            float(quarter.get("export_kwh") or 0.0) / elapsed_hours
-            if elapsed_hours > 0
-            else None
+            float(quarter.get("export_kwh") or 0.0) / elapsed_hours if elapsed_hours > 0 else None
         ),
         "projected_import_demand_kw": projection.get("forecast_smoothed_kw"),
         "elapsed_seconds": elapsed,
@@ -126,13 +122,9 @@ def build_day_view(
                 if validity.included and row["contractual_target_kw"] is not None
             }
         )
-        confirmed_targets = sorted(
-            {float(row["contractual_target_kw"]) for row in eligible}
-        )
+        confirmed_targets = sorted({float(row["contractual_target_kw"]) for row in eligible})
         periods = [
-            datetime.fromisoformat(item["start_utc"])
-            .astimezone(LJUBLJANA)
-            .strftime("%H:%M")
+            datetime.fromisoformat(item["start_utc"]).astimezone(LJUBLJANA).strftime("%H:%M")
             for item in expected
         ]
         blocks.append(

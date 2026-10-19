@@ -14,7 +14,7 @@ def test_v04_manifest_packages_supported_panel_dependencies() -> None:
     manifest = json.loads(
         (ROOT / "custom_components/si_grid_monitor/manifest.json").read_text(encoding="utf-8")
     )
-    assert manifest["version"] == VERSION == "0.4.1"
+    assert manifest["version"] == VERSION == "0.4.2"
     assert {"frontend", "http", "websocket_api"} <= set(manifest["dependencies"])
     assert PANEL_URL_PATH == "si-grid-monitor"
 
@@ -58,14 +58,14 @@ def test_setup_and_options_explain_each_field_in_both_languages() -> None:
 
 
 def test_today_and_calendar_expose_interactive_details_and_target() -> None:
-    bundle = (
-        ROOT / "custom_components/si_grid_monitor/frontend/dashboard.js"
-    ).read_text(encoding="utf-8")
+    bundle = (ROOT / "custom_components/si_grid_monitor/frontend/dashboard.js").read_text(
+        encoding="utf-8"
+    )
     # Bind date/hour and quarter selection to a visible detail view.
-    assert 'data-quarter=' in bundle
+    assert "data-quarter=" in bundle
     assert "Selected 15-minute interval" in bundle
     assert "this._historicalCard()" in bundle
-    assert 'data-hour=' in bundle
+    assert "data-hour=" in bundle
     assert "Selected hour" in bundle
     assert "this._selectCalendarHour(element.dataset.hour)" in bundle
     assert 'class="target-step"' in bundle
@@ -74,9 +74,9 @@ def test_today_and_calendar_expose_interactive_details_and_target() -> None:
 
 
 def test_future_limit_message_distinguishes_forecast_horizon() -> None:
-    bundle = (
-        ROOT / "custom_components/si_grid_monitor/frontend/dashboard.js"
-    ).read_text(encoding="utf-8")
+    bundle = (ROOT / "custom_components/si_grid_monitor/frontend/dashboard.js").read_text(
+        encoding="utf-8"
+    )
     assert "lower.inside_sustained_horizon" in bundle
     assert "Forecast reduction needed" in bundle
     assert "outside the sustained forecast horizon" in bundle
@@ -84,9 +84,7 @@ def test_future_limit_message_distinguishes_forecast_horizon() -> None:
 
 
 def test_v041_setup_exposes_simulation_without_manual_schedule_json() -> None:
-    source = (ROOT / "custom_components/si_grid_monitor/config_flow.py").read_text(
-        encoding="utf-8"
-    )
+    source = (ROOT / "custom_components/si_grid_monitor/config_flow.py").read_text(encoding="utf-8")
     assert "CONF_SIMULATION_ENABLED" in source
     assert "CONF_SIMULATION_TARGET_KW" in source
     assert "CONF_CONTRACTED_POWER_PERIODS" in source
@@ -134,3 +132,26 @@ def test_v041_mobile_charts_scroll_locally_without_shrinking_svg_text() -> None:
         chart_width = max(viewport_width, 1120)
         assert chart_width >= 1120
         assert min(viewport_width, chart_width) == viewport_width
+
+
+def test_v042_dashboard_assets_and_acceptance_controls_are_cache_busted() -> None:
+    bundle = (ROOT / "custom_components/si_grid_monitor/frontend/dashboard.js").read_text(
+        encoding="utf-8"
+    )
+    model = (ROOT / "custom_components/si_grid_monitor/frontend/dashboard-model.mjs").read_text(
+        encoding="utf-8"
+    )
+    assert "dashboard-model.mjs?v=0.4.2" in bundle
+    assert 'energyProjection: {color: "#8b5cf6", dash: "7 4"}' in model
+    assert (
+        ".legend-line .energy-projection{stroke:${CHART_SERIES.energyProjection.color};"
+        "stroke-dasharray:${CHART_SERIES.energyProjection.dash}" in bundle
+    )
+    assert "domainMinKw" in model and "domainMaxKw" in model
+    assert "Partial supported trajectory" in model
+    assert 'data-today-control="prev"' in bundle
+    assert "data-today-quarter" in bundle
+    assert 'data-today-control="next"' in bundle
+    assert "Current-quarter forecast status" in bundle
+    assert "Sustained forecast quality" in bundle
+    assert "0.975" not in bundle  # Fixture precision is computed, not hard-coded UI data.

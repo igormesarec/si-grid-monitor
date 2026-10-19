@@ -2,21 +2,26 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  CHART_SERIES,
   RequestGate,
   calendarDateLabel,
   chartViewStateForRender,
   dayStatusLabel,
+  defaultTodayQuarter,
+  energyAxisScale,
   historyErrorMessage,
   ljubljanaDate,
   ljubljanaTimeLabel,
   livePowerChartModel,
   localQuarterLabel,
+  moveTodayQuarter,
   quarterEnergyModel,
   quarterNavigation,
   restoreChartScrollState,
   selectTimelineHour,
   smoothedImportSeries,
   todayChartModel,
+  todayQuarterAction,
 } from "../custom_components/si_grid_monitor/frontend/dashboard-model.mjs";
 
 class FakeChartScroller {
@@ -194,23 +199,27 @@ test("calendar date labels localize the weekday", () => {
 });
 
 function fakeTimeline(hours, scrollLeft = 840) {
+  const timeline = {
+    buttons: [],
+    scrollLeft,
+    activeElement: null,
+    querySelectorAll() { return this.buttons; },
+  };
   const buttons = hours.map(hour => ({
     dataset: {hour},
     selected: false,
     attributes: {},
     classList: {toggle(_name, value) { this.owner.selected = value; }},
     setAttribute(name, value) { this.attributes[name] = value; },
+    focus(options) { timeline.activeElement = this; this.focusOptions = options; },
   }));
   for (const button of buttons) button.classList.owner = button;
-  return {
-    buttons,
-    scrollLeft,
-    querySelectorAll() { return buttons; },
-  };
+  timeline.buttons = buttons;
+  return timeline;
 }
 
-test("hour selection preserves horizontal scroll and selected focus on 23/25-hour days", () => {
-  for (const count of [23, 25]) {
+test("hour selection preserves horizontal scroll and selected focus on 23/24/25-hour days", () => {
+  for (const count of [23, 24, 25]) {
     const hours = Array.from({length: count}, (_, index) => `2026-10-25T${String(index).padStart(2, "0")}:00:00Z`);
     const timeline = fakeTimeline(hours);
     const selected = selectTimelineHour(timeline, hours[22]);
@@ -219,6 +228,9 @@ test("hour selection preserves horizontal scroll and selected focus on 23/25-hou
     assert.equal(selected.selected, true);
     assert.equal(selected.attributes["aria-pressed"], "true");
     assert.equal(timeline.buttons.filter(button => button.selected).length, 1);
+    selected.focus({preventScroll: true});
+    assert.equal(timeline.activeElement, selected);
+    assert.deepEqual(selected.focusOptions, {preventScroll: true});
   }
 });
 
@@ -244,7 +256,9 @@ test("live chart separates measured paths, smoothing, and backend future assumpt
     futureAnchorUtc: "2026-01-01T00:01:00Z",
     forecastQuality: "estimated",
   });
-  assert.deepEqual(model.gridValues, [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5]);
+  assert.deepEqual(model.gridValues, [-3, -2, -1, 0, 1, 2, 3, 4, 5]);
+  assert.equal(model.domainMinKw, -3);
+  assert.equal(model.domainMaxKw, 5);
   assert.ok(model.actualImportSegments.flat().some(point => point.kw === 3));
   assert.ok(model.actualExportSegments.flat().some(point => point.kw === -2));
   assert.equal(model.smoothedImportSegments.flat().at(-1).kw, 1.5);
@@ -351,8 +365,10 @@ test("power forecast omits unavailable assumptions and never bridges a stale gap
   assert.equal(model.actualImportSegments.length, 2);
   assert.deepEqual(model.futureForecast, []);
   assert.equal(model.forecastReason, "stale source");
-  assert.equal(model.gridLimitKw, 12);
-  assert.ok(model.gridValues.includes(-1) && model.gridValues.includes(1));
+  assert.equal(model.domainMinKw, 0);
+  assert.equal(model.domainMaxKw, 14);
+  assert.equal(model.hasExport, false);
+  assert.ok(model.gridValues.includes(0) && model.gridValues.includes(12));
 });
 
 test("zero or one sample does not fabricate smoothing or a forecast", () => {
@@ -423,7 +439,7 @@ test("representative energy projection agrees with backend final-average forecas
   assert.equal(model.operationalTargetKwh, 1.0);
 });
 
-test("partial or inconsistent traces never fabricate prior cumulative energy", () => {
+test("partial traces anchor only their supported recent suffix to authoritative energy", () => {
   const partial = quarterEnergyModel({
     trace: [{timestamp: "2026-01-01T00:04:00Z", signed_kw: 3}],
     quarterStartUtc: "2026-01-01T00:00:00Z",
@@ -437,7 +453,11 @@ test("partial or inconsistent traces never fabricate prior cumulative energy", (
   });
   assert.equal(partial.trajectoryAvailable, false);
   assert.equal(partial.hasGap, true);
-  assert.deepEqual(partial.actual, []);
+  assert.equal(partial.trajectoryMode, "partial");
+  assert.deepEqual(partial.actual, [
+    {timestamp: "2026-01-01T00:04:00.000Z", kwh: 0.25},
+    {timestamp: "2026-01-01T00:05:00.000Z", kwh: 0.3},
+  ]);
   assert.equal(partial.currentPoint.kwh, 0.3);
   assert.deepEqual(partial.projection, []);
 
@@ -453,7 +473,8 @@ test("partial or inconsistent traces never fabricate prior cumulative energy", (
     staleAfterSeconds: 60,
   });
   assert.equal(inconsistent.trajectoryAvailable, false);
-  assert.deepEqual(inconsistent.actual, []);
+  assert.equal(inconsistent.trajectoryMode, "partial");
+  assert.equal(inconsistent.actual.at(-1).kwh, 0.5);
   assert.equal(inconsistent.currentPoint.kwh, 0.5);
   assert.equal(inconsistent.projectionConsistent, false);
   assert.deepEqual(inconsistent.projection, []);
@@ -500,4 +521,128 @@ test("missing contracts stay absent while provisional engine targets remain expl
   assert.equal(model.contractualLimitKwh, null);
   assert.equal(model.contractualSafetyTargetKwh, null);
   assert.equal(model.operationalTargetKwh, 0.825);
+});
+
+test("chart series use one canonical color and dash mapping", () => {
+  assert.deepEqual(CHART_SERIES.energyProjection, {color: "#8b5cf6", dash: "7 4"});
+  assert.equal(CHART_SERIES.energyActual.color, CHART_SERIES.import.color);
+  assert.notEqual(CHART_SERIES.contract.dash, CHART_SERIES.contractSafety.dash);
+  assert.notEqual(CHART_SERIES.simulation.dash, CHART_SERIES.operational.dash);
+});
+
+test("power axis is positive-only without export and asymmetric when export is measured", () => {
+  for (const peak of [0.01, 1, 4, 8, 15, 60]) {
+    const model = livePowerChartModel({
+      trace: [{timestamp: "2026-01-01T00:00:00Z", signed_kw: peak}],
+      nowUtc: "2026-01-01T00:00:30Z",
+      quarterEndUtc: "2026-01-01T00:15:00Z",
+      contractualTargetKw: 3.9,
+      staleAfterSeconds: 60,
+    });
+    assert.equal(model.domainMinKw, 0);
+    assert.ok(model.domainMaxKw > Math.max(peak, 3.9));
+    assert.equal(model.actualExportSegments.length, 0);
+  }
+  const mixed = livePowerChartModel({
+    trace: [
+      {timestamp: "2026-01-01T00:00:00Z", signed_kw: -1.5},
+      {timestamp: "2026-01-01T00:00:30Z", signed_kw: 8},
+    ],
+    nowUtc: "2026-01-01T00:01:00Z",
+    quarterEndUtc: "2026-01-01T00:15:00Z",
+    contractualTargetKw: 3.9,
+    staleAfterSeconds: 60,
+  });
+  assert.ok(mixed.domainMinKw < -1.5);
+  assert.ok(mixed.domainMaxKw > 8);
+  assert.notEqual(Math.abs(mixed.domainMinKw), mixed.domainMaxKw);
+});
+
+test("energy axis has intermediate ticks and preserves exact contractual precision", () => {
+  const axis = energyAxisScale([0.1, 0.975, 0.7]);
+  assert.ok(axis.maxKwh > 0.975);
+  assert.ok(axis.ticks.length >= 4);
+  assert.ok(axis.ticks.some(value => value > 0 && value < axis.maxKwh));
+  assert.equal((3.9 * 0.25).toFixed(3), "0.975");
+});
+
+test("middle gaps expose only a continuous recent energy suffix ending at backend total", () => {
+  const model = quarterEnergyModel({
+    trace: [
+      {timestamp: "2026-01-01T00:00:00Z", signed_kw: 2},
+      {timestamp: "2026-01-01T00:00:30Z", signed_kw: 2},
+      {timestamp: "2026-01-01T00:04:00Z", signed_kw: 3},
+      {timestamp: "2026-01-01T00:04:30Z", signed_kw: 3},
+    ],
+    quarterStartUtc: "2026-01-01T00:00:00Z",
+    quarterEndUtc: "2026-01-01T00:15:00Z",
+    nowUtc: "2026-01-01T00:05:00Z",
+    importKwh: 0.1,
+    contractualTargetKw: 3.9,
+    operationalTargetKw: 3.9,
+    forecastSmoothedKw: 2,
+    staleAfterSeconds: 60,
+  });
+  assert.equal(model.trajectoryMode, "partial");
+  assert.equal(model.actual[0].timestamp, "2026-01-01T00:04:00.000Z");
+  assert.equal(model.actual.at(-1).timestamp, "2026-01-01T00:05:00.000Z");
+  assert.equal(model.actual.at(-1).kwh, 0.1);
+  assert.ok(model.actual.every((point, index) => index === 0 || point.kwh >= model.actual[index - 1].kwh));
+});
+
+test("stale current data and restart gaps remain point-only", () => {
+  for (const trace of [
+    [{timestamp: "2026-01-01T00:01:00Z", signed_kw: 2}],
+    [],
+  ]) {
+    const model = quarterEnergyModel({
+      trace,
+      quarterStartUtc: "2026-01-01T00:00:00Z",
+      quarterEndUtc: "2026-01-01T00:15:00Z",
+      nowUtc: "2026-01-01T00:05:00Z",
+      importKwh: 0.1,
+      contractualTargetKw: 3.9,
+      operationalTargetKw: 3.9,
+      forecastSmoothedKw: null,
+      staleAfterSeconds: 60,
+    });
+    assert.equal(model.trajectoryMode, "point_only");
+    assert.deepEqual(model.actualSegments, []);
+    assert.equal(model.currentPoint.kwh, 0.1);
+  }
+});
+
+test("all-export supported suffix is flat and never decreases imported energy", () => {
+  const model = quarterEnergyModel({
+    trace: [
+      {timestamp: "2026-01-01T00:04:00Z", signed_kw: -4},
+      {timestamp: "2026-01-01T00:04:30Z", signed_kw: -2},
+    ],
+    quarterStartUtc: "2026-01-01T00:00:00Z",
+    quarterEndUtc: "2026-01-01T00:15:00Z",
+    nowUtc: "2026-01-01T00:05:00Z",
+    importKwh: 0.1,
+    contractualTargetKw: 3.9,
+    operationalTargetKw: 3.9,
+    forecastSmoothedKw: 0.4,
+    staleAfterSeconds: 60,
+  });
+  assert.equal(model.trajectoryMode, "partial");
+  assert.ok(model.actual.every(point => point.kwh === 0.1));
+});
+
+test("today selector handles archived, live, missing, upcoming and DST-sized days", () => {
+  for (const count of [92, 96, 100]) {
+    const quarters = Array.from({length: count}, (_, index) => ({
+      start_utc: new Date(Date.UTC(2026, 9, 25, 0, index * 15)).toISOString(),
+      display_status: index === 4 ? "missing" : index === 5 ? "live" : index > 5 ? "upcoming" : "completed",
+    }));
+    assert.equal(defaultTodayQuarter(quarters, "2026-10-25", "2026-10-25"), quarters[5].start_utc);
+    assert.equal(moveTodayQuarter(quarters, quarters[5].start_utc, -1), quarters[4].start_utc);
+    assert.equal(moveTodayQuarter(quarters, quarters[0].start_utc, -1), null);
+    assert.equal(todayQuarterAction(quarters[0]), "archive");
+    assert.equal(todayQuarterAction(quarters[4]), "missing");
+    assert.equal(todayQuarterAction(quarters[5]), "live");
+    assert.equal(todayQuarterAction(quarters[6]), "upcoming");
+  }
 });

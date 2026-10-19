@@ -148,12 +148,8 @@ def test_block_statistics_reconcile_and_exclude_unconfirmed_data() -> None:
     )
     summary = summarize_archive_rows(rows)
     assert sum(block["valid_count"] for block in view["blocks"]) == summary.valid_count
-    assert sum(block["import_kwh"] for block in view["blocks"]) == pytest.approx(
-        summary.import_kwh
-    )
-    assert sum(block["export_kwh"] for block in view["blocks"]) == pytest.approx(
-        summary.export_kwh
-    )
+    assert sum(block["import_kwh"] for block in view["blocks"]) == pytest.approx(summary.import_kwh)
+    assert sum(block["export_kwh"] for block in view["blocks"]) == pytest.approx(summary.export_kwh)
     assert sum(block["confirmed_exceedances"] for block in view["blocks"]) == 1
     block_two = view["blocks"][1]
     assert block_two["valid_count"] == 2
