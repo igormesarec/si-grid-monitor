@@ -246,21 +246,49 @@ class SIGridMonitorPanel extends HTMLElement {
     if (!trace.length) return `<div class="empty">No measured samples yet. Missing data is not drawn as zero.</div>`;
     const start = Date.parse(live.quarter.start_utc);
     const end = Date.parse(live.quarter.end_utc);
-    const model = livePowerChartModel(
+    const tariff = live.tariff;
+    const forecast = live.projection;
+    const model = livePowerChartModel({
       trace,
-      live.tariff.target_kw,
-      live.sustained?.smoothing_seconds || 120,
-    );
+      nowUtc: live.now_utc,
+      quarterEndUtc: live.quarter.end_utc,
+      contractualTargetKw: tariff.contractual_target_kw,
+      operationalTargetKw: tariff.safety_margin_kw > 0
+        ? tariff.contractual_operational_target_kw : null,
+      simulationTargetKw: tariff.simulation_enabled ? tariff.simulation_target_kw : null,
+      windowSeconds: live.sustained?.smoothing_seconds || 120,
+      staleAfterSeconds: live.trace_stale_after_seconds || 60,
+      futureImportPowerKw: forecast.smoothed_future_import_kw,
+      futureAnchorUtc: forecast.smoothed_future_anchor_utc,
+      forecastQuality: forecast.smoothed_future_quality,
+      forecastReason: forecast.smoothed_future_reason,
+    });
     const maxKw = model.gridLimitKw;
     const x = timestamp => 44 + (Date.parse(timestamp) - start) / (end - start) * 1036;
     const y = value => 120 - Number(value) / maxKw * 92;
     const path = points => points.map(point => `${x(point.timestamp)},${y(point.kw)}`).join(" ");
-    const zero = y(0);
-    const target = live.tariff.target_kw == null ? "" :
-      `<line class="target" x1="44" x2="1080" y1="${y(live.tariff.target_kw)}" y2="${y(live.tariff.target_kw)}"/>`;
+    const paths = (segments, className) => segments
+      .filter(points => points.length > 1)
+      .map(points => `<polyline class="${className}" points="${path(points)}"/>`).join("");
+    const reference = (value, className, label) => value == null ? "" :
+      `<line class="${className}" x1="44" x2="1080" y1="${y(value)}" y2="${y(value)}"/><text class="reference-label" x="1076" y="${y(value) - 4}" text-anchor="end">${esc(label)} ${fmt(value)} kW</text>`;
+    const contractual = reference(
+      tariff.contractual_target_kw, "contractual-target", "Contractual limit",
+    );
+    const operational = tariff.safety_margin_kw > 0 ? reference(
+      tariff.contractual_operational_target_kw, "operational-target", "Operational target",
+    ) : "";
+    const simulation = tariff.simulation_enabled ? reference(
+      tariff.simulation_target_kw, "simulation-target", "SIMULATION threshold",
+    ) : "";
     const labelEvery = Math.max(1, Math.ceil(maxKw / 8));
     const grid = model.gridValues.map(value => `<g><line class="power-grid ${value === 0 ? "zero" : ""}" x1="44" x2="1080" y1="${y(value)}" y2="${y(value)}"/>${value % labelEvery === 0 ? `<text x="5" y="${y(value) + 4}">${value > 0 ? "+" : value < 0 ? "−" : ""}${Math.abs(value)} kW</text>` : ""}</g>`).join("");
-    return `<svg viewBox="0 0 1120 245" role="img" aria-label="Live import and export power with smoothed import-only power, one-kilowatt support lines and contracted target">${grid}${target}<polyline class="import-trace" points="${path(model.actualImport)}"/><polyline class="export-trace" points="${path(model.actualExport)}"/><polyline class="smoothed-trace" points="${path(model.smoothedImport)}"/><text class="legend-label" x="50" y="230">Import solid · Export green · Smoothed import dashed · Target gold</text></svg>`;
+    const future = model.futureForecast.length
+      ? `<polyline class="forecast-continuation" points="${path(model.futureForecast)}"/>` : "";
+    const forecastNote = model.futureForecast.length
+      ? `Dashed blue uses the backend's ${fmt(forecast.smoothed_future_import_kw)} kW future import-power assumption (${esc(model.forecastQuality)}${model.forecastReason ? `: ${esc(model.forecastReason)}` : ""}). Projected final quarter-average demand: ${fmt(forecast.forecast_smoothed_kw)} kW.`
+      : `Forecast continuation unavailable: ${esc(model.forecastReason || "no supported forecast")}`;
+    return `<div><svg viewBox="0 0 1120 245" role="img" aria-label="Live import and export power with measured smoothing, future import-power assumption, one-kilowatt support lines, and separate contractual and operational targets">${grid}${contractual}${operational}${simulation}${paths(model.actualImportSegments, "import-trace")}${paths(model.actualExportSegments, "export-trace")}${paths(model.smoothedImportSegments, "smoothed-trace")}${future}<text class="legend-label" x="50" y="230">Import red · Export green · Historical smoothing solid blue · Future assumption dashed blue</text></svg><p class="chart-key">${forecastNote}</p></div>`;
   }
 
   _energyChart(live) {
@@ -272,8 +300,13 @@ class SIGridMonitorPanel extends HTMLElement {
       quarterEndUtc: quarter.end_utc,
       nowUtc: live.now_utc,
       importKwh: quarter.import_kwh,
-      targetKw: live.tariff.target_kw,
+      contractualTargetKw: live.tariff.contractual_target_kw,
+      operationalTargetKw: live.tariff.safety_margin_kw > 0
+        ? live.tariff.contractual_operational_target_kw : null,
+      simulationTargetKw: live.tariff.simulation_target_kw,
+      simulationEnabled: live.tariff.simulation_enabled,
       forecastSmoothedKw: forecast.forecast_smoothed_kw,
+      staleAfterSeconds: live.trace_stale_after_seconds || 60,
     });
     const start = Date.parse(quarter.start_utc);
     const end = Date.parse(quarter.end_utc);
@@ -281,15 +314,33 @@ class SIGridMonitorPanel extends HTMLElement {
       0.1,
       energy.usedKwh,
       energy.projectedFinalKwh || 0,
-      energy.limitKwh || 0,
+      energy.contractualLimitKwh || 0,
+      energy.operationalTargetKwh || 0,
+      energy.simulationTargetKwh || 0,
     ) * 1.12;
     const x = timestamp => 48 + (Date.parse(timestamp) - start) / (end - start) * 1028;
     const y = value => 205 - Number(value) / maxKwh * 170;
     const points = values => values.map(point => `${x(point.timestamp)},${y(point.kwh)}`).join(" ");
-    const limit = energy.limitKwh == null ? "" : `<line class="energy-limit" x1="48" x2="1076" y1="${y(energy.limitKwh)}" y2="${y(energy.limitKwh)}"/>`;
+    const reference = (value, className, label) => value == null ? "" : `<line class="${className}" x1="48" x2="1076" y1="${y(value)}" y2="${y(value)}"/><text class="reference-label" x="1072" y="${y(value) - 4}" text-anchor="end">${esc(label)} ${fmt(value)} kWh</text>`;
+    const contractual = reference(
+      energy.contractualLimitKwh, "energy-contractual-limit", "Contractual limit",
+    );
+    const operational = reference(
+      energy.operationalTargetKwh, "energy-operational-target", "Operational target",
+    );
+    const simulation = reference(
+      energy.simulationTargetKwh, "energy-simulation-target", "SIMULATION threshold",
+    );
     const projection = energy.projection.length ? `<polyline class="energy-projection" points="${points(energy.projection)}"/>` : "";
-    const used = energy.actual[energy.actual.length - 1];
-    return `<section class="energy-progress"><h3>Quarter energy progress</h3><svg viewBox="0 0 1120 235" role="img" aria-label="Cumulative import-only quarter energy in kilowatt-hours"><line class="energy-zero" x1="48" x2="1076" y1="${y(0)}" y2="${y(0)}"/>${limit}<polyline class="energy-actual" points="${points(energy.actual)}"/>${projection}<circle class="energy-current" cx="${x(used.timestamp)}" cy="${y(used.kwh)}" r="5"/><text x="5" y="${y(0) + 4}">0 kWh</text><text x="5" y="${y(maxKwh) + 4}">${fmt(maxKwh)} kWh</text></svg><div class="grid">${this._metric("Used so far", fmt(energy.usedKwh), "kWh")}${this._metric("Projected final", fmt(energy.projectedFinalKwh), "kWh")}${this._metric("Quarter limit", fmt(energy.limitKwh), "kWh")}${this._metric("Remaining operational budget", fmt(forecast.budget_remaining_kwh), "kWh")}</div><p class="chart-key">Cumulative imported energy only. Export contributes zero and never reduces billed import energy.</p></section>`;
+    const actual = energy.actual.length
+      ? `<polyline class="energy-actual" points="${points(energy.actual)}"/>` : "";
+    const trajectoryNote = energy.trajectoryAvailable
+      ? "Solid red is the supported cumulative imported-energy trajectory."
+      : esc(energy.trajectoryReason);
+    const projectionNote = energy.projection.length
+      ? "Dashed purple is an estimate from the authoritative current point, not a measurement."
+      : esc(energy.projectionReason);
+    return `<section class="energy-progress"><h3>Quarter energy progress</h3><svg viewBox="0 0 1120 235" role="img" aria-label="Cumulative import-only quarter energy in kilowatt-hours, with gaps left undisguised">${contractual}${operational}${simulation}<line class="energy-zero" x1="48" x2="1076" y1="${y(0)}" y2="${y(0)}"/>${actual}${projection}<circle class="energy-current" cx="${x(energy.currentPoint.timestamp)}" cy="${y(energy.currentPoint.kwh)}" r="5"/><text x="5" y="${y(0) + 4}">0 kWh</text><text x="5" y="${y(maxKwh) + 4}">${fmt(maxKwh)} kWh</text></svg><div class="grid">${this._metric("Used so far", fmt(energy.usedKwh), "kWh")}${this._metric("Projected final energy", fmt(energy.projectedFinalKwh), "kWh")}${this._metric("Distributor contractual limit", fmt(energy.contractualLimitKwh), "kWh")}${this._metric("Operational energy target", fmt(energy.operationalTargetKwh), "kWh")}${this._metric("Remaining operational budget", fmt(forecast.budget_remaining_kwh), "kWh")}</div><p class="chart-key">${trajectoryNote} ${projectionNote} Export contributes zero and never reduces imported energy.</p></section>`;
   }
 
   _overview() {
@@ -303,7 +354,7 @@ class SIGridMonitorPanel extends HTMLElement {
     const sustained = live.sustained || {};
     return `<section class="card hero"><div class="herohead"><div><p class="eyebrow">CURRENT FIXED 15-MINUTE INTERVAL</p><h2>${esc(quarter.start_local.slice(0, 10))} · ${esc(quarter.start_local.slice(11, 16))}–${esc(quarter.end_local.slice(11, 16))}</h2><p>B${esc(tariff.block)} · ${fmt(tariff.target_kw)} kW · ${esc(quarter.quality)}</p></div><div class="count" data-countdown>--:--</div></div>
       <div class="direction"><div class="import"><span>IMPORT</span><b>${fmt(power.import_kw)} kW</b></div><div class="export"><span>EXPORT</span><b>${fmt(power.export_kw)} kW</b></div></div>${this._liveChart(live)}${this._energyChart(live)}
-      <div class="grid">${this._metric("Signed grid power", fmt(power.signed_kw), "kW")}${this._metric("Imported so far", fmt(quarter.import_kwh), "kWh")}${this._metric("Exported so far", fmt(quarter.export_kwh), "kWh")}${this._metric("Import average", fmt(quarter.import_average_kw), "kW")}${this._metric("Instant forecast", fmt(forecast.forecast_instant_kw), "kW")}${this._metric("Smoothed forecast", fmt(forecast.forecast_smoothed_kw), "kW")}${this._metric("Utilization", fmt(forecast.current_utilization_pct), "%")}${this._metric("Remaining budget", fmt(forecast.budget_remaining_kwh), "kWh")}${this._metric("Allowed remainder", fmt(forecast.allowed_remaining_import_kw), "kW")}${this._metric("CAN ADD THIS QUARTER", fmt(forecast.can_add_kw), "kW", "good")}${this._metric("MUST REDUCE THIS QUARTER", fmt(forecast.must_reduce_kw), "kW", forecast.must_reduce_kw > 0 ? "bad" : "")}${this._metric("SUSTAINED CAN ADD", fmt(sustained.can_add_kw), "kW", "accent")}${this._metric("SUSTAINED MUST REDUCE", fmt(sustained.must_reduce_kw), "kW", sustained.must_reduce_kw > 0 ? "bad" : "")}${this._metric("Forecast quality", sustained.quality || "unavailable")}</div>
+      <div class="grid">${this._metric("Signed grid power", fmt(power.signed_kw), "kW")}${this._metric("Imported so far", fmt(quarter.import_kwh), "kWh")}${this._metric("Exported so far", fmt(quarter.export_kwh), "kWh")}${this._metric("Import average", fmt(quarter.import_average_kw), "kW")}${this._metric("Instant projected final quarter average", fmt(forecast.forecast_instant_kw), "kW")}${this._metric("Smoothed projected final quarter average", fmt(forecast.forecast_smoothed_kw), "kW")}${this._metric("Utilization", fmt(forecast.current_utilization_pct), "%")}${this._metric("Remaining budget", fmt(forecast.budget_remaining_kwh), "kWh")}${this._metric("Allowed remainder", fmt(forecast.allowed_remaining_import_kw), "kW")}${this._metric("CAN ADD THIS QUARTER", fmt(forecast.can_add_kw), "kW", "good")}${this._metric("MUST REDUCE THIS QUARTER", fmt(forecast.must_reduce_kw), "kW", forecast.must_reduce_kw > 0 ? "bad" : "")}${this._metric("SUSTAINED CAN ADD", fmt(sustained.can_add_kw), "kW", "accent")}${this._metric("SUSTAINED MUST REDUCE", fmt(sustained.must_reduce_kw), "kW", sustained.must_reduce_kw > 0 ? "bad" : "")}${this._metric("Forecast quality", sustained.quality || "unavailable")}</div>
       <p class="safety">15-minute energy-budget headroom is not physical breaker, phase, grid-connection or inverter capacity.</p></section>
       ${this._transitionCard()}<section class="card"><div class="row"><h2>Quarter archive</h2><button data-prev>Previous quarter</button><button data-next>Next quarter</button><button data-live>Current / live</button></div>${this._historicalCard()}</section>`;
   }
@@ -480,7 +531,7 @@ class SIGridMonitorPanel extends HTMLElement {
   }
 
   _styles() {
-    return `:host{display:block;min-height:100%;font-family:var(--paper-font-body1_-_font-family,system-ui);background:var(--primary-background-color);color:var(--primary-text-color);--line:var(--divider-color,#d6d9de);--card:var(--card-background-color,#fff)}*{box-sizing:border-box}main{max-width:1450px;margin:auto;padding:18px}header,.row,.herohead,.direction,nav{display:flex;align-items:center;gap:12px}header{justify-content:space-between}.brand{display:flex;align-items:center;gap:12px}.brand>span{display:grid;place-items:center;width:48px;height:48px;border:4px solid #15803d;border-left-color:#e11d48;border-radius:50%;font-weight:800}.brand h1{margin:0;font-size:1.45rem}.brand p,.eyebrow,.meter small{margin:2px 0;color:var(--secondary-text-color);font-size:.78rem}.meter{display:flex;flex-direction:column;align-items:flex-end;gap:3px}nav{margin:18px 0;border-bottom:1px solid var(--line)}button,select,input{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:8px;padding:9px 12px;cursor:pointer}nav button{border:0;border-radius:0;font-weight:700}nav .active{border-bottom:3px solid var(--primary-color,#03a9f4);color:var(--primary-color,#03a9f4)}.card{background:var(--card);border-radius:14px;padding:18px;margin:14px 0;box-shadow:var(--ha-card-box-shadow,0 2px 8px #0002)}.herohead{justify-content:space-between}.hero h2{margin:4px 0}.count{font:700 2.2rem ui-monospace}.direction>div{flex:1;padding:14px;border-radius:10px}.import{background:#ef444418;color:#c62828}.export{background:#22c55e18;color:#15803d}.direction b{display:block;font-size:1.7rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:10px;margin:14px 0}.metric{padding:12px;background:color-mix(in srgb,var(--card),var(--primary-text-color) 5%);border-radius:9px}.metric span{display:block;color:var(--secondary-text-color);font-size:.78rem}.metric strong{font-size:1.2rem}.metric small{font-size:.75rem}.metric.good{border-left:4px solid #16a34a}.metric.bad{border-left:4px solid #dc2626}.metric.accent{border-left:4px solid #0284c7}.notice,.empty,.error,.safety{padding:12px;border-radius:8px;background:#0284c715}.error{background:#f59e0b22}.safety{font-size:.85rem;background:#64748b18}svg{width:100%;height:auto;background:color-mix(in srgb,var(--card),var(--primary-text-color) 3%);border-radius:10px}svg .zero{stroke:var(--primary-text-color);stroke-width:1.8}svg .target,.target-step,.energy-limit{stroke:#f59e0b;stroke-width:2;stroke-dasharray:5 3}.power-grid{stroke:var(--divider-color,#d6d9de);stroke-width:.7}.import-trace{fill:none;stroke:#dc2626;stroke-width:3}.export-trace{fill:none;stroke:#16a34a;stroke-width:3}.smoothed-trace{fill:none;stroke:#0284c7;stroke-width:2.5;stroke-dasharray:7 4}.energy-actual{fill:none;stroke:#dc2626;stroke-width:3}.energy-projection{fill:none;stroke:#8b5cf6;stroke-width:2.5;stroke-dasharray:7 4}.energy-zero{stroke:var(--primary-text-color);stroke-width:1}.energy-current{fill:#dc2626;stroke:var(--card);stroke-width:2}svg text{fill:var(--secondary-text-color);font-size:12px}.transition-list>div{display:grid;grid-template-columns:1fr 1.4fr 1.2fr;padding:8px;border-bottom:1px solid var(--line)}.daychart{width:100%;overflow-x:auto}.daychart svg{min-width:1000px}.gridline{stroke:var(--divider-color,#d6d9de);stroke-width:1}.import-bar{fill:#e5484d}.export-bar{fill:#2f9e67}.target-step{stroke:#e6a700}.projection{fill:#8b5cf6;stroke:var(--card);stroke-width:1.5}.exceeded{fill:none;stroke:#dc2626;stroke-width:2}.state{fill:transparent;stroke:#94a3b8;stroke-dasharray:3 3}.state.missing,.state.incomplete,.state.unavailable{fill:url(#hatch);stroke:#f59e0b}.state.upcoming{stroke-opacity:.35}.state.provisional_estimate{stroke:#8b5cf6;stroke-width:2}.axis-title{font-weight:700}.quarter-slot{cursor:pointer}.chart-key{font-size:.78rem;color:var(--secondary-text-color);margin:8px 0}.selected-quarter{border:1px solid var(--line);padding:12px;border-radius:10px;margin-top:12px}table{width:100%;border-collapse:collapse;overflow:auto;display:block}th,td{padding:9px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}.chip{display:inline-block;padding:4px 8px;border-radius:12px;color:white}.b1{background:${BLOCK_COLORS[1]}}.b2{background:${BLOCK_COLORS[2]}}.b3{background:${BLOCK_COLORS[3]}}.b4{background:${BLOCK_COLORS[4]}}.b5{background:${BLOCK_COLORS[5]}}.b0{background:#64748b}.timeline{display:flex;overflow-x:auto;gap:3px}.hour{min-width:72px;padding:10px 6px;color:white;display:flex;flex-direction:column;border-radius:7px;text-align:left;border:0}.hour.selected{outline:3px solid var(--primary-color,#03a9f4);outline-offset:-3px}.hour small{font-size:.67rem}.legend{display:flex;gap:8px;margin:15px 0}@media(max-width:700px){main{padding:8px}.brand p{display:none}.herohead{align-items:flex-start}.count{font-size:1.6rem}.direction{flex-direction:column}.direction>div{width:100%}.grid{grid-template-columns:repeat(2,1fr)}.transition-list>div{grid-template-columns:1fr}.card{padding:12px}nav{overflow-x:auto}nav button{white-space:nowrap}.meter{max-width:45%}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}`;
+    return `:host{display:block;min-height:100%;font-family:var(--paper-font-body1_-_font-family,system-ui);background:var(--primary-background-color);color:var(--primary-text-color);--line:var(--divider-color,#d6d9de);--card:var(--card-background-color,#fff)}*{box-sizing:border-box}main{max-width:1450px;margin:auto;padding:18px}header,.row,.herohead,.direction,nav{display:flex;align-items:center;gap:12px}header{justify-content:space-between}.brand{display:flex;align-items:center;gap:12px}.brand>span{display:grid;place-items:center;width:48px;height:48px;border:4px solid #15803d;border-left-color:#e11d48;border-radius:50%;font-weight:800}.brand h1{margin:0;font-size:1.45rem}.brand p,.eyebrow,.meter small{margin:2px 0;color:var(--secondary-text-color);font-size:.78rem}.meter{display:flex;flex-direction:column;align-items:flex-end;gap:3px}nav{margin:18px 0;border-bottom:1px solid var(--line)}button,select,input{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:8px;padding:9px 12px;cursor:pointer}nav button{border:0;border-radius:0;font-weight:700}nav .active{border-bottom:3px solid var(--primary-color,#03a9f4);color:var(--primary-color,#03a9f4)}.card{background:var(--card);border-radius:14px;padding:18px;margin:14px 0;box-shadow:var(--ha-card-box-shadow,0 2px 8px #0002)}.herohead{justify-content:space-between}.hero h2{margin:4px 0}.count{font:700 2.2rem ui-monospace}.direction>div{flex:1;padding:14px;border-radius:10px}.import{background:#ef444418;color:#c62828}.export{background:#22c55e18;color:#15803d}.direction b{display:block;font-size:1.7rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:10px;margin:14px 0}.metric{padding:12px;background:color-mix(in srgb,var(--card),var(--primary-text-color) 5%);border-radius:9px}.metric span{display:block;color:var(--secondary-text-color);font-size:.78rem}.metric strong{font-size:1.2rem}.metric small{font-size:.75rem}.metric.good{border-left:4px solid #16a34a}.metric.bad{border-left:4px solid #dc2626}.metric.accent{border-left:4px solid #0284c7}.notice,.empty,.error,.safety{padding:12px;border-radius:8px;background:#0284c715}.error{background:#f59e0b22}.safety{font-size:.85rem;background:#64748b18}svg{width:100%;height:auto;background:color-mix(in srgb,var(--card),var(--primary-text-color) 3%);border-radius:10px}svg .zero{stroke:var(--primary-text-color);stroke-width:1.8}.contractual-target,.energy-contractual-limit,.target-step{stroke:#f59e0b;stroke-width:2;stroke-dasharray:7 4}.operational-target,.energy-operational-target{stroke:#ea580c;stroke-width:2;stroke-dasharray:2 3}.simulation-target,.energy-simulation-target{stroke:#8b5cf6;stroke-width:2;stroke-dasharray:10 3 2 3}.power-grid{stroke:var(--divider-color,#d6d9de);stroke-width:.7}.import-trace{fill:none;stroke:#dc2626;stroke-width:3}.export-trace{fill:none;stroke:#16a34a;stroke-width:3}.smoothed-trace{fill:none;stroke:#38bdf8;stroke-width:2.5}.forecast-continuation{fill:none;stroke:#0284c7;stroke-width:2.5;stroke-dasharray:7 4}.energy-actual{fill:none;stroke:#dc2626;stroke-width:3}.energy-projection{fill:none;stroke:#8b5cf6;stroke-width:2.5;stroke-dasharray:7 4}.energy-zero{stroke:var(--primary-text-color);stroke-width:1}.energy-current{fill:#dc2626;stroke:var(--card);stroke-width:2}.reference-label{paint-order:stroke;stroke:var(--card);stroke-width:4px;stroke-linejoin:round}svg text{fill:var(--secondary-text-color);font-size:12px}.transition-list>div{display:grid;grid-template-columns:1fr 1.4fr 1.2fr;padding:8px;border-bottom:1px solid var(--line)}.daychart{width:100%;overflow-x:auto}.daychart svg{min-width:1000px}.gridline{stroke:var(--divider-color,#d6d9de);stroke-width:1}.import-bar{fill:#e5484d}.export-bar{fill:#2f9e67}.target-step{stroke:#e6a700}.projection{fill:#8b5cf6;stroke:var(--card);stroke-width:1.5}.exceeded{fill:none;stroke:#dc2626;stroke-width:2}.state{fill:transparent;stroke:#94a3b8;stroke-dasharray:3 3}.state.missing,.state.incomplete,.state.unavailable{fill:url(#hatch);stroke:#f59e0b}.state.upcoming{stroke-opacity:.35}.state.provisional_estimate{stroke:#8b5cf6;stroke-width:2}.axis-title{font-weight:700}.quarter-slot{cursor:pointer}.chart-key{font-size:.78rem;color:var(--secondary-text-color);margin:8px 0}.selected-quarter{border:1px solid var(--line);padding:12px;border-radius:10px;margin-top:12px}table{width:100%;border-collapse:collapse;overflow:auto;display:block}th,td{padding:9px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}.chip{display:inline-block;padding:4px 8px;border-radius:12px;color:white}.b1{background:${BLOCK_COLORS[1]}}.b2{background:${BLOCK_COLORS[2]}}.b3{background:${BLOCK_COLORS[3]}}.b4{background:${BLOCK_COLORS[4]}}.b5{background:${BLOCK_COLORS[5]}}.b0{background:#64748b}.timeline{display:flex;overflow-x:auto;gap:3px}.hour{min-width:72px;padding:10px 6px;color:white;display:flex;flex-direction:column;border-radius:7px;text-align:left;border:0}.hour.selected{outline:3px solid var(--primary-color,#03a9f4);outline-offset:-3px}.hour small{font-size:.67rem}.legend{display:flex;gap:8px;margin:15px 0}@media(max-width:700px){main{padding:8px}.brand p{display:none}.herohead{align-items:flex-start}.count{font-size:1.6rem}.direction{flex-direction:column}.direction>div{width:100%}.grid{grid-template-columns:repeat(2,1fr)}.transition-list>div{grid-template-columns:1fr}.card{padding:12px}nav{overflow-x:auto}nav button{white-space:nowrap}.meter{max-width:45%}.reference-label{font-size:10px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}`;
   }
 }
 

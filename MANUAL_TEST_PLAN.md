@@ -171,3 +171,24 @@ software behavior only; distributor readings remain authoritative.
    prior rows/configuration epochs remain byte-for-byte semantically unchanged,
    existing entity unique IDs remain stable and no historical recalculation is
    triggered.
+8. During a quarter with complete 120-second coverage, confirm the solid blue
+   historical-smoothed line stops at the forecast anchor and the dashed blue
+   future assumption continues to the exact quarter boundary. Confirm the
+   separately labeled projected final quarter average is not plotted as an
+   instantaneous power value.
+9. Create a sensor gap longer than the stale limit and restart HA mid-quarter.
+   Confirm measured power paths remain broken across the gap. The energy chart
+   must show the authoritative current imported-kWh point and explain why its
+   preceding trajectory is unavailable instead of distributing prior energy.
+10. Configure 4.20 kW contracted power and a 0.20 kW safety margin. Confirm both
+    charts separately label 4.20 kW / 1.05 kWh as the distributor contractual
+    limit and 4.00 kW / 1.00 kWh as the operational target.
+11. With 0.30 kWh imported and a 2.80 kW smoothed final-demand forecast, verify
+    the dashed energy projection begins at exactly 0.30 kWh and ends at 0.70
+    kWh. It must never fall when the source exports.
+12. Enable simulation and confirm its purple threshold is explicitly labeled
+    SIMULATION and never replaces or masquerades as a confirmed distributor
+    line. Disable the assignment/provisional rule and confirm no contractual
+    line is invented.
+13. Repeat on narrow mobile, tablet and desktop layouts in light/dark themes;
+    labels must remain readable and the 1 kW positive/negative grid symmetric.

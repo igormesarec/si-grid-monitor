@@ -145,9 +145,12 @@ function importPower(sample) {
   return Math.max(0, Number(sample.signed_kw));
 }
 
-export function smoothedImportSeries(trace, windowSeconds = 120) {
+const ENERGY_RECONCILIATION_TOLERANCE_KWH = 0.001;
+
+export function smoothedImportSeries(trace, windowSeconds = 120, staleAfterSeconds = 60) {
   if (!trace.length) return [];
   const windowMs = Math.max(1, Number(windowSeconds)) * 1000;
+  const staleMs = Math.max(1, Number(staleAfterSeconds)) * 1000;
   return trace.map((sample, index) => {
     const end = sampleTime(sample);
     const start = end - windowMs;
@@ -158,6 +161,7 @@ export function smoothedImportSeries(trace, windowSeconds = 120) {
       const segmentEnd = Math.min(
         end,
         cursor < index ? sampleTime(trace[cursor + 1]) : end,
+        sampleTime(trace[cursor]) + staleMs,
       );
       if (segmentEnd > segmentStart) {
         const duration = segmentEnd - segmentStart;
@@ -168,25 +172,95 @@ export function smoothedImportSeries(trace, windowSeconds = 120) {
     return {
       timestamp: sample.timestamp,
       import_kw: coverageMs > 0 ? energyKwMs / coverageMs : importPower(sample),
+      coverage_seconds: coverageMs / 1000,
+      complete: windowMs - coverageMs <= 1,
     };
   });
 }
 
-export function livePowerChartModel(trace, targetKw, windowSeconds = 120) {
-  const actualImport = trace.map(sample => ({
-    timestamp: sample.timestamp,
-    kw: importPower(sample),
-  }));
-  const actualExport = trace.map(sample => {
+function powerSegments(trace, nowUtc, staleAfterSeconds, valueForSample) {
+  const now = new Date(nowUtc).getTime();
+  const staleMs = Math.max(1, Number(staleAfterSeconds)) * 1000;
+  const sorted = [...trace].sort((left, right) => sampleTime(left) - sampleTime(right));
+  const segments = [];
+  let previousEnd = null;
+  for (let index = 0; index < sorted.length; index += 1) {
+    const sample = sorted[index];
+    const start = sampleTime(sample);
+    if (start > now) break;
+    const next = index + 1 < sorted.length ? sampleTime(sorted[index + 1]) : now;
+    const end = Math.min(now, next, start + staleMs);
+    const point = {timestamp: new Date(start).toISOString(), kw: valueForSample(sample)};
+    if (previousEnd == null || start - previousEnd > 1) segments.push([point]);
+    else segments.at(-1).push(point);
+    if (end > start) {
+      segments.at(-1).push({timestamp: new Date(end).toISOString(), kw: point.kw});
+    }
+    previousEnd = end;
+  }
+  return segments;
+}
+
+function splitTimedPoints(points, staleAfterSeconds) {
+  const staleMs = Math.max(1, Number(staleAfterSeconds)) * 1000;
+  const segments = [];
+  for (const point of points) {
+    if (!segments.length || sampleTime(point) - sampleTime(segments.at(-1).at(-1)) > staleMs) {
+      segments.push([point]);
+    } else {
+      segments.at(-1).push(point);
+    }
+  }
+  return segments;
+}
+
+export function livePowerChartModel({
+  trace,
+  nowUtc,
+  quarterEndUtc,
+  contractualTargetKw = null,
+  operationalTargetKw = null,
+  simulationTargetKw = null,
+  windowSeconds = 120,
+  staleAfterSeconds = 60,
+  futureImportPowerKw = null,
+  futureAnchorUtc = null,
+  forecastQuality = "unavailable",
+  forecastReason = null,
+}) {
+  const actualImportSegments = powerSegments(
+    trace, nowUtc, staleAfterSeconds, sample => importPower(sample),
+  );
+  const actualExportSegments = powerSegments(trace, nowUtc, staleAfterSeconds, sample => {
     const signed = Number(sample.signed_kw);
-    return {timestamp: sample.timestamp, kw: signed < 0 ? signed : 0};
+    return signed < 0 ? signed : 0;
   });
-  const smoothedImport = smoothedImportSeries(trace, windowSeconds).map(sample => ({
-    timestamp: sample.timestamp,
-    kw: sample.import_kw,
-  }));
-  const magnitudes = [Number(targetKw) || 0];
-  for (const point of [...actualImport, ...actualExport, ...smoothedImport]) {
+  const smoothedImport = smoothedImportSeries(trace, windowSeconds, staleAfterSeconds)
+    .filter(sample => sample.complete)
+    .map(sample => ({timestamp: sample.timestamp, kw: sample.import_kw}));
+  const smoothedImportSegments = splitTimedPoints(smoothedImport, staleAfterSeconds);
+  const anchor = futureAnchorUtc ? new Date(futureAnchorUtc).getTime() : NaN;
+  const quarterEnd = new Date(quarterEndUtc).getTime();
+  const futureForecast = (
+    futureImportPowerKw != null
+    && forecastQuality !== "unavailable"
+    && Number.isFinite(anchor)
+    && anchor <= quarterEnd
+  ) ? [
+      {timestamp: new Date(anchor).toISOString(), kw: Number(futureImportPowerKw)},
+      {timestamp: new Date(quarterEnd).toISOString(), kw: Number(futureImportPowerKw)},
+    ] : [];
+  const magnitudes = [
+    Number(contractualTargetKw) || 0,
+    Number(operationalTargetKw) || 0,
+    Number(simulationTargetKw) || 0,
+  ];
+  for (const point of [
+    ...actualImportSegments.flat(),
+    ...actualExportSegments.flat(),
+    ...smoothedImport,
+    ...futureForecast,
+  ]) {
     magnitudes.push(Math.abs(point.kw));
   }
   const gridLimitKw = Math.max(1, Math.ceil(Math.max(...magnitudes)));
@@ -194,7 +268,16 @@ export function livePowerChartModel(trace, targetKw, windowSeconds = 120) {
     {length: gridLimitKw * 2 + 1},
     (_, index) => index - gridLimitKw,
   );
-  return {actualImport, actualExport, smoothedImport, gridLimitKw, gridValues};
+  return {
+    actualImportSegments,
+    actualExportSegments,
+    smoothedImportSegments,
+    futureForecast,
+    forecastQuality,
+    forecastReason,
+    gridLimitKw,
+    gridValues,
+  };
 }
 
 export function quarterEnergyModel({
@@ -203,8 +286,12 @@ export function quarterEnergyModel({
   quarterEndUtc,
   nowUtc,
   importKwh,
-  targetKw,
+  contractualTargetKw,
+  operationalTargetKw,
+  simulationTargetKw = null,
+  simulationEnabled = false,
   forecastSmoothedKw,
+  staleAfterSeconds = 60,
 }) {
   const start = new Date(quarterStartUtc).getTime();
   const end = new Date(quarterEndUtc).getTime();
@@ -212,47 +299,73 @@ export function quarterEnergyModel({
   const samples = trace
     .filter(sample => sampleTime(sample) <= now)
     .sort((left, right) => sampleTime(left) - sampleTime(right));
+  const staleMs = Math.max(1, Number(staleAfterSeconds)) * 1000;
   let reconstructedKwh = 0;
+  let cursorTime = start;
+  let hasGap = false;
+  const reconstructed = [{timestamp: new Date(start).toISOString(), kwh: 0}];
   for (let index = 0; index < samples.length; index += 1) {
     const segmentStart = Math.max(start, sampleTime(samples[index]));
     const segmentEnd = Math.min(
       now,
       index + 1 < samples.length ? sampleTime(samples[index + 1]) : now,
+      sampleTime(samples[index]) + staleMs,
     );
+    if (segmentStart - cursorTime > 1) hasGap = true;
     if (segmentEnd > segmentStart) {
       reconstructedKwh += importPower(samples[index]) * (segmentEnd - segmentStart) / 3600000;
+      reconstructed.push({timestamp: new Date(segmentEnd).toISOString(), kwh: reconstructedKwh});
+      cursorTime = segmentEnd;
     }
   }
+  if (now - cursorTime > 1) hasGap = true;
   const usedKwh = Math.max(0, Number(importKwh) || 0);
-  const priorKwh = Math.max(0, usedKwh - reconstructedKwh);
-  let cumulative = priorKwh;
-  const actual = [];
-  if (samples.length) actual.push({timestamp: samples[0].timestamp, kwh: cumulative});
-  for (let index = 0; index < samples.length; index += 1) {
-    const segmentStart = Math.max(start, sampleTime(samples[index]));
-    const segmentEnd = Math.min(
-      now,
-      index + 1 < samples.length ? sampleTime(samples[index + 1]) : now,
-    );
-    if (segmentEnd > segmentStart) {
-      cumulative += importPower(samples[index]) * (segmentEnd - segmentStart) / 3600000;
-      actual.push({timestamp: new Date(segmentEnd).toISOString(), kwh: cumulative});
-    }
-  }
-  if (!actual.length) actual.push({timestamp: new Date(now).toISOString(), kwh: usedKwh});
-  actual[actual.length - 1].kwh = usedKwh;
+  const reconciliationErrorKwh = Math.abs(reconstructedKwh - usedKwh);
+  const trajectoryAvailable = !hasGap
+    && reconciliationErrorKwh <= ENERGY_RECONCILIATION_TOLERANCE_KWH;
+  const actual = trajectoryAvailable
+    ? reconstructed.map((point, index) => index === reconstructed.length - 1
+      ? {...point, timestamp: new Date(now).toISOString(), kwh: usedKwh}
+      : point)
+    : [];
+  const currentPoint = {timestamp: new Date(now).toISOString(), kwh: usedKwh};
+  const trajectoryReason = trajectoryAvailable
+    ? null
+    : hasGap
+      ? "Detailed trajectory unavailable because measurement coverage has gaps."
+      : `Detailed trajectory differs from the authoritative total by ${reconciliationErrorKwh.toFixed(4)} kWh.`;
   const projectedFinalKwh = forecastSmoothedKw == null
     ? null : Math.max(0, Number(forecastSmoothedKw)) * 0.25;
+  const projectionConsistent = projectedFinalKwh != null
+    && projectedFinalKwh + ENERGY_RECONCILIATION_TOLERANCE_KWH >= usedKwh;
+  const displayedProjectedFinalKwh = projectionConsistent
+    ? Math.max(usedKwh, projectedFinalKwh) : projectedFinalKwh;
   return {
     actual,
-    projection: projectedFinalKwh == null ? [] : [
-      {timestamp: new Date(now).toISOString(), kwh: usedKwh},
-      {timestamp: new Date(end).toISOString(), kwh: projectedFinalKwh},
+    currentPoint,
+    projection: !projectionConsistent ? [] : [
+      currentPoint,
+      {timestamp: new Date(end).toISOString(), kwh: displayedProjectedFinalKwh},
     ],
     usedKwh,
-    projectedFinalKwh,
-    limitKwh: targetKw == null ? null : Math.max(0, Number(targetKw)) * 0.25,
-    priorObservedKwh: priorKwh,
+    projectedFinalKwh: displayedProjectedFinalKwh,
+    backendProjectedFinalKwh: projectedFinalKwh,
+    contractualLimitKwh: contractualTargetKw == null
+      ? null : Math.max(0, Number(contractualTargetKw)) * 0.25,
+    operationalTargetKwh: operationalTargetKw == null
+      ? null : Math.max(0, Number(operationalTargetKw)) * 0.25,
+    simulationTargetKwh: simulationEnabled && simulationTargetKw != null
+      ? Math.max(0, Number(simulationTargetKw)) * 0.25 : null,
+    trajectoryAvailable,
+    trajectoryReason,
+    hasGap,
+    reconciliationErrorKwh,
+    projectionConsistent,
+    projectionReason: forecastSmoothedKw == null
+      ? "Smoothed final-demand forecast is unavailable."
+      : projectionConsistent
+        ? null
+        : "Projected final energy is below energy already imported.",
   };
 }
 

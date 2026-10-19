@@ -122,19 +122,75 @@ test("history errors stay distinct from successful empty results", () => {
   assert.match(historyErrorMessage("day", {code: "day_query_failed"}), /Could not load/);
 });
 
-test("live chart uses one-kW support lines and separates import from export", () => {
-  const model = livePowerChartModel([
-    {timestamp: "2026-01-01T00:00:00Z", signed_kw: 3},
-    {timestamp: "2026-01-01T00:00:30Z", signed_kw: -2},
-    {timestamp: "2026-01-01T00:01:00Z", signed_kw: 1},
-  ], 4.2, 60);
+test("live chart separates measured paths, smoothing, and backend future assumption", () => {
+  const model = livePowerChartModel({
+    trace: [
+      {timestamp: "2026-01-01T00:00:00Z", signed_kw: 3},
+      {timestamp: "2026-01-01T00:00:30Z", signed_kw: -2},
+      {timestamp: "2026-01-01T00:01:00Z", signed_kw: 1},
+    ],
+    nowUtc: "2026-01-01T00:01:00Z",
+    quarterEndUtc: "2026-01-01T00:15:00Z",
+    contractualTargetKw: 4.2,
+    operationalTargetKw: 4.0,
+    windowSeconds: 60,
+    staleAfterSeconds: 60,
+    futureImportPowerKw: 1.5,
+    futureAnchorUtc: "2026-01-01T00:01:00Z",
+    forecastQuality: "estimated",
+  });
   assert.deepEqual(model.gridValues, [-5, -4, -3, -2, -1, 0, 1, 2, 3, 4, 5]);
-  assert.deepEqual(model.actualImport.map(point => point.kw), [3, 0, 1]);
-  assert.deepEqual(model.actualExport.map(point => point.kw), [0, -2, 0]);
-  assert.equal(model.smoothedImport.at(-1).kw, 1.5);
+  assert.ok(model.actualImportSegments.flat().some(point => point.kw === 3));
+  assert.ok(model.actualExportSegments.flat().some(point => point.kw === -2));
+  assert.equal(model.smoothedImportSegments.flat().at(-1).kw, 1.5);
+  assert.deepEqual(model.futureForecast, [
+    {timestamp: "2026-01-01T00:01:00.000Z", kw: 1.5},
+    {timestamp: "2026-01-01T00:15:00.000Z", kw: 1.5},
+  ]);
 });
 
-test("quarter energy progress is import-only and target is target times quarter hours", () => {
+test("power forecast omits unavailable assumptions and never bridges a stale gap", () => {
+  const model = livePowerChartModel({
+    trace: [
+      {timestamp: "2026-01-01T00:00:00Z", signed_kw: 2},
+      {timestamp: "2026-01-01T00:03:00Z", signed_kw: 12},
+    ],
+    nowUtc: "2026-01-01T00:03:30Z",
+    quarterEndUtc: "2026-01-01T00:15:00Z",
+    contractualTargetKw: 4.2,
+    windowSeconds: 60,
+    staleAfterSeconds: 60,
+    futureImportPowerKw: 12,
+    futureAnchorUtc: "2026-01-01T00:03:30Z",
+    forecastQuality: "unavailable",
+    forecastReason: "stale source",
+  });
+  assert.equal(model.actualImportSegments.length, 2);
+  assert.deepEqual(model.futureForecast, []);
+  assert.equal(model.forecastReason, "stale source");
+  assert.equal(model.gridLimitKw, 12);
+  assert.ok(model.gridValues.includes(-1) && model.gridValues.includes(1));
+});
+
+test("zero or one sample does not fabricate smoothing or a forecast", () => {
+  for (const trace of [[], [{timestamp: "2026-01-01T00:04:00Z", signed_kw: -2}]]) {
+    const model = livePowerChartModel({
+      trace,
+      nowUtc: "2026-01-01T00:04:00Z",
+      quarterEndUtc: "2026-01-01T00:15:00Z",
+      contractualTargetKw: null,
+      futureImportPowerKw: null,
+      futureAnchorUtc: null,
+      forecastQuality: "unavailable",
+      forecastReason: "insufficient coverage",
+    });
+    assert.deepEqual(model.smoothedImportSegments, []);
+    assert.deepEqual(model.futureForecast, []);
+    assert.equal(model.forecastReason, "insufficient coverage");
+  }
+});
+
+test("quarter energy is monotonic, import-only, and uses distinct contractual targets", () => {
   const model = quarterEnergyModel({
     trace: [
       {timestamp: "2026-01-01T00:00:00Z", signed_kw: 6},
@@ -145,11 +201,97 @@ test("quarter energy progress is import-only and target is target times quarter 
     quarterEndUtc: "2026-01-01T00:15:00Z",
     nowUtc: "2026-01-01T00:15:00Z",
     importKwh: 1,
-    targetKw: 4.2,
+    contractualTargetKw: 4.2,
+    operationalTargetKw: 4.0,
     forecastSmoothedKw: 4,
+    staleAfterSeconds: 301,
   });
   assert.equal(model.usedKwh, 1);
   assert.equal(model.actual.at(-1).kwh, 1);
-  assert.equal(model.limitKwh, 1.05);
+  assert.ok(model.actual.every((point, index) => index === 0 || point.kwh >= model.actual[index - 1].kwh));
+  assert.equal(model.contractualLimitKwh, 1.05);
+  assert.equal(model.operationalTargetKwh, 1.0);
   assert.equal(model.projectedFinalKwh, 1);
+  assert.equal(model.projection[0].kwh, 1);
+  assert.equal(model.projection.at(-1).kwh, 1);
+});
+
+test("representative energy projection agrees with backend final-average forecast", () => {
+  const trace = Array.from({length: 10}, (_, index) => ({
+    timestamp: new Date(Date.parse("2026-01-01T00:00:00Z") + index * 30000).toISOString(),
+    signed_kw: 3.6,
+  }));
+  const model = quarterEnergyModel({
+    trace,
+    quarterStartUtc: "2026-01-01T00:00:00Z",
+    quarterEndUtc: "2026-01-01T00:15:00Z",
+    nowUtc: "2026-01-01T00:05:00Z",
+    importKwh: 0.3,
+    contractualTargetKw: 4.2,
+    operationalTargetKw: 4.0,
+    forecastSmoothedKw: 2.8,
+    staleAfterSeconds: 60,
+  });
+  assert.equal(model.trajectoryAvailable, true);
+  assert.equal(model.currentPoint.kwh, 0.3);
+  assert.equal(model.projection[0].kwh, 0.3);
+  assert.equal(model.projection.at(-1).kwh, 0.7);
+  assert.equal(model.contractualLimitKwh, 1.05);
+  assert.equal(model.operationalTargetKwh, 1.0);
+});
+
+test("partial or inconsistent traces never fabricate prior cumulative energy", () => {
+  const partial = quarterEnergyModel({
+    trace: [{timestamp: "2026-01-01T00:04:00Z", signed_kw: 3}],
+    quarterStartUtc: "2026-01-01T00:00:00Z",
+    quarterEndUtc: "2026-01-01T00:15:00Z",
+    nowUtc: "2026-01-01T00:05:00Z",
+    importKwh: 0.3,
+    contractualTargetKw: 4.2,
+    operationalTargetKw: 4.0,
+    forecastSmoothedKw: null,
+    staleAfterSeconds: 60,
+  });
+  assert.equal(partial.trajectoryAvailable, false);
+  assert.equal(partial.hasGap, true);
+  assert.deepEqual(partial.actual, []);
+  assert.equal(partial.currentPoint.kwh, 0.3);
+  assert.deepEqual(partial.projection, []);
+
+  const inconsistent = quarterEnergyModel({
+    trace: [{timestamp: "2026-01-01T00:00:00Z", signed_kw: 3.6}],
+    quarterStartUtc: "2026-01-01T00:00:00Z",
+    quarterEndUtc: "2026-01-01T00:15:00Z",
+    nowUtc: "2026-01-01T00:01:00Z",
+    importKwh: 0.5,
+    contractualTargetKw: 4.2,
+    operationalTargetKw: 4.0,
+    forecastSmoothedKw: 1.0,
+    staleAfterSeconds: 60,
+  });
+  assert.equal(inconsistent.trajectoryAvailable, false);
+  assert.deepEqual(inconsistent.actual, []);
+  assert.equal(inconsistent.currentPoint.kwh, 0.5);
+  assert.equal(inconsistent.projectionConsistent, false);
+  assert.deepEqual(inconsistent.projection, []);
+});
+
+test("simulation target is explicit and quarter rollover starts from the new backend total", () => {
+  const model = quarterEnergyModel({
+    trace: [{timestamp: "2026-01-01T00:15:00Z", signed_kw: 3}],
+    quarterStartUtc: "2026-01-01T00:15:00Z",
+    quarterEndUtc: "2026-01-01T00:30:00Z",
+    nowUtc: "2026-01-01T00:16:00Z",
+    importKwh: 0.05,
+    contractualTargetKw: null,
+    operationalTargetKw: null,
+    simulationTargetKw: 2.5,
+    simulationEnabled: true,
+    forecastSmoothedKw: 2.0,
+    staleAfterSeconds: 60,
+  });
+  assert.equal(model.currentPoint.kwh, 0.05);
+  assert.equal(model.contractualLimitKwh, null);
+  assert.equal(model.operationalTargetKwh, null);
+  assert.equal(model.simulationTargetKwh, 0.625);
 });

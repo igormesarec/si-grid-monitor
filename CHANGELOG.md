@@ -14,6 +14,14 @@ All notable changes to SI Grid Monitor will be documented here.
   timeline position, hour highlight and keyboard focus on 23/24/25-hour days.
 - Added an import/export live-power chart with shared 1 kW support lines and an
   import-only cumulative quarter-energy chart with target and projection.
+- Separated historical smoothed import from the dashed future-power assumption
+  supplied by the engine; the final 15-minute average remains a labeled result,
+  never an instantaneous power series.
+- Made cumulative-energy history gap-aware: only fully supported, reconciled
+  traces are connected, while incomplete/restarted traces show the authoritative
+  backend point without fabricating earlier energy.
+- Distinguished the verified distributor limit, safety-margin operational
+  target and temporary simulation threshold on both live charts.
 - Exposed the existing temporary simulation threshold through setup and Options
   without changing dated assignments or confirmed archive statistics.
 - Kept SQLite schema 5, configuration epochs, entity identities and archived

@@ -196,8 +196,18 @@ def test_runtime_expires_2026_assignment_without_reusing_it_in_2027(tmp_path) ->
     dashboard = runtime.dashboard_current()
     assert dashboard["available"] is True
     assert dashboard["tariff"]["target_kw"] == 3.50
+    assert dashboard["tariff"]["contractual_target_kw"] == 3.50
+    assert dashboard["tariff"]["contractual_operational_target_kw"] == 3.50
+    assert dashboard["tariff"]["simulation_enabled"] is False
     assert dashboard["quarter"]["import_kwh"] == pytest.approx(runtime.snapshot.quarter_import_kwh)
     assert dashboard["trace"]
+    assert dashboard["trace_stale_after_seconds"] == 60
+    assert dashboard["projection"]["smoothed_future_import_kw"] == pytest.approx(3.0)
+    assert dashboard["projection"]["smoothed_future_anchor_utc"] == in_2026.isoformat()
+    assert dashboard["projection"]["smoothed_future_end_utc"] == quarter_bounds(
+        in_2026
+    ).end_utc.isoformat()
+    assert dashboard["projection"]["smoothed_future_quality"] == "estimated"
     assert (
         runtime._operational_target_for_quarter(in_2026, in_2026 + timedelta(minutes=15), 0.0)
         == 3.50
@@ -231,6 +241,9 @@ def test_runtime_expires_2026_assignment_without_reusing_it_in_2027(tmp_path) ->
     assert dashboard_2027["available"] is True
     assert dashboard_2027["power"]["signed_kw"] == 3.0
     assert dashboard_2027["tariff"]["target_kw"] is None
+    assert dashboard_2027["tariff"]["contractual_target_kw"] is None
+    assert dashboard_2027["projection"]["smoothed_future_import_kw"] is None
+    assert dashboard_2027["projection"]["smoothed_future_quality"] == "unavailable"
     assert dashboard_2027["contractual_available"] is False
     with pytest.raises(ValueError, match="tariff target unavailable"):
         runtime._operational_target_for_quarter(in_2027, in_2027 + timedelta(minutes=15), 0.0)
@@ -291,3 +304,29 @@ def test_runtime_expires_2026_assignment_without_reusing_it_in_2027(tmp_path) ->
     assert row["contractual_target_kw"] is None
     assert row["target_provenance"] is None
     runtime.archive.close()
+
+
+def test_dashboard_keeps_contractual_operational_and_simulation_targets_distinct(
+    tmp_path,
+) -> None:
+    runtime, _schedule = _runtime(tmp_path)
+    now = _local_utc(2026, 1, 5, 7, 10)
+    runtime.entry.options = {
+        CONF_SAFETY_MARGIN_KW: 0.20,
+        CONF_SIMULATION_ENABLED: True,
+        CONF_SIMULATION_TARGET_KW: 2.50,
+    }
+    _feed_fresh_history(runtime, now)
+    runtime._refresh(now)
+
+    dashboard = runtime.dashboard_current()
+    assert dashboard["tariff"]["target_kw"] == 2.50
+    assert dashboard["tariff"]["contractual_target_kw"] == 3.50
+    assert dashboard["tariff"]["contractual_operational_target_kw"] == pytest.approx(3.30)
+    assert dashboard["tariff"]["safety_margin_kw"] == 0.20
+    assert dashboard["tariff"]["simulation_enabled"] is True
+    assert dashboard["tariff"]["simulation_target_kw"] == 2.50
+    assert dashboard["projection"]["operational_target_kw"] == pytest.approx(2.30)
+    assert dashboard["projection"]["smoothed_future_quality"] == "simulation"
+    assert dashboard["contractual_confirmed"] is False
+    assert "not contractual" in dashboard["contractual_status_reason"]
