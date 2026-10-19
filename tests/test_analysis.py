@@ -267,6 +267,8 @@ def test_five_block_totals_reconcile_and_preserve_historical_targets(
     assert sum(item["import_kwh"] for item in blocks["blocks"]) == pytest.approx(
         period["summary"]["import_kwh"]
     )
+    assert blocks["totals"]["import_kwh"] == pytest.approx(period["summary"]["import_kwh"])
+    assert blocks["totals"]["valid_count"] == period["summary"]["valid_count"]
     assert blocks["blocks"][0]["targets_kw"] == [3.5, 3.9]
     assert blocks["blocks"][0]["maximum_import_demand_kw"] == pytest.approx(4.0)
     assert blocks["blocks"][3]["active"] is False

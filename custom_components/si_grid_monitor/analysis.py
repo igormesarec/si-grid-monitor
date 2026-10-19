@@ -428,6 +428,10 @@ def block_report(
             }
         )
         blocks.append(summary)
+    totals = _normalize_summary(
+        archive.aggregate_period(namespace, bounds.start_utc, completed_end),
+        sum(expected_by_block.values()),
+    )
     return {
         "period": {
             **asdict(bounds),
@@ -436,6 +440,7 @@ def block_report(
             "partial": bounds.start_utc <= now_utc < bounds.end_utc,
         },
         "selected_block": selected_block,
+        "totals": totals,
         "blocks": blocks,
         "status": "ok" if any(item["archived_count"] for item in blocks) else "no_archive",
     }
