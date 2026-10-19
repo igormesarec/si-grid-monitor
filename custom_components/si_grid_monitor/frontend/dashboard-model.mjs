@@ -133,6 +133,38 @@ export function selectTimelineHour(timeline, startUtc) {
   return selected;
 }
 
+export function captureChartScrollState(root, previous = {}) {
+  const positions = {...previous};
+  let focused = null;
+  if (!root) return {positions, focused};
+  for (const element of root.querySelectorAll("[data-chart-scroll]")) {
+    const key = element.dataset.chartScroll;
+    if (key) positions[key] = element.scrollLeft;
+    if (root.activeElement === element) focused = key;
+  }
+  return {positions, focused};
+}
+
+export function restoreChartScrollState(root, positions = {}, focused = null) {
+  if (!root) return;
+  for (const element of root.querySelectorAll("[data-chart-scroll]")) {
+    const key = element.dataset.chartScroll;
+    if (key && positions[key] != null) element.scrollLeft = positions[key];
+    if (key === focused) element.focus({preventScroll: true});
+  }
+}
+
+export function chartViewStateForRender(
+  root,
+  previous = {power: 0, energy: 0},
+  {reset = false, previousDataKey = null, nextDataKey = null} = {},
+) {
+  if (reset || (previousDataKey && nextDataKey && previousDataKey !== nextDataKey)) {
+    return {positions: {power: 0, energy: 0}, focused: null};
+  }
+  return captureChartScrollState(root, previous);
+}
+
 export function historyErrorMessage(operation, error) {
   const code = error?.code || "unknown_error";
   const messages = {

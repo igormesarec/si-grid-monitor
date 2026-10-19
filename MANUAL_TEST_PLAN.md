@@ -213,3 +213,11 @@ software behavior only; distributor readings remain authoritative.
     backend smoothing is shown as an outlined forecast anchor and dashed future
     assumption when the current-quarter trace cannot support a solid smoothing
     trajectory. The UI must not connect that anchor to unsupported history.
+19. Scroll the live power and cumulative energy charts to different horizontal
+    positions. Leave keyboard focus on each chart in turn and wait through at
+    least two automatic 10-second refreshes. Confirm both positions remain
+    independent and the focused chart remains focused without page jumping.
+20. Immediately after rollover, while the live trace is empty, horizontally
+    scroll the cumulative energy chart and wait for refresh. Confirm it remains
+    styled and scrollable. Switching meters must reset both chart positions;
+    ordinary refreshes within the same meter and quarter must not.

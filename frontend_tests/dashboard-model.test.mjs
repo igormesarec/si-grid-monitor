@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   RequestGate,
   calendarDateLabel,
+  chartViewStateForRender,
   dayStatusLabel,
   historyErrorMessage,
   ljubljanaDate,
@@ -12,10 +13,43 @@ import {
   localQuarterLabel,
   quarterEnergyModel,
   quarterNavigation,
+  restoreChartScrollState,
   selectTimelineHour,
   smoothedImportSeries,
   todayChartModel,
 } from "../custom_components/si_grid_monitor/frontend/dashboard-model.mjs";
+
+class FakeChartScroller {
+  constructor(root, key, scrollLeft = 0) {
+    this.root = root;
+    this.dataset = {chartScroll: key};
+    this.scrollLeft = scrollLeft;
+    this.focusOptions = null;
+  }
+
+  focus(options) {
+    this.root.activeElement = this;
+    this.focusOptions = options;
+  }
+}
+
+class FakeChartRoot {
+  constructor(entries) {
+    this.activeElement = null;
+    this.elements = entries.map(([key, scrollLeft]) => (
+      new FakeChartScroller(this, key, scrollLeft)
+    ));
+  }
+
+  querySelectorAll(selector) {
+    assert.equal(selector, "[data-chart-scroll]");
+    return this.elements;
+  }
+
+  element(key) {
+    return this.elements.find(element => element.dataset.chartScroll === key);
+  }
+}
 
 test("zero-centered chart uses one kW scale for import, export, and target", () => {
   const model = todayChartModel([{
@@ -74,6 +108,65 @@ test("meter generation gate rejects delayed responses from the prior meter", () 
   const newerB = gate.invalidate();
   assert.ok(!gate.accepts(meterB));
   assert.ok(gate.accepts(newerB));
+});
+
+test("chart DOM restores independent scroll and keyboard focus over repeated refreshes", () => {
+  const before = new FakeChartRoot([["power", 173], ["energy", 461]]);
+  before.activeElement = before.element("energy");
+  const captured = chartViewStateForRender(
+    before, {power: 0, energy: 0},
+    {previousDataKey: "meter-a:q1", nextDataKey: "meter-a:q1"},
+  );
+  assert.deepEqual(captured.positions, {power: 173, energy: 461});
+  assert.equal(captured.focused, "energy");
+
+  const refreshed = new FakeChartRoot([["power", 0], ["energy", 0]]);
+  restoreChartScrollState(refreshed, captured.positions, captured.focused);
+  assert.equal(refreshed.element("power").scrollLeft, 173);
+  assert.equal(refreshed.element("energy").scrollLeft, 461);
+  assert.equal(refreshed.activeElement, refreshed.element("energy"));
+  assert.deepEqual(refreshed.element("energy").focusOptions, {preventScroll: true});
+
+  refreshed.element("power").scrollLeft = 219;
+  refreshed.element("energy").scrollLeft = 507;
+  refreshed.activeElement = refreshed.element("power");
+  const repeated = chartViewStateForRender(
+    refreshed, captured.positions,
+    {previousDataKey: "meter-a:q1", nextDataKey: "meter-a:q1"},
+  );
+  assert.deepEqual(repeated.positions, {power: 219, energy: 507});
+  assert.equal(repeated.focused, "power");
+});
+
+test("energy scroll survives empty live trace while meter and quarter changes reset", () => {
+  const energyOnly = new FakeChartRoot([["energy", 388]]);
+  energyOnly.activeElement = energyOnly.element("energy");
+  const preserved = chartViewStateForRender(
+    energyOnly, {power: 144, energy: 301},
+    {previousDataKey: "meter-a:q1", nextDataKey: "meter-a:q1"},
+  );
+  assert.deepEqual(preserved.positions, {power: 144, energy: 388});
+
+  const refreshedEnergyOnly = new FakeChartRoot([["energy", 0]]);
+  restoreChartScrollState(refreshedEnergyOnly, preserved.positions, preserved.focused);
+  assert.equal(refreshedEnergyOnly.element("energy").scrollLeft, 388);
+  assert.equal(refreshedEnergyOnly.activeElement, refreshedEnergyOnly.element("energy"));
+
+  const meterSwitch = chartViewStateForRender(
+    energyOnly, preserved.positions,
+    {reset: true, previousDataKey: "meter-a:q1", nextDataKey: "meter-b:q1"},
+  );
+  assert.deepEqual(meterSwitch, {
+    positions: {power: 0, energy: 0}, focused: null,
+  });
+
+  const quarterRollover = chartViewStateForRender(
+    energyOnly, preserved.positions,
+    {previousDataKey: "meter-a:q1", nextDataKey: "meter-a:q2"},
+  );
+  assert.deepEqual(quarterRollover, {
+    positions: {power: 0, energy: 0}, focused: null,
+  });
 });
 
 test("quarter navigation is exactly 15 minutes and never enters live future", () => {

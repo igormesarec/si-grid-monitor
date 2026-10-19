@@ -127,6 +127,9 @@ def test_v041_mobile_charts_scroll_locally_without_shrinking_svg_text() -> None:
     assert 'aria-label="Scrollable live power chart"' in bundle
     assert 'aria-label="Scrollable quarter energy chart"' in bundle
     assert "forecast-anchor" in bundle
+    assert "return `<style>" not in bundle
+    assert "chartViewStateForRender" in bundle
+    assert "restoreChartScrollState" in bundle
     for viewport_width in (320, 360, 390, 768):
         chart_width = max(viewport_width, 1120)
         assert chart_width >= 1120

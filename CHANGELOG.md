@@ -37,6 +37,10 @@ All notable changes to SI Grid Monitor will be documented here.
 - Added GMT-offset chart times for unambiguous DST rollback intervals and a
   distinct forecast-anchor marker when post-rollover trace coverage cannot
   support a connected historical smoothing path.
+- Preserved independent power/energy chart scroll positions and focused chart
+  across 10-second refreshes, resetting them only for a meter or quarter change.
+- Moved shared scrolling, legend and line styling into the permanent component
+  stylesheet so the energy chart remains scrollable when no live trace exists.
 - Exposed the existing temporary simulation threshold through setup and Options
   without changing dated assignments or confirmed archive statistics.
 - Kept SQLite schema 5, configuration epochs, entity identities and archived
