@@ -14,7 +14,7 @@ def test_v04_manifest_packages_supported_panel_dependencies() -> None:
     manifest = json.loads(
         (ROOT / "custom_components/si_grid_monitor/manifest.json").read_text(encoding="utf-8")
     )
-    assert manifest["version"] == VERSION == "0.4.2"
+    assert manifest["version"] == VERSION == "0.6.0"
     assert {"frontend", "http", "websocket_api"} <= set(manifest["dependencies"])
     assert PANEL_URL_PATH == "si-grid-monitor"
 
@@ -119,7 +119,10 @@ def test_v041_mobile_charts_scroll_locally_without_shrinking_svg_text() -> None:
     bundle = (ROOT / "custom_components/si_grid_monitor/frontend/dashboard.js").read_text(
         encoding="utf-8"
     )
-    assert bundle.count('class="chart-scroll"') == 2
+    # The V0.6 PERIOD view adds a third independently scrollable chart while
+    # retaining the two V0.4 live charts covered by this regression test.
+    assert bundle.count('class="chart-scroll"') >= 3
+    assert 'data-chart-scroll="period"' in bundle
     assert ".chart-scroll{width:100%;max-width:100%;overflow-x:auto" in bundle
     assert ".chart-scroll svg{display:block;width:max(100%,1120px);min-width:1120px}" in bundle
     assert 'aria-label="Scrollable live power chart"' in bundle
@@ -141,7 +144,7 @@ def test_v042_dashboard_assets_and_acceptance_controls_are_cache_busted() -> Non
     model = (ROOT / "custom_components/si_grid_monitor/frontend/dashboard-model.mjs").read_text(
         encoding="utf-8"
     )
-    assert "dashboard-model.mjs?v=0.4.2" in bundle
+    assert "dashboard-model.mjs?v=0.6.0" in bundle
     assert 'energyProjection: {color: "#8b5cf6", dash: "7 4"}' in model
     assert (
         ".legend-line .energy-projection{stroke:${CHART_SERIES.energyProjection.color};"

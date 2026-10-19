@@ -567,3 +567,102 @@ export class RequestGate {
     return token.entryId === this.entryId && token.generation === this.generation;
   }
 }
+
+export function periodRequest(state) {
+  const request = {
+    period_type: state.periodType,
+    anchor: state.periodAnchor || state.selectedDate,
+  };
+  if (state.periodType === "custom") {
+    request.custom_start = state.customStart;
+    request.custom_end = state.customEnd;
+  }
+  if (state.periodBlock != null && state.periodBlock !== "all") {
+    request.tariff_block = Number(state.periodBlock);
+  }
+  return request;
+}
+
+export function exceedanceRequest(state) {
+  return {
+    ...periodRequest(state),
+    sort_by: state.exceedanceSort || "date",
+    direction: state.exceedanceDirection || "desc",
+    page: Number(state.exceedancePage || 1),
+    page_size: Number(state.exceedancePageSize || 25),
+  };
+}
+
+export function blockChartModel(blocks) {
+  const rows = [1, 2, 3, 4, 5].map(block => (
+    blocks.find(item => Number(item.block) === block) || {
+      block, active: false, import_kwh: 0, maximum_import_demand_kw: null,
+      average_import_demand_kw: null, exceeded_count: 0,
+    }
+  ));
+  const energyMaximum = Math.max(1, ...rows.map(item => Number(item.import_kwh || 0)));
+  const demandMaximum = Math.max(1, ...rows.flatMap(item => [
+    Number(item.maximum_import_demand_kw || 0), Number(item.average_import_demand_kw || 0),
+  ]));
+  const exceedanceMaximum = Math.max(1, ...rows.map(item => Number(item.exceeded_count || 0)));
+  return {rows, energyMaximum, demandMaximum, exceedanceMaximum};
+}
+
+export function adjacentPeriodAnchor(period, direction) {
+  if (!period || ![-1, 1].includes(direction)) return null;
+  if (period.period_type === "custom") {
+    const start = new Date(`${period.start_local.slice(0, 10)}T00:00:00Z`);
+    const end = new Date(`${period.end_local.slice(0, 10)}T00:00:00Z`);
+    const days = Math.round((end - start) / 86400000);
+    start.setUTCDate(start.getUTCDate() + direction * days);
+    end.setUTCDate(end.getUTCDate() + direction * days - 1);
+    return {
+      anchor: start.toISOString().slice(0, 10),
+      customStart: start.toISOString().slice(0, 10),
+      customEnd: end.toISOString().slice(0, 10),
+    };
+  }
+  const instant = direction < 0
+    ? new Date(new Date(period.start_utc).getTime() - 1)
+    : new Date(period.end_utc);
+  return {anchor: instant.toISOString()};
+}
+
+export function periodDrillDown(periodType, bin) {
+  if (!bin) return null;
+  if (periodType === "year" && /^\d{4}-\d{2}$/.test(bin.bin_key || "")) {
+    return {periodType: "month", anchor: `${bin.bin_key}-01`};
+  }
+  if (["month", "week", "custom"].includes(periodType)
+      && /^\d{4}-\d{2}-\d{2}$/.test(bin.bin_key || "")) {
+    return {periodType: "day", anchor: bin.bin_key};
+  }
+  if (bin.start_utc) return {quarterStartUtc: bin.start_utc};
+  return null;
+}
+
+export function periodChartModel(bins, mode, width = 1120, height = 330) {
+  const margin = {top: 24, right: 24, bottom: 54, left: 68};
+  const plotWidth = width - margin.left - margin.right;
+  const plotHeight = height - margin.top - margin.bottom;
+  const values = bins.flatMap(bin => {
+    if (mode === "energy") return [bin.import_kwh, bin.export_kwh];
+    if (mode === "demand") return [
+      bin.maximum_import_demand_kw, bin.average_import_demand_kw, ...(bin.targets_kw || []),
+    ];
+    if (mode === "exceedances") return [bin.exceeded_count];
+    return [bin.coverage_pct];
+  }).filter(value => Number.isFinite(Number(value))).map(Number);
+  const rawMax = Math.max(0, ...values);
+  const maximum = mode === "coverage" ? 100 : rawMax || 1;
+  const step = plotWidth / Math.max(1, bins.length);
+  const valueToY = value => margin.top + plotHeight * (1 - Math.max(0, Number(value)) / maximum);
+  return {
+    width, height, margin, maximum, step, valueToY,
+    items: bins.map((bin, index) => ({
+      ...bin,
+      centerX: margin.left + step * (index + 0.5),
+      barWidth: Math.max(2, step * 0.32),
+    })),
+  };
+}

@@ -21,7 +21,7 @@ globalThis.HTMLElement = FakeElement;
 globalThis.customElements = {define() {}};
 
 const {SIGridMonitorPanel} = await import(
-  "../custom_components/si_grid_monitor/frontend/dashboard.js?panel-tests=0.4.2"
+  "../custom_components/si_grid_monitor/frontend/dashboard.js?panel-tests=0.6.0"
 );
 
 const START_A = "2026-10-19T08:00:00+00:00";
@@ -224,4 +224,75 @@ test("initial live-unavailable detail does not describe missing history", () => 
   assert.match(html, /Current measurements are unavailable/);
   assert.match(html, /not a missing historical archive record/);
   assert.doesNotMatch(html, /No valid archived measurement exists/);
+});
+
+test("BLOCKS keeps five rows and opens filtered exceedances", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._periodBlock = "3";
+  panel._blocks = {
+    period: {label: "October 2026"},
+    blocks: [1, 2, 3, 4, 5].map(block => ({
+      block, active: block < 4, valid_measured_hours: block,
+      valid_count: block, contractual_eligible_count: block,
+      incomplete_count: 0, missing_count: 0, import_kwh: block,
+      export_kwh: 0, maximum_import_demand_kw: block,
+      average_import_demand_kw: block / 2, targets_kw: [3 + block / 10],
+      exceeded_count: block === 3 ? 2 : 0, confirmed_exceedance_pct: 1,
+      maximum_excess_kw: block === 3 ? 0.4 : null,
+      peak_timestamp: START_A, high_demand_quarters: [],
+    })),
+  };
+  const html = panel._blocksView();
+  assert.equal((html.match(/<tr data-block=/g) || []).length, 5);
+  assert.match(html, /B3 details/);
+  assert.match(html, /data-open-exceedances/);
+  assert.match(html, /original target and provenance|original targets and provenance/i);
+});
+
+test("EXCEEDANCES renders one row per quarter with safe pagination state", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._exceedances = {
+    period: {label: "October 2026"},
+    summary: {
+      exceedance_count: 3, exceeded_duration_minutes: 45,
+      maximum_import_demand_kw: 5.4, maximum_excess_kw: 0.6,
+      maximum_excess_percentage: 12.5, average_excess_kw: 0.43,
+      confirmed_exceedance_rate_pct: 3, contractual_eligible_count: 100,
+      incomplete_or_unconfirmed_count: 2, most_affected_block: 2,
+      greatest_exceedance: {start_utc: START_B},
+    },
+    bins: [{bin_key: START_A, exceeded_count: 3, maximum_excess_kw: 0.6}],
+    items: [5.2, 5.4, 5.1].map((demand, index) => ({
+      start_utc: new Date(new Date(START_A).getTime() + index * 900_000).toISOString(),
+      end_utc: new Date(new Date(START_A).getTime() + (index + 1) * 900_000).toISOString(),
+      tariff_block: 2, contractual_target_kw: 4.8, import_demand_kw: demand,
+      excess_kw: demand - 4.8, excess_percentage: 100 * (demand - 4.8) / 4.8,
+      excess_energy_kwh: (demand - 4.8) * .25, quality: "reconstructed",
+      contractual_status: "confirmed",
+    })),
+    pagination: {page: 1, pages: 1, total: 3},
+  };
+  const html = panel._exceedancesView();
+  assert.equal((html.match(/data-exceedance-quarter=/g) || []).length, 3);
+  assert.match(html, /45 <small>minutes/);
+  assert.match(html, /analytical only/);
+  assert.match(html, /data-chart-scroll="exceedances"/);
+});
+
+test("delayed PERIOD-family response cannot cross a meter switch", async () => {
+  const panel = new SIGridMonitorPanel();
+  panel._render = () => {};
+  panel._entryId = "meter-a";
+  panel._gate.switchEntry("meter-a");
+  panel._tab = "blocks";
+  const delayed = deferred();
+  panel._call = async () => delayed.promise;
+  const request = panel._loadTab();
+  await Promise.resolve();
+  panel._loadTab = async () => {};
+  await panel._selectEntry("meter-b");
+  delayed.resolve({period: {label: "wrong meter"}, blocks: []});
+  await request;
+  assert.equal(panel._entryId, "meter-b");
+  assert.equal(panel._blocks, null);
 });

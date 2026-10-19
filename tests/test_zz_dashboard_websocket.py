@@ -227,6 +227,67 @@ def test_history_commands_use_real_sqlite_rows_and_preserve_archive(tmp_path: Pa
     assert len(day_connection.result["quarters"]) == 96
     json.dumps(day_connection.result)
 
+    period_connection = _Connection()
+    _run(
+        dashboard.ws_period(
+            hass,
+            period_connection,
+            {
+                "id": 40,
+                "entry_id": "entry-a",
+                "period_type": "day",
+                "anchor": "2026-01-02",
+            },
+        )
+    )
+    assert period_connection.error is None
+    assert period_connection.result["summary"]["valid_count"] == 7
+    assert period_connection.result["summary"]["incomplete_count"] == 1
+    assert period_connection.result["summary"]["expected_completed_count"] == 52
+    assert period_connection.result["summary"]["missing_count"] == 44
+    assert period_connection.result["period"]["resolution"] == "quarter"
+    json.dumps(period_connection.result)
+
+    blocks_connection = _Connection()
+    _run(
+        dashboard.ws_blocks(
+            hass,
+            blocks_connection,
+            {
+                "id": 41,
+                "entry_id": "entry-a",
+                "period_type": "day",
+                "anchor": "2026-01-02",
+            },
+        )
+    )
+    assert blocks_connection.error is None
+    assert len(blocks_connection.result["blocks"]) == 5
+    assert sum(row["valid_count"] for row in blocks_connection.result["blocks"]) == 7
+    json.dumps(blocks_connection.result)
+
+    exceedance_connection = _Connection()
+    _run(
+        dashboard.ws_exceedances(
+            hass,
+            exceedance_connection,
+            {
+                "id": 42,
+                "entry_id": "entry-a",
+                "period_type": "day",
+                "anchor": "2026-01-02",
+                "sort_by": "date",
+                "direction": "desc",
+                "page": 1,
+                "page_size": 25,
+            },
+        )
+    )
+    assert exceedance_connection.error is None
+    assert exceedance_connection.result["status"] == "empty"
+    assert exceedance_connection.result["pagination"]["total"] == 0
+    json.dumps(exceedance_connection.result)
+
     empty_day = _Connection()
     _run(
         dashboard.ws_day(
@@ -273,3 +334,82 @@ def test_history_commands_return_safe_errors_for_archive_and_bad_rows() -> None:
         assert connection.error[1] == expected
         assert "private database detail" not in connection.error[2]
         assert "malformed record" not in connection.error[2]
+
+    for operation, handler, expected in (
+        ("period", dashboard.ws_period, "period_query_failed"),
+        ("blocks", dashboard.ws_blocks, "blocks_query_failed"),
+        ("exceedances", dashboard.ws_exceedances, "exceedances_query_failed"),
+    ):
+        runtime = _runtime(_BrokenArchive(RuntimeError("private archive detail")))  # type: ignore[arg-type]
+        connection = _Connection()
+        _run(
+            handler(
+                _Hass(runtime),
+                connection,
+                {
+                    "id": 9,
+                    "entry_id": "entry-a",
+                    "period_type": "day",
+                    "anchor": "2026-01-02",
+                },
+            )
+        )
+        assert connection.error is not None, operation
+        assert connection.error[1] == expected
+        assert "private archive detail" not in connection.error[2]
+
+
+def test_period_command_rejects_invalid_ranges_and_blocks(tmp_path: Path) -> None:
+    archive = QuarterArchive(tmp_path / "period-validation.db")
+    archive.open()
+    runtime = _runtime(archive)
+    for message in (
+        {
+            "period_type": "custom",
+            "anchor": "2026-01-01",
+            "custom_start": "2026-01-02",
+            "custom_end": "2026-01-01",
+        },
+        {"period_type": "day", "anchor": "not-a-date"},
+        {"period_type": "month", "anchor": "2026-01-01", "tariff_block": 6},
+    ):
+        connection = _Connection()
+        _run(
+            dashboard.ws_period(
+                _Hass(runtime),
+                connection,
+                {"id": 50, "entry_id": "entry-a", **message},
+            )
+        )
+        assert connection.error is not None
+        assert connection.error[1] == "invalid_period"
+    archive.close()
+
+
+def test_exceedance_command_rejects_unsafe_sort_and_pagination(tmp_path: Path) -> None:
+    archive = QuarterArchive(tmp_path / "exceedance-validation.db")
+    archive.open()
+    runtime = _runtime(archive)
+    for extra in (
+        {"sort_by": "start_utc; DROP TABLE quarters"},
+        {"direction": "sideways"},
+        {"page": 0},
+        {"page_size": 101},
+    ):
+        connection = _Connection()
+        _run(
+            dashboard.ws_exceedances(
+                _Hass(runtime),
+                connection,
+                {
+                    "id": 60,
+                    "entry_id": "entry-a",
+                    "period_type": "day",
+                    "anchor": "2026-01-02",
+                    **extra,
+                },
+            )
+        )
+        assert connection.error is not None
+        assert connection.error[1] == "invalid_query"
+    archive.close()

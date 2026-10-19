@@ -2,24 +2,30 @@ import {
   BLOCK_COLORS,
   CHART_SERIES,
   RequestGate,
+  adjacentPeriodAnchor,
+  blockChartModel,
   calendarDateLabel,
   chartViewStateForRender,
   dayStatusLabel,
   defaultTodayQuarter,
   energyAxisScale,
+  exceedanceRequest,
   historyErrorMessage,
   ljubljanaDate,
   ljubljanaTimeLabel,
   livePowerChartModel,
   localQuarterLabel,
   moveTodayQuarter,
+  periodChartModel,
+  periodDrillDown,
+  periodRequest,
   quarterEnergyModel,
   quarterNavigation,
   restoreChartScrollState,
   selectTimelineHour,
   todayChartModel,
   todayQuarterAction,
-} from "./dashboard-model.mjs?v=0.4.2";
+} from "./dashboard-model.mjs?v=0.6.0";
 
 const fmt = (value, digits = 2) => value == null ? "—" : Number(value).toFixed(digits);
 const fmtEnergyReference = value => value == null ? "—" : Number(value).toFixed(3);
@@ -77,6 +83,22 @@ export class SIGridMonitorPanel extends HTMLElement {
     this._calendar = null;
     this._calendarError = null;
     this._transitions = null;
+    this._period = null;
+    this._blocks = null;
+    this._exceedances = null;
+    this._periodError = null;
+    this._periodLoading = false;
+    this._periodType ??= "day";
+    this._periodAnchor ??= this._selectedDate;
+    this._periodBlock ??= "all";
+    this._periodChartMode ??= "energy";
+    this._selectedBlock ??= null;
+    this._exceedanceSort ??= "date";
+    this._exceedanceDirection ??= "desc";
+    this._exceedancePage ??= 1;
+    this._exceedancePageSize ??= 25;
+    this._customStart ??= this._selectedDate;
+    this._customEnd ??= this._selectedDate;
     this._historical = null;
     this._historicalStart = null;
     this._historicalDate = null;
@@ -185,6 +207,56 @@ export class SIGridMonitorPanel extends HTMLElement {
           this._historicalError = null;
         }
         this._dayError = null;
+      } else if (this._tab === "period") {
+        this._periodLoading = true;
+        const period = await this._call(
+          "period",
+          periodRequest({
+            periodType: this._periodType,
+            periodAnchor: this._periodAnchor,
+            selectedDate: this._selectedDate,
+            customStart: this._customStart,
+            customEnd: this._customEnd,
+            periodBlock: this._periodBlock,
+          }),
+          entryId,
+        );
+        if (!this._gate.accepts(token)) return;
+        this._period = period;
+        this._periodError = null;
+        this._periodLoading = false;
+      } else if (this._tab === "blocks") {
+        this._periodLoading = true;
+        const blocks = await this._call("blocks", periodRequest({
+          periodType: this._periodType,
+          periodAnchor: this._periodAnchor,
+          selectedDate: this._selectedDate,
+          customStart: this._customStart,
+          customEnd: this._customEnd,
+          periodBlock: this._periodBlock,
+        }), entryId);
+        if (!this._gate.accepts(token)) return;
+        this._blocks = blocks;
+        this._periodError = null;
+        this._periodLoading = false;
+      } else if (this._tab === "exceedances") {
+        this._periodLoading = true;
+        const exceedances = await this._call("exceedances", exceedanceRequest({
+          periodType: this._periodType,
+          periodAnchor: this._periodAnchor,
+          selectedDate: this._selectedDate,
+          customStart: this._customStart,
+          customEnd: this._customEnd,
+          periodBlock: this._periodBlock,
+          exceedanceSort: this._exceedanceSort,
+          exceedanceDirection: this._exceedanceDirection,
+          exceedancePage: this._exceedancePage,
+          exceedancePageSize: this._exceedancePageSize,
+        }), entryId);
+        if (!this._gate.accepts(token)) return;
+        this._exceedances = exceedances;
+        this._periodError = null;
+        this._periodLoading = false;
       } else {
         const calendar = await this._call("calendar", {date: this._selectedDate}, entryId);
         if (!this._gate.accepts(token)) return;
@@ -197,6 +269,12 @@ export class SIGridMonitorPanel extends HTMLElement {
         if (this._tab === "today") {
           this._day = null;
           this._dayError = historyErrorMessage("day", error);
+        } else if (["period", "blocks", "exceedances"].includes(this._tab)) {
+          this._period = null;
+          this._blocks = null;
+          this._exceedances = null;
+          this._periodLoading = false;
+          this._periodError = error?.message || "Could not load the selected period.";
         } else if (this._tab === "calendar") {
           this._calendar = null;
           this._calendarError = error?.message || "Could not load the tariff calendar.";
@@ -211,7 +289,9 @@ export class SIGridMonitorPanel extends HTMLElement {
   _refreshVisible() {
     if (!this.isConnected || !this._entryId) return;
     if (this._tab === "overview" ||
-        (this._tab === "today" && this._selectedDate === localDate())) {
+        (this._tab === "today" && this._selectedDate === localDate()) ||
+        (["period", "blocks", "exceedances"].includes(this._tab)
+          && (this._period || this._blocks || this._exceedances)?.period?.partial)) {
       this._loadTab();
     }
   }
@@ -230,6 +310,17 @@ export class SIGridMonitorPanel extends HTMLElement {
 
   async _setDate(value) {
     this._selectedDate = value;
+    if (["period", "blocks", "exceedances"].includes(this._tab)) {
+      this._periodAnchor = value;
+      if (this._periodType === "custom") {
+        this._customStart = value;
+        this._customEnd = value;
+      }
+      this._period = null;
+      this._blocks = null;
+      this._exceedances = null;
+      this._periodError = null;
+    }
     this._historyGate.invalidate();
     this._selectedHourUtc = null;
     this._selectedTodayQuarterUtc = null;
@@ -653,6 +744,112 @@ export class SIGridMonitorPanel extends HTMLElement {
     return `<section class="card"><div class="row"><button data-day="-1">‹</button><input data-date type="date" value="${esc(this._selectedDate)}"><button data-day="1">›</button><button data-today>Today</button></div><h2>${esc(this._selectedDate)} · ${day.expected_quarters} aligned quarters</h2>${this._todayChart(quarters)}<div class="chart-key">Red: import-only quarter demand (kW) · Green: average exported power below zero (kW) · Gold: original contracted limit · Dot: live projection · Outline: confirmed exceedance · Hatched: missing/incomplete/provisional</div>${selector}${this._todayQuarterDetails(selected)}<div class="grid">${this._metric("Valid completed-quarter energy", fmt(day.summary.import_kwh), "kWh")}${this._metric("Valid completed-quarter export", fmt(day.summary.export_kwh), "kWh")}${this._metric("Separately observed incomplete-quarter import", fmt(day.summary.partial_observed_import_kwh), "kWh")}${this._metric("Separately observed incomplete-quarter export", fmt(day.summary.partial_observed_export_kwh), "kWh")}${this._metric("Live current-quarter energy", fmt(current?.import_kwh, 3), "kWh")}${this._metric("Live current-quarter export", fmt(current?.export_kwh, 3), "kWh")}${this._metric("Maximum valid completed-quarter demand", fmt(day.summary.maximum_import_demand_kw), "kW")}${this._metric("Average valid completed-quarter demand", fmt(day.summary.average_import_demand_kw), "kW")}${this._metric("Contributing valid completed quarters", day.summary.valid_count)}${this._metric("Contract eligible", day.summary.contractual_eligible_count)}${this._metric("Incomplete completed quarters", day.summary.incomplete_count)}${this._metric("Missing past intervals", day.summary.missing_count)}${this._metric("Upcoming intervals", day.summary.upcoming_count)}${this._metric("Confirmed exceedances", day.summary.exceeded_count)}</div><p class="chart-key">Average valid demand is the arithmetic mean of import-only demand across the contributing valid completed 15-minute quarters, not a whole-day or instantaneous average. Partial observed and live energy are excluded from valid totals. Confirmed exceedances use eligible completed quarters only; zero confirmed exceedances does not prove incomplete quarters stayed below their limits.</p><h3>Five tariff blocks</h3><table><thead><tr><th>Block</th><th>Active</th><th>Hours</th><th>Original targets</th><th>Valid / eligible</th><th>Incomplete / missing</th><th>Max / avg kW</th><th>Import / export kWh</th><th>Confirmed exceeded</th></tr></thead><tbody>${day.blocks.map(block => `<tr><td><span class="chip b${block.block}">B${block.block}</span></td><td>${block.active ? "Yes" : "Not active today"}</td><td>${fmt(block.active_hours)}</td><td>${block.targets_kw.length ? block.targets_kw.map(value => fmt(value)).join(", ") : "Unknown"}</td><td>${block.valid_count} / ${block.contractual_eligible_count}</td><td>${block.incomplete_count} / ${block.missing_count}</td><td>${fmt(block.maximum_import_demand_kw)} / ${fmt(block.average_import_demand_kw)}</td><td>${fmt(block.import_kwh)} / ${fmt(block.export_kwh)}</td><td>${block.confirmed_exceedances} / ${fmt(block.confirmed_exceedance_pct)}%</td></tr>`).join("")}</tbody></table></section>`;
   }
 
+  _periodControls() {
+    const custom = this._periodType === "custom"
+      ? `<label>Start <input data-custom-start type="date" value="${esc(this._customStart)}"></label><label>End <input data-custom-end type="date" value="${esc(this._customEnd)}"></label>`
+      : `<input data-date type="date" value="${esc(this._selectedDate)}">`;
+    return `<div class="period-controls"><button data-period-move="-1" aria-label="Previous period">‹</button><select data-period-type aria-label="Period type">${["hour", "day", "week", "month", "year", "custom"].map(value => `<option value="${value}" ${this._periodType === value ? "selected" : ""}>${value[0].toUpperCase()}${value.slice(1)}</option>`).join("")}</select>${custom}<select data-period-block aria-label="Tariff block filter"><option value="all">All blocks</option>${[1, 2, 3, 4, 5].map(block => `<option value="${block}" ${String(this._periodBlock) === String(block) ? "selected" : ""}>B${block}</option>`).join("")}</select><button data-period-move="1" aria-label="Next period">›</button><button data-period-current>Current period</button></div>`;
+  }
+
+  _periodChart() {
+    const bins = this._period?.bins || [];
+    if (!bins.length) return `<div class="empty">No completed archive bins are available for this selection.</div>`;
+    const mode = this._periodChartMode;
+    const model = periodChartModel(bins, mode);
+    const unit = mode === "energy" ? "kWh" : mode === "demand" ? "kW" : mode === "coverage" ? "%" : "count";
+    const grid = [0, model.maximum / 2, model.maximum].map(value => `<g><line class="gridline" x1="${model.margin.left}" x2="${model.width - model.margin.right}" y1="${model.valueToY(value)}" y2="${model.valueToY(value)}"/><text x="4" y="${model.valueToY(value) + 4}">${fmt(value)} ${unit}</text></g>`).join("");
+    const items = model.items.map((item, index) => {
+      const x = item.centerX;
+      let marks = "";
+      if (mode === "energy") {
+        const importY = model.valueToY(item.import_kwh);
+        const exportY = model.valueToY(item.export_kwh);
+        marks = `<rect class="import-bar" x="${x - item.barWidth}" y="${importY}" width="${item.barWidth}" height="${model.valueToY(0) - importY}"/><rect class="export-bar" x="${x}" y="${exportY}" width="${item.barWidth}" height="${model.valueToY(0) - exportY}"/>`;
+      } else if (mode === "demand") {
+        const maximumY = model.valueToY(item.maximum_import_demand_kw);
+        const averageY = model.valueToY(item.average_import_demand_kw);
+        const targets = item.targets_kw || [];
+        const targetLines = targets.map(target => `<line class="target-step" x1="${x - model.step / 2}" x2="${x + model.step / 2}" y1="${model.valueToY(target)}" y2="${model.valueToY(target)}"><title>Historical target ${fmt(target)} kW</title></line>`).join("");
+        marks = `<rect class="import-bar" x="${x - item.barWidth}" y="${maximumY}" width="${item.barWidth}" height="${model.valueToY(0) - maximumY}"/><rect class="average-bar" x="${x}" y="${averageY}" width="${item.barWidth}" height="${model.valueToY(0) - averageY}"/>${targetLines}`;
+      } else {
+        const value = mode === "coverage" ? item.coverage_pct : item.exceeded_count;
+        const y = model.valueToY(value);
+        marks = `<rect class="${mode === "coverage" ? "coverage-bar" : "exceedance-bar"}" x="${x - item.barWidth / 2}" y="${y}" width="${item.barWidth}" height="${model.valueToY(0) - y}"/>`;
+      }
+      const label = bins.length <= 32 || index % Math.ceil(bins.length / 12) === 0
+        ? `<text class="time-label" x="${x}" y="${model.height - 18}" text-anchor="middle">${esc(String(item.bin_key).split("|")[0].slice(-8))}</text>` : "";
+      return `<g class="period-bin ${item.status}" tabindex="0" role="button" data-period-bin="${index}" aria-label="${esc(`${item.bin_key}; ${item.status}; ${fmt(item.import_kwh)} kWh import`)}"><rect class="period-hit-area" x="${x - model.step / 2}" y="${model.margin.top}" width="${model.step}" height="${model.height - model.margin.top - model.margin.bottom}"/>${marks}${label}</g>`;
+    }).join("");
+    return `<div class="chart-scroll" data-chart-scroll="period" tabindex="0"><svg viewBox="0 0 ${model.width} ${model.height}" role="img" aria-label="Historical ${esc(mode)} chart in ${unit}">${grid}${items}<text class="axis-title" x="4" y="14">${esc(unit)}</text></svg></div>`;
+  }
+
+  _periodView() {
+    if (this._periodError) return `<section class="card error"><h2>Period history unavailable</h2><p>${esc(this._periodError)}</p><button data-retry-period>Retry</button></section>`;
+    if (!this._period || this._periodLoading) return `<section class="card">${this._periodControls()}<p>Loading historical period…</p></section>`;
+    const data = this._period;
+    const summary = data.summary;
+    const comparison = data.comparison;
+    const comparisonHtml = !comparison?.available
+      ? `<p class="notice">Previous-period comparison unavailable: ${esc(comparison?.reason || "no comparable archive")}. Partial periods are not compared as if complete.</p>`
+      : `<div class="grid">${this._metric("Import change", fmt(comparison.changes.import_kwh), "kWh")}${this._metric("Export change", fmt(comparison.changes.export_kwh), "kWh")}${this._metric("Maximum-demand change", fmt(comparison.changes.maximum_import_demand_kw), "kW")}</div>`;
+    return `<section class="card">${this._periodControls()}<div class="herohead"><div><p class="eyebrow">HISTORICAL PERIOD</p><h2>${esc(data.period.label)}</h2><p>${esc(data.period.resolution)} bins · half-open ${esc(data.period.start_utc)} to ${esc(data.period.end_utc)}</p></div>${data.period.partial ? `<span class="chip b0">PARTIAL</span>` : ""}</div><div class="row chart-modes">${[["energy", "Import / export energy"], ["demand", "Import demand"], ["exceedances", "Exceedances"], ["coverage", "Coverage"]].map(([value, label]) => `<button data-chart-mode="${value}" class="${this._periodChartMode === value ? "active" : ""}">${label}</button>`).join("")}</div>${this._periodChart()}<div class="chart-key">Red: valid imported energy or maximum import demand · Green: valid exported energy · Blue: average demand · Gold: historically stored target · missing bins remain missing, never zero.</div><div class="grid">${this._metric("Valid imported energy", fmt(summary.import_kwh), "kWh")}${this._metric("Valid exported energy", fmt(summary.export_kwh), "kWh")}${this._metric("Signed net energy", fmt(summary.signed_net_kwh), "kWh")}${this._metric("Maximum quarter import demand", fmt(summary.maximum_import_demand_kw), "kW")}${this._metric("Average valid quarter demand", fmt(summary.average_import_demand_kw), "kW")}${this._metric("Minimum signed quarter average", fmt(summary.minimum_signed_average_kw), "kW")}${this._metric("Maximum signed quarter average", fmt(summary.maximum_signed_average_kw), "kW")}${this._metric("Valid completed quarters", summary.valid_count)}${this._metric("Contract eligible", summary.contractual_eligible_count)}${this._metric("Incomplete", summary.incomplete_count)}${this._metric("Missing", summary.missing_count)}${this._metric("Partial observed import", fmt(summary.partial_observed_import_kwh), "kWh")}${this._metric("Partial observed export", fmt(summary.partial_observed_export_kwh), "kWh")}${this._metric("Confirmed exceedances", summary.exceeded_count)}${this._metric("Confirmed exceedance rate", fmt(summary.confirmed_exceedance_pct), "%")}${this._metric("Exceeded duration", summary.exceeded_duration_minutes, "minutes")}${this._metric("Data coverage", fmt(summary.coverage_pct), "%")}</div><p class="chart-key">Valid measurement totals exclude incomplete and simulation rows. Contractual results use only quarters with confirmed original targets and official rule status. Partial observed energy remains separate.</p><h3>Previous equivalent period</h3>${comparisonHtml}</section>`;
+  }
+
+  _blockCharts(blocks) {
+    const model = blockChartModel(blocks);
+    const chart = (title, maximum, value, value2 = null, unit = "") => {
+      const rows = model.rows.map((row, index) => {
+        const first = Number(value(row) || 0);
+        const second = value2 ? Number(value2(row) || 0) : null;
+        const width = 560 * first / maximum;
+        const width2 = second == null ? 0 : 560 * second / maximum;
+        const y = 34 + index * 48;
+        return `<g class="block-chart-row" tabindex="0" role="button" data-block="${row.block}" aria-label="B${row.block}: ${fmt(first)} ${unit}"><text x="8" y="${y + 15}">B${row.block}</text><rect x="48" y="${y}" width="${width}" height="14" fill="${BLOCK_COLORS[row.block]}"/>${second == null ? "" : `<rect x="48" y="${y + 18}" width="${width2}" height="8" fill="#38bdf8"/>`}<text x="620" y="${y + 15}" text-anchor="end">${fmt(first)}${second == null ? "" : ` / ${fmt(second)}`} ${unit}</text></g>`;
+      }).join("");
+      return `<div class="block-chart"><h3>${esc(title)}</h3><svg viewBox="0 0 640 290" role="img" aria-label="${esc(title)} by tariff block">${rows}</svg></div>`;
+    };
+    return `<div class="block-charts">${chart("Imported energy", model.energyMaximum, row => row.import_kwh, null, "kWh")}${chart("Maximum / average import demand", model.demandMaximum, row => row.maximum_import_demand_kw, row => row.average_import_demand_kw, "kW")}${chart("Confirmed exceeded quarters", model.exceedanceMaximum, row => row.exceeded_count, null, "quarters")}</div>`;
+  }
+
+  _blocksView() {
+    if (this._periodError) return `<section class="card error"><h2>Block analysis unavailable</h2><p>${esc(this._periodError)}</p><button data-retry-period>Retry</button></section>`;
+    if (!this._blocks || this._periodLoading) return `<section class="card">${this._periodControls()}<p>Loading tariff-block analysis…</p></section>`;
+    const data = this._blocks;
+    const selectedNumber = this._periodBlock === "all" ? null : Number(this._periodBlock);
+    const selected = data.blocks.find(row => row.block === selectedNumber);
+    const details = selected ? `<section class="block-detail"><h3>B${selected.block} details</h3><div class="grid">${this._metric("Peak timestamp", selected.peak_timestamp || "Unavailable")}${this._metric("Maximum demand", fmt(selected.maximum_import_demand_kw), "kW")}${this._metric("Average demand", fmt(selected.average_import_demand_kw), "kW")}${this._metric("Valid measured time", fmt(selected.valid_measured_hours), "hours")}${this._metric("Confirmed exceedances", selected.exceeded_count)}${this._metric("Largest excess", fmt(selected.maximum_excess_kw), "kW")}</div><h4>Highest-demand quarters</h4>${selected.high_demand_quarters.length ? `<table><thead><tr><th>Start</th><th>Demand</th><th>Original target</th><th>Quality</th></tr></thead><tbody>${selected.high_demand_quarters.map(row => `<tr data-block-quarter="${esc(row.start_utc)}" tabindex="0"><td>${esc(localQuarterLabel(row.start_utc))}</td><td>${fmt(row.import_demand_kw)} kW</td><td>${fmt(row.contractual_target_kw)} kW</td><td>${esc(row.quality)}</td></tr>`).join("")}</tbody></table>` : `<p class="empty">No valid measured quarters for B${selected.block}.</p>`}<button data-open-exceedances>View B${selected.block} exceedances</button></section>` : `<p class="notice">Select B1–B5 to inspect its original targets and highest-demand quarters.</p>`;
+    return `<section class="card">${this._periodControls()}<p class="eyebrow">TARIFF BLOCK ANALYSIS</p><h2>${esc(data.period.label)}</h2>${this._blockCharts(data.blocks)}<table class="blocks-table"><thead><tr><th>Block</th><th>Active</th><th>Valid hours</th><th>Valid / eligible</th><th>Incomplete / missing</th><th>Import / export</th><th>Max / avg demand</th><th>Historical targets</th><th>Exceeded / rate</th><th>Largest excess</th></tr></thead><tbody>${data.blocks.map(row => `<tr data-block="${row.block}" tabindex="0" class="${selectedNumber === row.block ? "selected-row" : ""}"><td><span class="chip b${row.block}">B${row.block}</span></td><td>${row.active ? "Yes" : "Not active"}</td><td>${fmt(row.valid_measured_hours)}</td><td>${row.valid_count} / ${row.contractual_eligible_count}</td><td>${row.incomplete_count} / ${row.missing_count}</td><td>${fmt(row.import_kwh)} / ${fmt(row.export_kwh)} kWh</td><td>${fmt(row.maximum_import_demand_kw)} / ${fmt(row.average_import_demand_kw)} kW</td><td>${row.targets_kw.length ? row.targets_kw.map(target => fmt(target)).join("–") + " kW" : "Unknown"}</td><td>${row.exceeded_count} / ${fmt(row.confirmed_exceedance_pct)}%</td><td>${fmt(row.maximum_excess_kw)} kW</td></tr>`).join("")}</tbody></table><p class="chart-key">All five blocks remain visible. Values use each archived quarter's original target and provenance; provisional and simulation results never enter confirmed exceedances.</p>${details}</section>`;
+  }
+
+  _exceedancesView() {
+    if (this._periodError) return `<section class="card error"><h2>Exceedance analysis unavailable</h2><p>${esc(this._periodError)}</p><button data-retry-period>Retry</button></section>`;
+    if (!this._exceedances || this._periodLoading) return `<section class="card">${this._periodControls()}<p>Loading confirmed exceedances…</p></section>`;
+    const data = this._exceedances;
+    const summary = data.summary;
+    const greatest = summary.greatest_exceedance;
+    const emptyState = data.items.length ? "" : `<p class="notice">No confirmed exceeded quarters were found. This does not prove incomplete or missing intervals stayed below their limits.</p>`;
+    const bins = data.bins || [];
+    const chart = bins.length ? (() => {
+      const width = 1120;
+      const bottom = 214;
+      const left = 62;
+      const plotWidth = width - left - 24;
+      const countMax = Math.max(1, ...bins.map(bin => Number(bin.exceeded_count || 0)));
+      const excessMax = Math.max(1, ...bins.map(bin => Number(bin.maximum_excess_kw || 0)));
+      const step = plotWidth / bins.length;
+      const marks = bins.map((bin, index) => {
+        const x = left + index * step;
+        const countHeight = 160 * Number(bin.exceeded_count || 0) / countMax;
+        const excessY = bottom - 160 * Number(bin.maximum_excess_kw || 0) / excessMax;
+        return `<g><rect class="exceedance-bar" x="${x + step * .12}" y="${bottom - countHeight}" width="${Math.max(2, step * .45)}" height="${countHeight}"/><circle class="excess-point" cx="${x + step * .72}" cy="${excessY}" r="4" fill="var(--card)" stroke="#dc2626" stroke-width="3"><title>${fmt(bin.maximum_excess_kw)} kW maximum excess</title></circle></g>`;
+      }).join("");
+      return `<div class="chart-scroll" data-chart-scroll="exceedances" tabindex="0"><svg viewBox="0 0 ${width} 250" role="img" aria-label="Confirmed exceedance count and maximum excess severity"><line class="zero" x1="${left}" x2="${width - 24}" y1="${bottom}" y2="${bottom}"/>${marks}<text x="8" y="25">Count</text><text x="${width - 8}" y="25" text-anchor="end">Maximum excess (kW)</text><text x="8" y="${bottom}">0</text></svg></div><div class="chart-key">Purple bars: confirmed exceeded-quarter count · outlined points: maximum excess in kW. Axes are labeled separately.</div>`;
+    })() : `<p class="empty">No archived bins are available for the exceedance chart.</p>`;
+    const zeroState = `${emptyState}${chart}`;
+    const table = data.items.length ? `<table class="exceedance-table"><thead><tr><th>Date / quarter</th><th>Block</th><th>Original target</th><th>Demand</th><th>Excess</th><th>Excess %</th><th>Equivalent energy</th><th>Quality</th><th>Rule status</th></tr></thead><tbody>${data.items.map(row => `<tr data-exceedance-quarter="${esc(row.start_utc)}" tabindex="0"><td>${esc(localQuarterLabel(row.start_utc))}–${esc(localTime(row.end_utc))}</td><td>${row.tariff_block ? `B${row.tariff_block}` : "Unknown"}</td><td>${fmt(row.contractual_target_kw)} kW</td><td>${fmt(row.import_demand_kw)} kW</td><td>${fmt(row.excess_kw)} kW</td><td>${fmt(row.excess_percentage)}%</td><td>${fmt(row.excess_energy_kwh, 3)} kWh</td><td>${esc(row.quality)}</td><td>${esc(row.contractual_status)}</td></tr>`).join("")}</tbody></table>` : "";
+    return `<section class="card">${this._periodControls()}<div class="herohead"><div><p class="eyebrow">CONFIRMED CONTRACTUAL EXCEEDANCES</p><h2>${esc(data.period.label)}</h2></div><strong class="count">${summary.exceedance_count}</strong></div><div class="grid">${this._metric("Exceeded quarters", summary.exceedance_count)}${this._metric("Exceeded duration", summary.exceeded_duration_minutes, "minutes")}${this._metric("Maximum import demand", fmt(summary.maximum_import_demand_kw), "kW")}${this._metric("Maximum excess", fmt(summary.maximum_excess_kw), "kW")}${this._metric("Maximum excess percentage", fmt(summary.maximum_excess_percentage), "%")}${this._metric("Average excess", fmt(summary.average_excess_kw), "kW")}${this._metric("Confirmed rate", fmt(summary.confirmed_exceedance_rate_pct), "%")}${this._metric("Eligible quarters", summary.contractual_eligible_count)}${this._metric("Incomplete / unconfirmed", summary.incomplete_or_unconfirmed_count)}${this._metric("Most affected block", summary.most_affected_block ? `B${summary.most_affected_block}` : "—")}${this._metric("Greatest exceedance", greatest?.start_utc ? localQuarterLabel(greatest.start_utc) : "—")}</div><div class="exceedance-controls"><label>Sort <select data-exceedance-sort>${[["date", "Date"], ["demand", "Demand"], ["excess_kw", "Excess kW"], ["excess_percentage", "Excess %"]].map(([value, label]) => `<option value="${value}" ${value === this._exceedanceSort ? "selected" : ""}>${label}</option>`).join("")}</select></label><label>Order <select data-exceedance-direction><option value="desc" ${this._exceedanceDirection === "desc" ? "selected" : ""}>Descending</option><option value="asc" ${this._exceedanceDirection === "asc" ? "selected" : ""}>Ascending</option></select></label></div>${zeroState}${table}<div class="pagination"><button data-exceedance-page="${data.pagination.page - 1}" ${data.pagination.page <= 1 ? "disabled" : ""}>Previous</button><span>Page ${data.pagination.page} of ${Math.max(1, data.pagination.pages)} · ${data.pagination.total} quarters</span><button data-exceedance-page="${data.pagination.page + 1}" ${data.pagination.page >= data.pagination.pages ? "disabled" : ""}>Next</button></div><p class="chart-key">Each row is one confirmed 15-minute interval. Consecutive intervals are never merged. Equivalent excess energy is analytical only and is not an official network fee.</p></section>`;
+  }
+
   _calendarView() {
     if (this._calendarError) return `<section class="card error"><h2>Tariff calendar unavailable</h2><p>${esc(this._calendarError)}</p><button data-retry-calendar>Retry</button></section>`;
     const calendar = this._calendar;
@@ -687,6 +884,42 @@ export class SIGridMonitorPanel extends HTMLElement {
     const details = this.shadowRoot?.querySelector("[data-calendar-details]");
     if (details) details.innerHTML = this._calendarDetails(selected);
     if (focus) button?.focus();
+  }
+
+  async _movePeriod(direction) {
+    const moved = adjacentPeriodAnchor(
+      (this._period || this._blocks || this._exceedances)?.period, direction,
+    );
+    if (!moved) return;
+    this._periodAnchor = moved.anchor;
+    this._selectedDate = /^\d{4}-\d{2}-\d{2}$/.test(moved.anchor)
+      ? moved.anchor : localDate(new Date(moved.anchor));
+    if (moved.customStart) this._customStart = moved.customStart;
+    if (moved.customEnd) this._customEnd = moved.customEnd;
+    this._period = null;
+    this._blocks = null;
+    this._exceedances = null;
+    await this._loadTab();
+  }
+
+  async _drillPeriod(index) {
+    const action = periodDrillDown(this._periodType, this._period?.bins?.[index]);
+    if (!action) return;
+    if (action.quarterStartUtc) {
+      this._tab = "today";
+      this._selectedDate = localDate(new Date(action.quarterStartUtc));
+      this._selectedTodayQuarterUtc = action.quarterStartUtc;
+      this._day = null;
+      this._render();
+      await this._loadTab();
+      return;
+    }
+    this._periodType = action.periodType;
+    this._periodAnchor = action.anchor;
+    this._selectedDate = action.anchor.slice(0, 10);
+    this._period = null;
+    this._render();
+    await this._loadTab();
   }
 
   _bind() {
@@ -732,6 +965,127 @@ export class SIGridMonitorPanel extends HTMLElement {
     });
     root.querySelector("[data-retry-day]")?.addEventListener("click", () => this._loadTab());
     root.querySelector("[data-retry-calendar]")?.addEventListener("click", () => this._loadTab());
+    root.querySelector("[data-retry-period]")?.addEventListener("click", () => this._loadTab());
+    root.querySelector("[data-period-type]")?.addEventListener("change", event => {
+      this._periodType = event.target.value;
+      this._periodAnchor = this._periodType === "hour"
+        ? new Date().toISOString() : this._selectedDate;
+      this._period = null;
+      this._blocks = null;
+      this._exceedances = null;
+      this._render();
+      this._loadTab();
+    });
+    root.querySelector("[data-period-block]")?.addEventListener("change", event => {
+      this._periodBlock = event.target.value;
+      this._period = null;
+      this._blocks = null;
+      this._exceedances = null;
+      this._exceedancePage = 1;
+      this._render();
+      this._loadTab();
+    });
+    root.querySelectorAll("[data-period-move]").forEach(element => {
+      element.addEventListener("click", () => {
+        this._movePeriod(Number(element.dataset.periodMove));
+      });
+    });
+    root.querySelector("[data-period-current]")?.addEventListener("click", () => {
+      this._selectedDate = localDate();
+      this._periodAnchor = new Date().toISOString();
+      if (this._periodType === "custom") {
+        this._customStart = this._selectedDate;
+        this._customEnd = this._selectedDate;
+      }
+      this._period = null;
+      this._blocks = null;
+      this._exceedances = null;
+      this._render();
+      this._loadTab();
+    });
+    for (const field of ["start", "end"]) {
+      root.querySelector(`[data-custom-${field}]`)?.addEventListener("change", event => {
+        if (field === "start") this._customStart = event.target.value;
+        else this._customEnd = event.target.value;
+        this._periodAnchor = this._customStart;
+        this._period = null;
+        this._blocks = null;
+        this._exceedances = null;
+        this._loadTab();
+      });
+    }
+    root.querySelectorAll("[data-block]").forEach(element => {
+      const activate = () => {
+        this._periodBlock = String(element.dataset.block);
+        this._blocks = null;
+        this._render();
+        this._loadTab();
+      };
+      element.addEventListener("click", activate);
+      element.addEventListener("keydown", event => {
+        if (["Enter", " "].includes(event.key)) {
+          event.preventDefault();
+          activate();
+        }
+      });
+    });
+    root.querySelector("[data-open-exceedances]")?.addEventListener("click", () => {
+      this._tab = "exceedances";
+      this._exceedancePage = 1;
+      this._exceedances = null;
+      this._render();
+      this._loadTab();
+    });
+    for (const field of ["sort", "direction"]) {
+      root.querySelector(`[data-exceedance-${field}]`)?.addEventListener("change", event => {
+        if (field === "sort") this._exceedanceSort = event.target.value;
+        else this._exceedanceDirection = event.target.value;
+        this._exceedancePage = 1;
+        this._exceedances = null;
+        this._loadTab();
+      });
+    }
+    root.querySelectorAll("[data-exceedance-page]").forEach(element => {
+      element.addEventListener("click", () => {
+        this._exceedancePage = Number(element.dataset.exceedancePage);
+        this._exceedances = null;
+        this._loadTab();
+      });
+    });
+    root.querySelectorAll("[data-exceedance-quarter],[data-block-quarter]").forEach(element => {
+      const start = element.dataset.exceedanceQuarter || element.dataset.blockQuarter;
+      const activate = () => {
+        this._tab = "today";
+        this._selectedDate = localDate(new Date(start));
+        this._selectedTodayQuarterUtc = start;
+        this._day = null;
+        this._render();
+        this._loadTab();
+      };
+      element.addEventListener("click", activate);
+      element.addEventListener("keydown", event => {
+        if (["Enter", " "].includes(event.key)) {
+          event.preventDefault();
+          activate();
+        }
+      });
+    });
+    root.querySelectorAll("[data-chart-mode]").forEach(element => {
+      element.addEventListener("click", () => {
+        this._periodChartMode = element.dataset.chartMode;
+        this._render();
+      });
+    });
+    root.querySelectorAll("[data-period-bin]").forEach(element => {
+      const activate = () => this._drillPeriod(Number(element.dataset.periodBin));
+      element.addEventListener("click", activate);
+      element.addEventListener("keydown", event => {
+        if (["Enter", " "].includes(event.key)) {
+          event.preventDefault();
+          activate();
+        }
+      });
+    });
     root.querySelectorAll("g[data-quarter]").forEach(element => {
       element.onclick = () => this._selectTodayQuarter(element.dataset.quarter);
       element.onkeydown = event => {
@@ -786,7 +1140,11 @@ export class SIGridMonitorPanel extends HTMLElement {
         ? {type: "quarter", value: activeElement.dataset.quarter}
         : activeElement?.dataset?.hour
           ? {type: "hour", value: activeElement.dataset.hour}
-          : null;
+          : activeElement?.dataset?.block
+            ? {type: "block", value: activeElement.dataset.block}
+            : activeElement?.dataset?.exceedanceQuarter
+              ? {type: "exceedance", value: activeElement.dataset.exceedanceQuarter}
+              : null;
     const priorTimelineScroll = this.shadowRoot.querySelector(".timeline")?.scrollLeft;
     if (priorTimelineScroll != null) this._calendarScrollLeft = priorTimelineScroll;
     const priorTodayScroll = this.shadowRoot.querySelector("[data-today-scroll]")?.scrollLeft;
@@ -806,7 +1164,16 @@ export class SIGridMonitorPanel extends HTMLElement {
     if (nextChartDataKey) this._chartDataKey = nextChartDataKey;
     this._resetChartScrollOnRender = false;
     const active = this._entries.find(entry => entry.entry_id === this._entryId);
-    this.shadowRoot.innerHTML = `<style>${this._styles()}</style><style>${this._legendStyles()}</style><main><header><div class="brand"><span>SI</span><div><h1>SI Grid Monitor</h1><p>Import-only contractual demand intelligence</p></div></div><div class="meter"><small>Active meter</small>${this._entries.length > 1 ? `<select data-entry>${this._entries.map(entry => `<option value="${esc(entry.entry_id)}" ${entry.entry_id === this._entryId ? "selected" : ""}>${esc(entry.title)}</option>`).join("")}</select>` : `<strong>${esc(active?.title || "None")}</strong>`}</div></header><nav>${[["overview", "OVERVIEW"], ["today", "TODAY"], ["calendar", "TARIFF CALENDAR"]].map(([id, label]) => `<button data-tab="${id}" class="${this._tab === id ? "active" : ""}">${label}</button>`).join("")}</nav>${this._error ? `<div class="error">Connection error: ${esc(this._error)}. The panel will retry automatically.</div>` : ""}${!this._entries.length ? `<section class="card"><h2>No configured meter</h2><p>Complete the SI Grid Monitor integration setup wizard first.</p></section>` : this._tab === "overview" ? this._overview() : this._tab === "today" ? this._today() : this._calendarView()}</main>`;
+    const tabs = [["overview", "OVERVIEW"], ["today", "TODAY"], ["period", "PERIOD"], ["blocks", "BLOCKS"], ["exceedances", "EXCEEDANCES"], ["calendar", "TARIFF CALENDAR"]];
+    const content = !this._entries.length
+      ? `<section class="card"><h2>No configured meter</h2><p>Complete the SI Grid Monitor integration setup wizard first.</p></section>`
+      : this._tab === "overview" ? this._overview()
+        : this._tab === "today" ? this._today()
+          : this._tab === "period" ? this._periodView()
+            : this._tab === "blocks" ? this._blocksView()
+              : this._tab === "exceedances" ? this._exceedancesView()
+                : this._calendarView();
+    this.shadowRoot.innerHTML = `<style>${this._styles()}</style><style>${this._legendStyles()}</style><main><header><div class="brand"><span>SI</span><div><h1>SI Grid Monitor</h1><p>Import-only contractual demand intelligence</p></div></div><div class="meter"><small>Active meter</small>${this._entries.length > 1 ? `<select data-entry>${this._entries.map(entry => `<option value="${esc(entry.entry_id)}" ${entry.entry_id === this._entryId ? "selected" : ""}>${esc(entry.title)}</option>`).join("")}</select>` : `<strong>${esc(active?.title || "None")}</strong>`}</div></header><nav>${tabs.map(([id, label]) => `<button data-tab="${id}" class="${this._tab === id ? "active" : ""}">${label}</button>`).join("")}</nav>${this._error ? `<div class="error">Connection error: ${esc(this._error)}. The panel will retry automatically.</div>` : ""}${content}</main>`;
     this._bind();
     restoreChartScrollState(
       this.shadowRoot, this._chartScrollPositions, chartView.focused,
@@ -823,13 +1190,19 @@ export class SIGridMonitorPanel extends HTMLElement {
         : focusState?.type === "hour"
           ? [...this.shadowRoot.querySelectorAll("[data-hour]")]
             .find(element => element.dataset.hour === focusState.value)
-          : null;
+          : focusState?.type === "block"
+            ? [...this.shadowRoot.querySelectorAll("[data-block]")]
+              .find(element => element.dataset.block === focusState.value)
+            : focusState?.type === "exceedance"
+              ? [...this.shadowRoot.querySelectorAll("[data-exceedance-quarter]")]
+                .find(element => element.dataset.exceedanceQuarter === focusState.value)
+              : null;
     focusTarget?.focus({preventScroll: true});
     this._tick();
   }
 
   _legendStyles() {
-    return `.legend-line{width:28px;height:6px;min-width:28px;background:none}.legend-line line{fill:none;stroke-width:3}.legend-line .import,.legend-line .energy-actual{stroke:${CHART_SERIES.import.color}}.legend-line .export{stroke:${CHART_SERIES.export.color}}.legend-line .smooth{stroke:${CHART_SERIES.smooth.color}}.legend-line .future{stroke:${CHART_SERIES.future.color};stroke-dasharray:${CHART_SERIES.future.dash}}.legend-line .energy-projection{stroke:${CHART_SERIES.energyProjection.color};stroke-dasharray:${CHART_SERIES.energyProjection.dash}}.legend-line .contract{stroke:${CHART_SERIES.contract.color};stroke-dasharray:${CHART_SERIES.contract.dash}}.legend-line .contract-safety{stroke:${CHART_SERIES.contractSafety.color};stroke-dasharray:${CHART_SERIES.contractSafety.dash}}.legend-line .simulation{stroke:${CHART_SERIES.simulation.color};stroke-dasharray:${CHART_SERIES.simulation.dash}}.legend-line .operational{stroke:${CHART_SERIES.operational.color};stroke-dasharray:${CHART_SERIES.operational.dash}}.quarter-hit-area{fill:transparent;pointer-events:all}.quarter-selection{pointer-events:none}`;
+    return `.legend-line{width:28px;height:6px;min-width:28px;background:none}.legend-line line{fill:none;stroke-width:3}.legend-line .import,.legend-line .energy-actual{stroke:${CHART_SERIES.import.color}}.legend-line .export{stroke:${CHART_SERIES.export.color}}.legend-line .smooth{stroke:${CHART_SERIES.smooth.color}}.legend-line .future{stroke:${CHART_SERIES.future.color};stroke-dasharray:${CHART_SERIES.future.dash}}.legend-line .energy-projection{stroke:${CHART_SERIES.energyProjection.color};stroke-dasharray:${CHART_SERIES.energyProjection.dash}}.legend-line .contract{stroke:${CHART_SERIES.contract.color};stroke-dasharray:${CHART_SERIES.contract.dash}}.legend-line .contract-safety{stroke:${CHART_SERIES.contractSafety.color};stroke-dasharray:${CHART_SERIES.contractSafety.dash}}.legend-line .simulation{stroke:${CHART_SERIES.simulation.color};stroke-dasharray:${CHART_SERIES.simulation.dash}}.legend-line .operational{stroke:${CHART_SERIES.operational.color};stroke-dasharray:${CHART_SERIES.operational.dash}}.quarter-hit-area{fill:transparent;pointer-events:all}.period-hit-area{fill:transparent;pointer-events:all}.quarter-selection{pointer-events:none}.period-controls{display:flex;align-items:end;gap:8px;flex-wrap:wrap;margin-bottom:14px}.period-controls label{display:flex;flex-direction:column;font-size:.75rem;color:var(--secondary-text-color)}.chart-modes{flex-wrap:wrap;margin:12px 0}.chart-modes .active{border-color:var(--primary-color,#03a9f4);color:var(--primary-color,#03a9f4)}.average-bar{fill:#38bdf8}.coverage-bar{fill:#0891b2}.exceedance-bar{fill:#8b5cf6}.period-bin{cursor:pointer}.period-bin:focus{outline:none}.period-bin:focus .period-hit-area{stroke:var(--primary-color,#03a9f4);stroke-width:2}.period-bin.missing .period-hit-area{fill:#f59e0b18;stroke:#f59e0b;stroke-dasharray:3 3}`;
   }
 
   _styles() {

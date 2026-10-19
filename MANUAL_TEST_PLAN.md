@@ -1,7 +1,48 @@
-# SI Grid Monitor V0.4.2 - Real Home Assistant Test Plan
+# SI Grid Monitor V0.6.0 - Real Home Assistant Test Plan
 
 Use a disposable or backed-up Home Assistant instance. Never infer physical
 connection capacity from CAN ADD values.
+
+## V0.6 PERIOD, BLOCKS and EXCEEDANCES acceptance
+
+Use the existing `sensor.solaredge_m1_ac_power` entry. Before updating, record
+the schema-5 archive path, row count, oldest/newest quarter and current entity
+IDs. After updating through HACS, restart Home Assistant and refresh the browser
+or Android WebView so the `0.6.0` dashboard assets replace V0.4.2.
+
+1. Confirm OVERVIEW, TODAY and TARIFF CALENDAR retain their V0.4.2 behavior and
+   that the existing SQLite row count never decreases.
+2. Open PERIOD and exercise Hour, Day, ISO Week, Month, Year and a Custom range.
+   Verify Previous/Next/current controls and B1-B5 filtering stay selected over
+   automatic refreshes. Older unrecorded dates must say unavailable/missing,
+   never show zero consumption.
+3. For a completed day, reconcile PERIOD totals, valid/incomplete/missing counts,
+   maximum quarter demand and confirmed exceedances with TODAY. Repeat across the
+   29 March 2026 spring transition (92 quarters) and 25 October 2026 rollback
+   (100 quarters); repeated times must remain distinguishable by UTC offset.
+4. Drill Year → Month → Day → quarter. Confirm the quarter detail retains its
+   original target, block, source/configuration epoch, rule version, quality and
+   provenance and does not invent a detailed trace.
+5. Open BLOCKS and confirm B1-B5 are always present. Reconcile their summed valid
+   energy and quarter counts with PERIOD. Where assignments changed, verify the
+   stored historical target list/range rather than today's target is shown.
+6. Select each block and inspect its peak timestamp and high-demand quarters;
+   follow the Exceedances action and confirm the period and block filter persist.
+7. On EXCEEDANCES, test date/demand/excess/excess-percentage sorting, both
+   directions and pagination. Every confirmed exceeded 15-minute quarter must be
+   one row. In a controlled fixture, three consecutive exceeded quarters must be
+   three rows and 45 minutes, not one event.
+8. Verify simulation, provisional, incomplete and unknown-contract rows never
+   enter confirmed exceedance counts. A zero-result page must warn that missing
+   or incomplete intervals are not proof of no exceedance.
+9. Switch between two meters while requests are in flight. Confirm no totals,
+   filters, quarter detail or delayed response crosses archive namespaces.
+10. Check desktop and Android widths in light/dark themes: horizontally scrollable
+    navigation and dense charts/tables must not overflow the whole panel; keyboard
+    focus and chart scroll should remain stable over refreshes.
+
+These steps require a real Home Assistant/browser installation and are not
+claimed complete by repository automation.
 
 ## Automatic sidebar dashboard acceptance
 
