@@ -7,6 +7,7 @@ import {
   dayStatusLabel,
   historyErrorMessage,
   ljubljanaDate,
+  ljubljanaTimeLabel,
   livePowerChartModel,
   localQuarterLabel,
   quarterEnergyModel,
@@ -84,6 +85,16 @@ test("quarter navigation is exactly 15 minutes and never enters live future", ()
   assert.equal(ljubljanaDate(new Date("2026-01-01T23:30:00.000Z")), "2026-01-02");
 });
 
+test("chart time labels distinguish the repeated Ljubljana rollback hour", () => {
+  const summerFold = ljubljanaTimeLabel("2026-10-25T00:30:00Z");
+  const winterFold = ljubljanaTimeLabel("2026-10-25T01:30:00Z");
+  assert.match(summerFold, /02:30/);
+  assert.match(winterFold, /02:30/);
+  assert.match(summerFold, /GMT\+2|CEST/);
+  assert.match(winterFold, /GMT\+1|CET/);
+  assert.notEqual(summerFold, winterFold);
+});
+
 test("calendar date labels localize the weekday", () => {
   assert.match(calendarDateLabel("2026-10-18", "en"), /^Sunday,/);
   assert.match(calendarDateLabel("2026-10-18", "sl"), /^nedelja,/i);
@@ -147,6 +158,33 @@ test("live chart separates measured paths, smoothing, and backend future assumpt
   assert.deepEqual(model.futureForecast, [
     {timestamp: "2026-01-01T00:01:00.000Z", kw: 1.5},
     {timestamp: "2026-01-01T00:15:00.000Z", kw: 1.5},
+  ]);
+  assert.equal(model.detachedForecastAnchor, null);
+});
+
+test("quarter rollover keeps inherited backend smoothing as a detached anchor", () => {
+  const model = livePowerChartModel({
+    trace: [
+      {timestamp: "2026-01-01T00:15:00Z", signed_kw: 4},
+      {timestamp: "2026-01-01T00:15:30Z", signed_kw: 4},
+    ],
+    nowUtc: "2026-01-01T00:16:00Z",
+    quarterEndUtc: "2026-01-01T00:30:00Z",
+    contractualTargetKw: 4.2,
+    windowSeconds: 120,
+    staleAfterSeconds: 60,
+    futureImportPowerKw: 2.75,
+    futureAnchorUtc: "2026-01-01T00:16:00Z",
+    forecastQuality: "estimated",
+  });
+  assert.deepEqual(model.smoothedImportSegments, []);
+  assert.deepEqual(model.detachedForecastAnchor, {
+    timestamp: "2026-01-01T00:16:00.000Z",
+    kw: 2.75,
+  });
+  assert.deepEqual(model.futureForecast, [
+    {timestamp: "2026-01-01T00:16:00.000Z", kw: 2.75},
+    {timestamp: "2026-01-01T00:30:00.000Z", kw: 2.75},
   ]);
 });
 

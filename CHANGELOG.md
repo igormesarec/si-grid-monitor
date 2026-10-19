@@ -31,6 +31,12 @@ All notable changes to SI Grid Monitor will be documented here.
   internally for diagnosis and showing the reason.
 - Added wrapping legends, explicit power/energy units, local time endpoints and
   non-overlapping reference labels for narrow Android light/dark layouts.
+- Made live SVGs horizontally scroll inside their cards at their native 1120-pixel
+  minimum drawing width, preserving labels and strokes without overflowing the
+  full panel at 320/360/390/768-pixel viewport widths.
+- Added GMT-offset chart times for unambiguous DST rollback intervals and a
+  distinct forecast-anchor marker when post-rollover trace coverage cannot
+  support a connected historical smoothing path.
 - Exposed the existing temporary simulation threshold through setup and Options
   without changing dated assignments or confirmed archive statistics.
 - Kept SQLite schema 5, configuration epochs, entity identities and archived

@@ -202,3 +202,14 @@ software behavior only; distributor readings remain authoritative.
 15. Exercise normal updates, a stale gap, sufficient recovery coverage, a fixed
     quarter rollover and a mid-quarter restart. Confirm no smoothing line bridges
     unsupported time and a new quarter starts from its own backend total.
+16. In Android Home Assistant, test exact content widths of 320, 360, 390 and
+    768 pixels. Each live chart must scroll horizontally inside its own card at
+    narrow widths; SVG text and strokes must retain readable size and the whole
+    dashboard must not acquire a horizontal scrollbar.
+17. Select quarters around the 25 October 2026 rollback. Confirm the two local
+    02:xx intervals show different `GMT+2` and `GMT+1` labels (or CEST/CET),
+    including at chart endpoints.
+18. During the first 120 seconds after a quarter rollover, verify that inherited
+    backend smoothing is shown as an outlined forecast anchor and dashed future
+    assumption when the current-quarter trace cannot support a solid smoothing
+    trajectory. The UI must not connect that anchor to unsupported history.

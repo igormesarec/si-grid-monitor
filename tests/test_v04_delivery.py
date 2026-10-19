@@ -115,3 +115,19 @@ def test_v041_live_charts_label_distinct_targets_and_mobile_axes() -> None:
         assert label in bundle
     assert "projected final imported energy is below energy already imported" in bundle
     assert ".chart-legend{display:flex;flex-wrap:wrap" in bundle
+
+
+def test_v041_mobile_charts_scroll_locally_without_shrinking_svg_text() -> None:
+    bundle = (ROOT / "custom_components/si_grid_monitor/frontend/dashboard.js").read_text(
+        encoding="utf-8"
+    )
+    assert bundle.count('class="chart-scroll"') == 2
+    assert ".chart-scroll{width:100%;max-width:100%;overflow-x:auto" in bundle
+    assert ".chart-scroll svg{display:block;width:max(100%,1120px);min-width:1120px}" in bundle
+    assert 'aria-label="Scrollable live power chart"' in bundle
+    assert 'aria-label="Scrollable quarter energy chart"' in bundle
+    assert "forecast-anchor" in bundle
+    for viewport_width in (320, 360, 390, 768):
+        chart_width = max(viewport_width, 1120)
+        assert chart_width >= 1120
+        assert min(viewport_width, chart_width) == viewport_width

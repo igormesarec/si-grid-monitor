@@ -87,6 +87,16 @@ export function localQuarterLabel(startUtc) {
   }).format(new Date(startUtc));
 }
 
+export function ljubljanaTimeLabel(value) {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/Ljubljana",
+    hour: "2-digit",
+    minute: "2-digit",
+    hourCycle: "h23",
+    timeZoneName: "shortOffset",
+  }).format(new Date(value));
+}
+
 export function ljubljanaDate(value = new Date()) {
   const parts = new Intl.DateTimeFormat("en-CA", {
     timeZone: "Europe/Ljubljana",
@@ -261,6 +271,12 @@ export function livePowerChartModel({
       {timestamp: new Date(anchor).toISOString(), kw: Number(futureImportPowerKw)},
       {timestamp: new Date(quarterEnd).toISOString(), kw: Number(futureImportPowerKw)},
     ] : [];
+  const smoothedAtAnchor = Number.isFinite(anchor) && smoothedImport.some(
+    point => sampleTime(point) === anchor
+      && Math.abs(point.kw - Number(futureImportPowerKw)) <= 1e-9,
+  );
+  const detachedForecastAnchor = futureForecast.length && !smoothedAtAnchor
+    ? futureForecast[0] : null;
   const magnitudes = [
     Number(contractualTargetKw) || 0,
     Number(contractualSafetyTargetKw) || 0,
@@ -285,6 +301,7 @@ export function livePowerChartModel({
     actualExportSegments,
     smoothedImportSegments,
     futureForecast,
+    detachedForecastAnchor,
     forecastQuality,
     forecastReason,
     gridLimitKw,
