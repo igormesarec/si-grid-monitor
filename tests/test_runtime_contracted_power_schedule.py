@@ -209,11 +209,13 @@ def test_runtime_expires_2026_assignment_without_reusing_it_in_2027(tmp_path) ->
     assert dashboard["quarter"]["import_kwh"] == pytest.approx(runtime.snapshot.quarter_import_kwh)
     assert dashboard["trace"]
     assert dashboard["trace_stale_after_seconds"] == 60
+    assert dashboard["power"]["source_age_seconds"] == pytest.approx(0.0)
     assert dashboard["projection"]["smoothed_future_import_kw"] == pytest.approx(3.0)
     assert dashboard["projection"]["smoothed_future_anchor_utc"] == in_2026.isoformat()
-    assert dashboard["projection"]["smoothed_future_end_utc"] == quarter_bounds(
-        in_2026
-    ).end_utc.isoformat()
+    assert (
+        dashboard["projection"]["smoothed_future_end_utc"]
+        == quarter_bounds(in_2026).end_utc.isoformat()
+    )
     assert dashboard["projection"]["smoothed_future_quality"] == "estimated"
     assert (
         runtime._operational_target_for_quarter(in_2026, in_2026 + timedelta(minutes=15), 0.0)

@@ -4,6 +4,27 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-10-19
+
+- Rendered complete cumulative import trajectories when coverage reconciles and
+  recent supported suffixes anchored to the authoritative backend total when an
+  earlier gap exists; stale or unsupported history remains point-only.
+- Added adaptive Overview power and energy axes, exact three-decimal contractual
+  quarter-energy references, and one shared series color/dash definition used by
+  chart strokes and legends.
+- Suppressed the unused negative power region and zero-export path until genuine
+  export occurs, while retaining an explicit zero line and expanding for peaks.
+- Separated current-quarter forecast status from sustained-horizon quality and
+  exposed source age and coverage explanations without changing the 60-second
+  staleness or billing calculation.
+- Added a complete Today 15-minute selector with Previous/Next controls, a DST-
+  aware dropdown, accessible whole-slot interaction, stable selection/scroll/focus,
+  and distinct archived, live, missing, unavailable, and upcoming detail states.
+- Clarified confirmed Today statistics, partial observed energy, contributing
+  quarter counts, and the electrical-safety limits of CAN ADD advice.
+- Cache-busted both dashboard modules through the V0.4.2 panel URL; updating does
+  not require deleting the config entry or SQLite archive.
+
 ## [0.4.1] - 2026-10-19
 
 - Fixed the historical-quarter and Today WebSocket crash caused by treating

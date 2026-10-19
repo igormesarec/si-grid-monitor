@@ -1,7 +1,7 @@
 # SI Grid Monitor
 
 SI Grid Monitor is a HACS-compatible Home Assistant custom integration for
-Slovenian fixed 15-minute grid-demand monitoring. V0.4 provides guided setup,
+Slovenian fixed 15-minute grid-demand monitoring. V0.4.2 provides guided setup,
 an automatically registered sidebar dashboard, import-only live calculations,
 sustained-load forecasting, and a permanent
 SQLite quarter archive. It is an early development release, not the complete V1
@@ -36,6 +36,13 @@ with separate archive namespaces and is removed only after the final entry unloa
 
 The countdown is browser-local. Missing historical detail is explicitly labeled;
 the dashboard never fabricates samples from SQLite quarter summaries.
+
+V0.4.2 adds gap-aware cumulative-energy segments, adaptive Overview axes and a
+complete Today 15-minute interval selector. After updating through HACS, restart
+Home Assistant and perform a normal browser/app frontend refresh so the new
+versioned JavaScript assets replace any cached V0.4.1 module. Do not remove and
+re-add the integration: existing entity identities and the schema-5 SQLite
+archive are preserved.
 
 ## Safety and accuracy
 

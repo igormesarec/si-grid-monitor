@@ -1,22 +1,33 @@
 import {
   BLOCK_COLORS,
+  CHART_SERIES,
   RequestGate,
   calendarDateLabel,
   chartViewStateForRender,
   dayStatusLabel,
+  defaultTodayQuarter,
+  energyAxisScale,
   historyErrorMessage,
   ljubljanaDate,
   ljubljanaTimeLabel,
   livePowerChartModel,
   localQuarterLabel,
+  moveTodayQuarter,
   quarterEnergyModel,
   quarterNavigation,
   restoreChartScrollState,
   selectTimelineHour,
   todayChartModel,
-} from "./dashboard-model.mjs?v=0.4.1";
+  todayQuarterAction,
+} from "./dashboard-model.mjs?v=0.4.2";
 
 const fmt = (value, digits = 2) => value == null ? "—" : Number(value).toFixed(digits);
+const fmtEnergyReference = value => value == null ? "—" : Number(value).toFixed(3);
+const fmtAxis = value => {
+  const magnitude = Math.abs(Number(value));
+  if (magnitude < 1e-12) return "0";
+  return magnitude < 0.1 ? Number(value).toFixed(3) : magnitude < 1 ? Number(value).toFixed(2) : Number(value).toFixed(1);
+};
 const esc = value => String(value ?? "").replace(/[&<>"']/g, character => ({
   "&": "&amp;", "<": "&lt;", ">": "&gt;", "\"": "&quot;", "'": "&#39;",
 })[character]);
@@ -70,7 +81,10 @@ class SIGridMonitorPanel extends HTMLElement {
     this._historicalError = null;
     this._historicalLoading = false;
     this._selectedHourUtc = null;
+    this._selectedTodayQuarterUtc = null;
+    this._todaySelectionMessage = null;
     this._calendarScrollLeft = 0;
+    this._todayScrollLeft = 0;
     this._chartScrollPositions = {power: 0, energy: 0};
     this._chartDataKey = null;
     this._resetChartScrollOnRender = true;
@@ -138,6 +152,39 @@ class SIGridMonitorPanel extends HTMLElement {
         const day = await this._call("day", {date: this._selectedDate}, entryId);
         if (!this._gate.accepts(token)) return;
         this._day = day;
+        const starts = new Set((day.quarters || []).map(item => item.start_utc));
+        if (!this._selectedTodayQuarterUtc || !starts.has(this._selectedTodayQuarterUtc)) {
+          this._selectedTodayQuarterUtc = defaultTodayQuarter(
+            day.quarters || [], this._selectedDate, localDate(),
+          );
+          this._todaySelectionMessage = null;
+        }
+        const selectedQuarter = (day.quarters || []).find(
+          item => item.start_utc === this._selectedTodayQuarterUtc,
+        );
+        if (todayQuarterAction(selectedQuarter) === "archive"
+            && this._historicalStart !== selectedQuarter.start_utc) {
+          try {
+            this._historical = await this._call(
+              "quarter", {start_utc: selectedQuarter.start_utc}, entryId,
+            );
+            if (!this._gate.accepts(token)) return;
+            this._historicalStart = selectedQuarter.start_utc;
+            this._historicalDate = this._selectedDate;
+            this._historicalError = null;
+          } catch (error) {
+            if (!this._gate.accepts(token)) return;
+            this._historical = null;
+            this._historicalStart = selectedQuarter.start_utc;
+            this._historicalDate = this._selectedDate;
+            this._historicalError = historyErrorMessage("quarter", error);
+          }
+        } else if (todayQuarterAction(selectedQuarter) !== "archive") {
+          this._historical = null;
+          this._historicalStart = null;
+          this._historicalDate = null;
+          this._historicalError = null;
+        }
         this._dayError = null;
       } else {
         const calendar = await this._call("calendar", {date: this._selectedDate}, entryId);
@@ -185,12 +232,15 @@ class SIGridMonitorPanel extends HTMLElement {
   async _setDate(value) {
     this._selectedDate = value;
     this._selectedHourUtc = null;
+    this._selectedTodayQuarterUtc = null;
+    this._todaySelectionMessage = null;
     this._historical = null;
     this._historicalStart = null;
     this._historicalDate = null;
     this._historicalError = null;
     this._historicalLoading = false;
     this._calendarScrollLeft = 0;
+    this._todayScrollLeft = 0;
     if (this._tab === "today") {
       this._day = null;
       this._dayError = null;
@@ -235,6 +285,46 @@ class SIGridMonitorPanel extends HTMLElement {
     this._render();
   }
 
+  async _selectTodayQuarter(startUtc, focus = false) {
+    const quarters = this._day?.quarters || [];
+    const selected = quarters.find(item => item.start_utc === startUtc);
+    if (!selected) return;
+    this._selectedTodayQuarterUtc = startUtc;
+    const action = todayQuarterAction(selected);
+    this._todaySelectionMessage = action === "upcoming"
+      ? "Not measured yet. This interval is upcoming."
+      : action === "missing"
+        ? "No valid archived measurement exists for this past interval; missing data is not shown as zero."
+        : action === "live"
+          ? selected.display_status === "live"
+            ? "Live interval in progress; projected values are not confirmed results."
+            : "The current interval has no valid live measurement yet."
+          : null;
+    if (action === "archive") {
+      await this._quarter(startUtc);
+    } else {
+      this._gate.invalidate();
+      this._historical = null;
+      this._historicalStart = null;
+      this._historicalDate = null;
+      this._historicalError = null;
+      this._historicalLoading = false;
+      this._render();
+    }
+    if (focus) {
+      [...(this.shadowRoot?.querySelectorAll("[data-quarter]") || [])]
+        .find(element => element.dataset.quarter === startUtc)
+        ?.focus({preventScroll: true});
+    }
+  }
+
+  _moveTodayQuarter(delta) {
+    const next = moveTodayQuarter(
+      this._day?.quarters || [], this._selectedTodayQuarterUtc, delta,
+    );
+    if (next) this._selectTodayQuarter(next, true);
+  }
+
   _tick() {
     const countdown = this.shadowRoot?.querySelector("[data-countdown]");
     if (!countdown || !this._live?.quarter?.end_utc) return;
@@ -246,6 +336,10 @@ class SIGridMonitorPanel extends HTMLElement {
 
   _metric(label, value, unit = "", kind = "") {
     return `<div class="metric ${kind}"><span>${esc(label)}</span><strong>${esc(value)}${unit ? ` <small>${unit}</small>` : ""}</strong></div>`;
+  }
+
+  _chartLegend(items) {
+    return items.map(([kind, label]) => `<span><svg class="legend-line" viewBox="0 0 28 6" aria-hidden="true"><line class="${kind}" x1="1" x2="27" y1="3" y2="3"/></svg>${esc(label)}</span>`).join("");
   }
 
   _liveChart(live) {
@@ -277,29 +371,36 @@ class SIGridMonitorPanel extends HTMLElement {
         ? forecast.smoothed_future_reason
         : "projected final energy is below energy already imported",
     });
-    const maxKw = model.gridLimitKw;
     const x = timestamp => 44 + (Date.parse(timestamp) - start) / (end - start) * 1036;
-    const y = value => 120 - Number(value) / maxKw * 92;
+    const plotTop = 24;
+    const plotBottom = 220;
+    const domainSpan = model.domainMaxKw - model.domainMinKw;
+    const y = value => plotBottom
+      - (Number(value) - model.domainMinKw) / domainSpan * (plotBottom - plotTop);
     const path = points => points.map(point => `${x(point.timestamp)},${y(point.kw)}`).join(" ");
     const paths = (segments, className) => segments
       .filter(points => points.length > 1)
       .map(points => `<polyline class="${className}" points="${path(points)}"/>`).join("");
     const reference = (value, className) => value == null ? "" :
       `<line class="${className}" x1="44" x2="1080" y1="${y(value)}" y2="${y(value)}"/>`;
+    const same = (left, right) => left != null && right != null
+      && Math.abs(Number(left) - Number(right)) <= 0.0001;
+    const operationalMatchesContract = same(
+      forecast.operational_target_kw, tariff.contractual_target_kw,
+    );
+    const operationalMatchesSafety = same(
+      forecast.operational_target_kw, tariff.contractual_operational_target_kw,
+    ) && tariff.safety_margin_kw > 0;
     const contractual = reference(tariff.contractual_target_kw, "contractual-target");
     const contractualSafety = tariff.safety_margin_kw > 0
       ? reference(tariff.contractual_operational_target_kw, "contractual-safety-target") : "";
     const simulation = tariff.simulation_enabled
       ? reference(tariff.simulation_target_kw, "simulation-target") : "";
-    const showOperational = forecast.operational_target_kw != null && (
-      tariff.simulation_enabled
-      || tariff.contractual_operational_target_kw == null
-      || Math.abs(forecast.operational_target_kw - tariff.contractual_operational_target_kw) > 0.0001
-    );
+    const showOperational = forecast.operational_target_kw != null
+      && !operationalMatchesContract && !operationalMatchesSafety;
     const operational = showOperational
       ? reference(forecast.operational_target_kw, "operational-target") : "";
-    const labelEvery = Math.max(1, Math.ceil(maxKw / 8));
-    const grid = model.gridValues.map(value => `<g><line class="power-grid ${value === 0 ? "zero" : ""}" x1="44" x2="1080" y1="${y(value)}" y2="${y(value)}"/>${value % labelEvery === 0 ? `<text x="5" y="${y(value) + 4}">${value > 0 ? "+" : value < 0 ? "−" : ""}${Math.abs(value)} kW</text>` : ""}</g>`).join("");
+    const grid = model.gridValues.map(value => `<g><line class="power-grid ${value === 0 ? "zero" : ""}" x1="44" x2="1080" y1="${y(value)}" y2="${y(value)}"/><text x="5" y="${y(value) + 4}">${value > 0 ? "+" : value < 0 ? "−" : ""}${fmtAxis(Math.abs(value))} kW</text></g>`).join("");
     const future = model.futureForecast.length
       ? `<polyline class="forecast-continuation" points="${path(model.futureForecast)}"/>` : "";
     const detachedAnchor = model.detachedForecastAnchor
@@ -311,14 +412,14 @@ class SIGridMonitorPanel extends HTMLElement {
     const anchorNote = model.detachedForecastAnchor
       ? " The outlined anchor is a backend forecast value; current-quarter trace coverage does not support connecting it to the solid measured smoothing line."
       : "";
-    const legend = [
-      ["import", "Actual import"], ["export", "Actual export"],
+    const legend = this._chartLegend([
+      ["import", "Actual import"], ...(model.hasExport ? [["export", "Actual export"]] : []),
       ["smooth", "Historical smoothing"], ["future", "Future assumption"],
-      ...(tariff.contractual_target_kw == null ? [] : [["contract", `Distributor limit ${fmt(tariff.contractual_target_kw)} kW`]]),
-      ...(tariff.safety_margin_kw > 0 && tariff.contractual_operational_target_kw != null ? [["contract-safety", `Contract safety reference ${fmt(tariff.contractual_operational_target_kw)} kW`]] : []),
+      ...(tariff.contractual_target_kw == null ? [] : [["contract", `${operationalMatchesContract ? "Distributor / operational target" : "Distributor limit"} ${fmt(tariff.contractual_target_kw)} kW`]]),
+      ...(tariff.safety_margin_kw > 0 && tariff.contractual_operational_target_kw != null ? [["contract-safety", `${operationalMatchesSafety ? "Contract safety / operational target" : "Contract safety reference"} ${fmt(tariff.contractual_operational_target_kw)} kW`]] : []),
       ...(tariff.simulation_enabled ? [["simulation", `SIMULATION threshold ${fmt(tariff.simulation_target_kw)} kW`]] : []),
       ...(showOperational ? [["operational", `Engine operational target ${fmt(forecast.operational_target_kw)} kW`]] : []),
-    ].map(([kind, label]) => `<span><i class="swatch ${kind}"></i>${esc(label)}</span>`).join("");
+    ]);
     return `<div class="live-chart"><div class="chart-scroll" data-chart-scroll="power" tabindex="0" aria-label="Scrollable live power chart"><svg viewBox="0 0 1120 260" role="img" aria-label="Live import and export power with measured smoothing, future import-power assumption, one-kilowatt support lines, and separate contractual and operational targets">${grid}${contractual}${contractualSafety}${simulation}${operational}${paths(model.actualImportSegments, "import-trace")}${paths(model.actualExportSegments, "export-trace")}${paths(model.smoothedImportSegments, "smoothed-trace")}${future}${detachedAnchor}<text class="axis-title" x="8" y="14">Power (kW)</text><text class="time-label" x="44" y="246">${esc(localTime(live.quarter.start_utc))}</text><text class="time-label" x="1080" y="246" text-anchor="end">${esc(localTime(live.quarter.end_utc))}</text></svg></div><div class="chart-legend">${legend}</div><p class="chart-key">${forecastNote}${anchorNote}</p></div>`;
   }
 
@@ -342,20 +443,28 @@ class SIGridMonitorPanel extends HTMLElement {
     });
     const start = Date.parse(quarter.start_utc);
     const end = Date.parse(quarter.end_utc);
-    const maxKwh = Math.max(
-      0.1,
+    const scale = energyAxisScale([
       energy.usedKwh,
-      energy.projectedFinalKwh || 0,
-      energy.contractualLimitKwh || 0,
-      energy.contractualSafetyTargetKwh || 0,
-      energy.operationalTargetKwh || 0,
-      energy.simulationTargetKwh || 0,
-    ) * 1.12;
+      energy.projectedFinalKwh,
+      energy.contractualLimitKwh,
+      energy.contractualSafetyTargetKwh,
+      energy.operationalTargetKwh,
+      energy.simulationTargetKwh,
+    ]);
+    const maxKwh = scale.maxKwh;
     const x = timestamp => 48 + (Date.parse(timestamp) - start) / (end - start) * 1028;
     const y = value => 205 - Number(value) / maxKwh * 170;
     const points = values => values.map(point => `${x(point.timestamp)},${y(point.kwh)}`).join(" ");
     const reference = (value, className) => value == null ? "" :
       `<line class="${className}" x1="48" x2="1076" y1="${y(value)}" y2="${y(value)}"/>`;
+    const same = (left, right) => left != null && right != null
+      && Math.abs(Number(left) - Number(right)) <= 0.000001;
+    const operationalMatchesContract = same(
+      energy.operationalTargetKwh, energy.contractualLimitKwh,
+    );
+    const operationalMatchesSafety = same(
+      energy.operationalTargetKwh, energy.contractualSafetyTargetKwh,
+    );
     const contractual = reference(
       energy.contractualLimitKwh, "energy-contractual-limit",
     );
@@ -365,30 +474,27 @@ class SIGridMonitorPanel extends HTMLElement {
     const simulation = reference(
       energy.simulationTargetKwh, "energy-simulation-target",
     );
-    const showOperational = energy.operationalTargetKwh != null && (
-      live.tariff.simulation_enabled
-      || energy.contractualSafetyTargetKwh == null
-      || Math.abs(energy.operationalTargetKwh - energy.contractualSafetyTargetKwh) > 0.0001
-    );
+    const showOperational = energy.operationalTargetKwh != null
+      && !operationalMatchesContract && !operationalMatchesSafety;
     const operational = showOperational
       ? reference(energy.operationalTargetKwh, "energy-operational-target") : "";
     const projection = energy.projection.length ? `<polyline class="energy-projection" points="${points(energy.projection)}"/>` : "";
-    const actual = energy.actual.length
-      ? `<polyline class="energy-actual" points="${points(energy.actual)}"/>` : "";
-    const trajectoryNote = energy.trajectoryAvailable
-      ? "Solid red is the supported cumulative imported-energy trajectory."
-      : esc(energy.trajectoryReason);
+    const actual = energy.actualSegments
+      .filter(segment => segment.length > 1)
+      .map(segment => `<polyline class="energy-actual" points="${points(segment)}"/>`).join("");
+    const trajectoryNote = esc(energy.trajectoryReason);
     const projectionNote = energy.projection.length
       ? "Dashed purple is an estimate from the authoritative current point, not a measurement."
       : esc(energy.projectionReason);
-    const legend = [
+    const legend = this._chartLegend([
       ["energy-actual", "Imported energy"], ["energy-projection", "Projected energy"],
-      ...(energy.contractualLimitKwh == null ? [] : [["contract", `Distributor limit ${fmt(energy.contractualLimitKwh)} kWh`]]),
-      ...(energy.contractualSafetyTargetKwh == null ? [] : [["contract-safety", `Contract safety reference ${fmt(energy.contractualSafetyTargetKwh)} kWh`]]),
-      ...(energy.simulationTargetKwh == null ? [] : [["simulation", `SIMULATION threshold ${fmt(energy.simulationTargetKwh)} kWh`]]),
-      ...(showOperational ? [["operational", `Engine operational target ${fmt(energy.operationalTargetKwh)} kWh`]] : []),
-    ].map(([kind, label]) => `<span><i class="swatch ${kind}"></i>${esc(label)}</span>`).join("");
-    return `<section class="energy-progress"><h3>Quarter energy progress</h3><div class="chart-scroll" data-chart-scroll="energy" tabindex="0" aria-label="Scrollable quarter energy chart"><svg viewBox="0 0 1120 260" role="img" aria-label="Cumulative import-only quarter energy in kilowatt-hours, with gaps left undisguised and separate contractual, safety, simulation, and engine targets">${contractual}${contractualSafety}${simulation}${operational}<line class="energy-zero" x1="48" x2="1076" y1="${y(0)}" y2="${y(0)}"/>${actual}${projection}<circle class="energy-current" cx="${x(energy.currentPoint.timestamp)}" cy="${y(energy.currentPoint.kwh)}" r="5"/><text class="axis-title" x="8" y="14">Energy (kWh)</text><text x="5" y="${y(0) + 4}">0</text><text x="5" y="${y(maxKwh) + 4}">${fmt(maxKwh)}</text><text class="time-label" x="48" y="246">${esc(localTime(quarter.start_utc))}</text><text class="time-label" x="1076" y="246" text-anchor="end">${esc(localTime(quarter.end_utc))}</text></svg></div><div class="chart-legend">${legend}</div><div class="grid">${this._metric("Used so far", fmt(energy.usedKwh), "kWh")}${this._metric("Projected final energy", fmt(energy.projectedFinalKwh), "kWh")}${this._metric("Distributor contractual limit", fmt(energy.contractualLimitKwh), "kWh")}${this._metric("Contract safety reference", fmt(energy.contractualSafetyTargetKwh), "kWh")}${live.tariff.simulation_enabled ? this._metric("SIMULATION threshold", fmt(energy.simulationTargetKwh), "kWh") : ""}${this._metric("Engine operational energy target", fmt(energy.operationalTargetKwh), "kWh")}${this._metric("Remaining operational budget", fmt(forecast.budget_remaining_kwh), "kWh")}</div><p class="chart-key">${trajectoryNote} ${projectionNote} Export contributes zero and never reduces imported energy.</p></section>`;
+      ...(energy.contractualLimitKwh == null ? [] : [["contract", `${operationalMatchesContract ? "Distributor / operational target" : "Distributor limit"} ${fmtEnergyReference(energy.contractualLimitKwh)} kWh`]]),
+      ...(energy.contractualSafetyTargetKwh == null ? [] : [["contract-safety", `${operationalMatchesSafety ? "Contract safety / operational target" : "Contract safety reference"} ${fmtEnergyReference(energy.contractualSafetyTargetKwh)} kWh`]]),
+      ...(energy.simulationTargetKwh == null ? [] : [["simulation", `SIMULATION threshold ${fmtEnergyReference(energy.simulationTargetKwh)} kWh`]]),
+      ...(showOperational ? [["operational", `Engine operational target ${fmtEnergyReference(energy.operationalTargetKwh)} kWh`]] : []),
+    ]);
+    const energyGrid = scale.ticks.map(value => `<g><line class="power-grid ${value === 0 ? "zero" : ""}" x1="48" x2="1076" y1="${y(value)}" y2="${y(value)}"/><text x="5" y="${y(value) + 4}">${fmtAxis(value)} kWh</text></g>`).join("");
+    return `<section class="energy-progress"><h3>Quarter energy progress</h3><div class="chart-scroll" data-chart-scroll="energy" tabindex="0" aria-label="Scrollable quarter energy chart"><svg viewBox="0 0 1120 260" role="img" aria-label="Cumulative import-only quarter energy in kilowatt-hours, with gaps left undisguised and separate contractual, safety, simulation, and engine targets">${energyGrid}${contractual}${contractualSafety}${simulation}${operational}${actual}${projection}<circle class="energy-current" cx="${x(energy.currentPoint.timestamp)}" cy="${y(energy.currentPoint.kwh)}" r="5"/><text class="axis-title" x="8" y="14">Energy (kWh)</text><text class="time-label" x="48" y="246">${esc(localTime(quarter.start_utc))}</text><text class="time-label" x="1076" y="246" text-anchor="end">${esc(localTime(quarter.end_utc))}</text></svg></div><div class="chart-legend">${legend}</div><div class="grid">${this._metric("Used so far", fmt(energy.usedKwh, 3), "kWh")}${this._metric("Projected final energy", fmt(energy.projectedFinalKwh, 3), "kWh")}${this._metric("Distributor contractual limit", fmtEnergyReference(energy.contractualLimitKwh), "kWh")}${this._metric("Contract safety reference", fmtEnergyReference(energy.contractualSafetyTargetKwh), "kWh")}${live.tariff.simulation_enabled ? this._metric("SIMULATION threshold", fmtEnergyReference(energy.simulationTargetKwh), "kWh") : ""}${this._metric("Engine operational energy target", fmtEnergyReference(energy.operationalTargetKwh), "kWh")}${this._metric("Remaining operational budget", fmt(forecast.budget_remaining_kwh, 3), "kWh")}</div><p class="chart-key">${trajectoryNote} ${projectionNote} Export contributes zero and never reduces imported energy.</p></section>`;
   }
 
   _overview() {
@@ -414,10 +520,17 @@ class SIGridMonitorPanel extends HTMLElement {
     )
       ? `<p class="error">Projection unavailable: projected final imported energy is below energy already imported. The diagnostic backend value is retained but not presented as a valid forecast.</p>`
       : "";
+    const currentForecastQuality = forecast.smoothed_future_quality || "unavailable";
+    const currentForecastStatus = currentForecastQuality === "unavailable"
+      ? `Unavailable: ${forecast.smoothed_future_reason || "no supported smoothed forecast"}`
+      : `${currentForecastQuality}${forecast.smoothed_future_reason ? `: ${forecast.smoothed_future_reason}` : ""}`;
+    const sustainedStatus = sustained.quality === "available"
+      ? `Available · ${fmt(sustained.coverage_seconds, 0)} s coverage`
+      : `Unavailable: ${sustained.reason || "insufficient valid measurement history"}`;
     return `<section class="card hero"><div class="herohead"><div><p class="eyebrow">CURRENT FIXED 15-MINUTE INTERVAL</p><h2>${esc(quarter.start_local.slice(0, 10))} · ${esc(quarter.start_local.slice(11, 16))}–${esc(quarter.end_local.slice(11, 16))}</h2><p>B${esc(tariff.block)} · ${fmt(tariff.target_kw)} kW · ${esc(quarter.quality)}</p></div><div class="count" data-countdown>--:--</div></div>
       <div class="direction"><div class="import"><span>IMPORT</span><b>${fmt(power.import_kw)} kW</b></div><div class="export"><span>EXPORT</span><b>${fmt(power.export_kw)} kW</b></div></div>${this._liveChart(live)}${this._energyChart(live)}
-      <div class="grid">${this._metric("Signed grid power", fmt(power.signed_kw), "kW")}${this._metric("Imported so far", fmt(quarter.import_kwh), "kWh")}${this._metric("Exported so far", fmt(quarter.export_kwh), "kWh")}${this._metric("Import average", fmt(quarter.import_average_kw), "kW")}${this._metric("Instant projected final quarter average", fmt(displayedInstantForecast), "kW")}${this._metric("Smoothed projected final quarter average", fmt(displayedSmoothedForecast), "kW")}${this._metric("Utilization", fmt(forecast.current_utilization_pct), "%")}${this._metric("Remaining budget", fmt(forecast.budget_remaining_kwh), "kWh")}${this._metric("Allowed remainder", fmt(forecast.allowed_remaining_import_kw), "kW")}${this._metric("CAN ADD THIS QUARTER", fmt(forecast.can_add_kw), "kW", "good")}${this._metric("MUST REDUCE THIS QUARTER", fmt(forecast.must_reduce_kw), "kW", forecast.must_reduce_kw > 0 ? "bad" : "")}${this._metric("SUSTAINED CAN ADD", fmt(sustained.can_add_kw), "kW", "accent")}${this._metric("SUSTAINED MUST REDUCE", fmt(sustained.must_reduce_kw), "kW", sustained.must_reduce_kw > 0 ? "bad" : "")}${this._metric("Forecast quality", sustained.quality || "unavailable")}</div>${projectionWarning}
-      <p class="safety">15-minute energy-budget headroom is not physical breaker, phase, grid-connection or inverter capacity.</p></section>
+      <div class="grid">${this._metric("Signed grid power", fmt(power.signed_kw), "kW")}${this._metric("Source measurement age", fmt(power.source_age_seconds, 0), "seconds")}${this._metric("Imported so far", fmt(quarter.import_kwh, 3), "kWh")}${this._metric("Exported so far", fmt(quarter.export_kwh, 3), "kWh")}${this._metric("Import average", fmt(quarter.import_average_kw), "kW")}${this._metric("Instant projected final quarter average", fmt(displayedInstantForecast), "kW")}${this._metric("Smoothed projected final quarter average", fmt(displayedSmoothedForecast), "kW")}${this._metric("Current-quarter forecast status", currentForecastStatus)}${this._metric("Utilization", fmt(forecast.current_utilization_pct), "%")}${this._metric("Remaining budget", fmt(forecast.budget_remaining_kwh, 3), "kWh")}${this._metric("Allowed remainder", fmt(forecast.allowed_remaining_import_kw), "kW")}${this._metric("CAN ADD THIS QUARTER", fmt(forecast.can_add_kw), "kW", "good")}${this._metric("MUST REDUCE THIS QUARTER", fmt(forecast.must_reduce_kw), "kW", forecast.must_reduce_kw > 0 ? "bad" : "")}${this._metric("SUSTAINED CAN ADD", fmt(sustained.can_add_kw), "kW", "accent")}${this._metric("SUSTAINED MUST REDUCE", fmt(sustained.must_reduce_kw), "kW", sustained.must_reduce_kw > 0 ? "bad" : "")}${this._metric("Sustained forecast quality", sustainedStatus)}${this._metric("Sustained horizon", sustained.horizon_minutes, "minutes")}</div>${projectionWarning}
+      <p class="safety"><strong>Electrical safety:</strong> CAN ADD and sustained headroom are billing-energy-budget estimates only. They are not permission or assurance that the breaker, phases, grid connection, wiring, or inverter can carry that instantaneous load.</p></section>
       ${this._transitionCard()}<section class="card"><div class="row"><h2>Quarter archive</h2><button data-prev>Previous quarter</button><button data-next>Next quarter</button><button data-live>Current / live</button></div>${this._historicalCard()}</section>`;
   }
 
@@ -449,6 +562,7 @@ class SIGridMonitorPanel extends HTMLElement {
     const backgrounds = model.items.map(item => `<rect x="${item.centerX - model.slot / 2}" y="${model.margin.top}" width="${model.slot}" height="${model.height - model.margin.top - model.margin.bottom}" fill="${BLOCK_COLORS[item.tariff_block] || "#64748b"}" opacity="0.08"/>`).join("");
     const states = model.items.map(item => {
       const classes = ["quarter-slot", item.display_status, item.quality, item.contractual_status];
+      if (item.start_utc === this._selectedTodayQuarterUtc) classes.push("selected");
       const slotTop = model.margin.top;
       const slotHeight = model.height - model.margin.top - model.margin.bottom;
       const stateRect = ["missing", "upcoming", "live_unavailable"].includes(item.display_status) || !item.measurement_valid && item.display_status !== "live" || item.contractual_status === "provisional_estimate"
@@ -458,11 +572,26 @@ class SIGridMonitorPanel extends HTMLElement {
       const exceeded = item.confirmed_exceeded ? `<rect class="exceeded" x="${item.centerX - model.slot * 0.42}" y="${slotTop}" width="${model.slot * 0.84}" height="${slotHeight}"/>` : "";
       const projection = item.display_status === "live" && item.projected_import_demand_kw != null
         ? `<circle class="projection" cx="${item.centerX}" cy="${model.valueToY(item.projected_import_demand_kw)}" r="4"/>` : "";
-      return `<g data-quarter="${esc(item.start_utc)}" data-status="${esc(item.display_status)}" aria-label="${esc(`${localQuarterLabel(item.start_utc)}; ${dayStatusLabel(item)}; import ${fmt(item.importKw)} kW; export ${fmt(item.exportKw)} kW; target ${fmt(item.targetKw)} kW`)}">${stateRect}${importBar}${exportBar}${exceeded}${projection}</g>`;
+      const selection = item.start_utc === this._selectedTodayQuarterUtc
+        ? `<rect class="quarter-selection" x="${item.centerX - model.slot * 0.46}" y="${slotTop}" width="${model.slot * 0.92}" height="${slotHeight}"/>` : "";
+      return `<g class="${esc(classes.join(" "))}" tabindex="0" role="button" aria-pressed="${item.start_utc === this._selectedTodayQuarterUtc}" data-quarter="${esc(item.start_utc)}" data-status="${esc(item.display_status)}" aria-label="${esc(`${localQuarterLabel(item.start_utc)}; ${dayStatusLabel(item)}; import ${fmt(item.importKw)} kW; export ${fmt(item.exportKw)} kW; target ${fmt(item.targetKw)} kW`)}">${stateRect}${importBar}${exportBar}${exceeded}${projection}${selection}</g>`;
     }).join("");
     const targets = model.targetSegments.map(segment => `<line class="target-step" x1="${segment.x1}" x2="${segment.x2}" y1="${segment.y}" y2="${segment.y}"/>`).join("");
     const axis = ticks.map(value => `<g><line class="gridline ${value === 0 ? "zero" : ""}" x1="${model.margin.left}" x2="${model.width - model.margin.right}" y1="${model.valueToY(value)}" y2="${model.valueToY(value)}"/><text x="4" y="${model.valueToY(value) + 4}">${value > 0 ? "+" : value < 0 ? "−" : ""}${fmt(Math.abs(value))} kW</text></g>`).join("");
-    return `<div class="daychart"><svg viewBox="0 0 ${model.width} ${model.height}" role="img" aria-label="Zero-centered daily power chart in kW. Import demand is above zero, exported average power below zero, and the gold stepped line is contracted power."><defs><pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="#f59e0b" stroke-width="2"/></pattern></defs>${backgrounds}${axis}${targets}${states}<text class="axis-title" x="4" y="14">Power (kW)</text></svg></div>`;
+    return `<div class="daychart" data-today-scroll tabindex="0"><svg viewBox="0 0 ${model.width} ${model.height}" role="img" aria-label="Zero-centered daily power chart in kW. Import demand is above zero, exported average power below zero, and the gold stepped line is contracted power."><defs><pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="6" stroke="#f59e0b" stroke-width="2"/></pattern></defs>${backgrounds}${axis}${targets}${states}<text class="axis-title" x="4" y="14">Power (kW)</text></svg></div>`;
+  }
+
+  _todayQuarterDetails(selected) {
+    if (!selected) return `<div class="empty">Select a 15-minute interval.</div>`;
+    const status = dayStatusLabel(selected);
+    const heading = `${localQuarterLabel(selected.start_utc)} – ${localTime(selected.end_utc)} · ${status}`;
+    if (selected.display_status === "live") {
+      return `<div class="selected-quarter"><h3>${esc(heading)}</h3><div class="grid">${this._metric("Live current-quarter energy", fmt(selected.import_kwh, 3), "kWh")}${this._metric("Live exported energy", fmt(selected.export_kwh, 3), "kWh")}${this._metric("Elapsed", fmt(selected.elapsed_seconds / 60), "minutes")}${this._metric("Measurement coverage", fmt(selected.coverage_seconds), "seconds")}${this._metric("Current import average", fmt(selected.import_demand_kw), "kW")}${this._metric("Projected final import demand", fmt(selected.projected_import_demand_kw), "kW")}${this._metric("Projected exceedance", selected.projected_exceedance == null ? "Unavailable" : selected.projected_exceedance ? "Projected" : "No")}${this._metric("Confirmed exceedance", "Not until completion")}</div><p class="safety">Live and projected values are separate from completed-quarter statistics.</p></div>`;
+    }
+    if (["completed", "simulation"].includes(selected.display_status)) {
+      return `<div class="selected-quarter"><h3>${esc(heading)}</h3>${this._historicalCard()}</div>`;
+    }
+    return `<div class="selected-quarter"><h3>${esc(heading)}</h3><p class="empty">${esc(this._todaySelectionMessage || (selected.display_status === "upcoming" ? "Not measured yet." : "No valid archived measurement exists."))}</p></div>`;
   }
 
   _today() {
@@ -470,9 +599,11 @@ class SIGridMonitorPanel extends HTMLElement {
     const day = this._day;
     if (!day) return `<section class="card">Loading day…</section>`;
     const quarters = day.quarters || [];
-    const current = quarters.find(quarter => quarter.display_status === "live");
-    const liveCard = current ? `<div class="selected-quarter"><h3>LIVE / IN PROGRESS</h3><div class="grid">${this._metric("Imported so far", fmt(current.import_kwh), "kWh")}${this._metric("Exported so far", fmt(current.export_kwh), "kWh")}${this._metric("Elapsed", fmt(current.elapsed_seconds / 60), "minutes")}${this._metric("Measurement coverage", fmt(current.coverage_seconds), "seconds")}${this._metric("Current import average", fmt(current.import_demand_kw), "kW")}${this._metric("Projected final import demand", fmt(current.projected_import_demand_kw), "kW")}${this._metric("Projected exceedance", current.projected_exceedance == null ? "Unavailable" : current.projected_exceedance ? "Projected" : "No")}${this._metric("Confirmed exceedance", "Not until completion")}</div><p class="safety">The projection is not a completed contractual result and is excluded from confirmed statistics.</p></div>` : "";
-    return `<section class="card"><div class="row"><button data-day="-1">‹</button><input data-date type="date" value="${esc(this._selectedDate)}"><button data-day="1">›</button><button data-today>Today</button></div><h2>${esc(this._selectedDate)} · ${day.expected_quarters} aligned quarters</h2>${this._todayChart(quarters)}<div class="chart-key">Red: import-only quarter demand (kW) · Green: average exported power below zero (kW) · Gold: original contracted limit · Dot: live projection · Outline: confirmed exceedance · Hatched: missing/incomplete/provisional</div>${liveCard}${this._historicalStart && this._historicalDate === this._selectedDate ? `<div class="selected-quarter"><h3>Selected 15-minute interval</h3>${this._historicalCard()}</div>` : ""}<div class="grid">${this._metric("Imported energy", fmt(day.summary.import_kwh), "kWh")}${this._metric("Exported energy", fmt(day.summary.export_kwh), "kWh")}${this._metric("Partial observed import", fmt(day.summary.partial_observed_import_kwh), "kWh")}${this._metric("Partial observed export", fmt(day.summary.partial_observed_export_kwh), "kWh")}${this._metric("Maximum valid demand", fmt(day.summary.maximum_import_demand_kw), "kW")}${this._metric("Average valid demand", fmt(day.summary.average_import_demand_kw), "kW")}${this._metric("Valid quarters", day.summary.valid_count)}${this._metric("Contract eligible", day.summary.contractual_eligible_count)}${this._metric("Incomplete", day.summary.incomplete_count)}${this._metric("Missing", day.summary.missing_count)}${this._metric("Upcoming", day.summary.upcoming_count)}${this._metric("Confirmed exceedances", day.summary.exceeded_count)}</div><h3>Five tariff blocks</h3><table><thead><tr><th>Block</th><th>Active</th><th>Hours</th><th>Original targets</th><th>Valid / eligible</th><th>Incomplete / missing</th><th>Max / avg kW</th><th>Import / export kWh</th><th>Confirmed exceeded</th></tr></thead><tbody>${day.blocks.map(block => `<tr><td><span class="chip b${block.block}">B${block.block}</span></td><td>${block.active ? "Yes" : "Not active today"}</td><td>${fmt(block.active_hours)}</td><td>${block.targets_kw.length ? block.targets_kw.map(value => fmt(value)).join(", ") : "Unknown"}</td><td>${block.valid_count} / ${block.contractual_eligible_count}</td><td>${block.incomplete_count} / ${block.missing_count}</td><td>${fmt(block.maximum_import_demand_kw)} / ${fmt(block.average_import_demand_kw)}</td><td>${fmt(block.import_kwh)} / ${fmt(block.export_kwh)}</td><td>${block.confirmed_exceedances} / ${fmt(block.confirmed_exceedance_pct)}%</td></tr>`).join("")}</tbody></table></section>`;
+    const current = quarters.find(item => item.display_status === "live");
+    const selected = quarters.find(item => item.start_utc === this._selectedTodayQuarterUtc);
+    const selectedIndex = quarters.findIndex(item => item.start_utc === this._selectedTodayQuarterUtc);
+    const selector = `<div class="quarter-selector" aria-label="15-minute interval selection"><button data-today-prev data-today-control="prev" ${selectedIndex <= 0 ? "disabled" : ""}>Previous 15 minutes</button><select data-today-quarter data-today-control="select" aria-label="Selected 15-minute interval">${quarters.map(item => `<option value="${esc(item.start_utc)}" ${item.start_utc === this._selectedTodayQuarterUtc ? "selected" : ""}>${esc(`${localTime(item.start_utc)}–${localTime(item.end_utc)} · ${dayStatusLabel(item)}`)}</option>`).join("")}</select><button data-today-next data-today-control="next" ${selectedIndex < 0 || selectedIndex >= quarters.length - 1 ? "disabled" : ""}>Next 15 minutes</button></div>`;
+    return `<section class="card"><div class="row"><button data-day="-1">‹</button><input data-date type="date" value="${esc(this._selectedDate)}"><button data-day="1">›</button><button data-today>Today</button></div><h2>${esc(this._selectedDate)} · ${day.expected_quarters} aligned quarters</h2>${this._todayChart(quarters)}<div class="chart-key">Red: import-only quarter demand (kW) · Green: average exported power below zero (kW) · Gold: original contracted limit · Dot: live projection · Outline: confirmed exceedance · Hatched: missing/incomplete/provisional</div>${selector}${this._todayQuarterDetails(selected)}<div class="grid">${this._metric("Valid completed-quarter energy", fmt(day.summary.import_kwh), "kWh")}${this._metric("Valid completed-quarter export", fmt(day.summary.export_kwh), "kWh")}${this._metric("Separately observed incomplete-quarter import", fmt(day.summary.partial_observed_import_kwh), "kWh")}${this._metric("Separately observed incomplete-quarter export", fmt(day.summary.partial_observed_export_kwh), "kWh")}${this._metric("Live current-quarter energy", fmt(current?.import_kwh, 3), "kWh")}${this._metric("Live current-quarter export", fmt(current?.export_kwh, 3), "kWh")}${this._metric("Maximum valid completed-quarter demand", fmt(day.summary.maximum_import_demand_kw), "kW")}${this._metric("Average valid completed-quarter demand", fmt(day.summary.average_import_demand_kw), "kW")}${this._metric("Contributing valid completed quarters", day.summary.valid_count)}${this._metric("Contract eligible", day.summary.contractual_eligible_count)}${this._metric("Incomplete completed quarters", day.summary.incomplete_count)}${this._metric("Missing past intervals", day.summary.missing_count)}${this._metric("Upcoming intervals", day.summary.upcoming_count)}${this._metric("Confirmed exceedances", day.summary.exceeded_count)}</div><p class="chart-key">Average valid demand is the arithmetic mean of import-only demand across the contributing valid completed 15-minute quarters, not a whole-day or instantaneous average. Partial observed and live energy are excluded from valid totals. Confirmed exceedances use eligible completed quarters only; zero confirmed exceedances does not prove incomplete quarters stayed below their limits.</p><h3>Five tariff blocks</h3><table><thead><tr><th>Block</th><th>Active</th><th>Hours</th><th>Original targets</th><th>Valid / eligible</th><th>Incomplete / missing</th><th>Max / avg kW</th><th>Import / export kWh</th><th>Confirmed exceeded</th></tr></thead><tbody>${day.blocks.map(block => `<tr><td><span class="chip b${block.block}">B${block.block}</span></td><td>${block.active ? "Yes" : "Not active today"}</td><td>${fmt(block.active_hours)}</td><td>${block.targets_kw.length ? block.targets_kw.map(value => fmt(value)).join(", ") : "Unknown"}</td><td>${block.valid_count} / ${block.contractual_eligible_count}</td><td>${block.incomplete_count} / ${block.missing_count}</td><td>${fmt(block.maximum_import_demand_kw)} / ${fmt(block.average_import_demand_kw)}</td><td>${fmt(block.import_kwh)} / ${fmt(block.export_kwh)}</td><td>${block.confirmed_exceedances} / ${fmt(block.confirmed_exceedance_pct)}%</td></tr>`).join("")}</tbody></table></section>`;
   }
 
   _calendarView() {
@@ -555,10 +686,22 @@ class SIGridMonitorPanel extends HTMLElement {
     root.querySelector("[data-retry-day]")?.addEventListener("click", () => this._loadTab());
     root.querySelector("[data-retry-calendar]")?.addEventListener("click", () => this._loadTab());
     root.querySelectorAll("g[data-quarter]").forEach(element => {
-      const quarter = this._day?.quarters?.find(item => item.start_utc === element.dataset.quarter);
-      if (quarter?.display_status === "completed" || quarter?.display_status === "simulation") {
-        element.onclick = () => this._quarter(element.dataset.quarter);
-      }
+      element.onclick = () => this._selectTodayQuarter(element.dataset.quarter);
+      element.onkeydown = event => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          this._selectTodayQuarter(element.dataset.quarter, true);
+        }
+      };
+    });
+    root.querySelector("[data-today-quarter]")?.addEventListener("change", event => {
+      this._selectTodayQuarter(event.target.value);
+    });
+    root.querySelector("[data-today-prev]")?.addEventListener("click", () => {
+      this._moveTodayQuarter(-1);
+    });
+    root.querySelector("[data-today-next]")?.addEventListener("click", () => {
+      this._moveTodayQuarter(1);
     });
     root.querySelectorAll("[data-hour]").forEach(element => {
       element.onclick = () => this._selectCalendarHour(element.dataset.hour);
@@ -578,12 +721,29 @@ class SIGridMonitorPanel extends HTMLElement {
         this._calendarScrollLeft = timeline.scrollLeft;
       }, {passive: true});
     }
+    const todayChart = root.querySelector("[data-today-scroll]");
+    if (todayChart) {
+      todayChart.scrollLeft = this._todayScrollLeft || 0;
+      todayChart.addEventListener("scroll", () => {
+        this._todayScrollLeft = todayChart.scrollLeft;
+      }, {passive: true});
+    }
   }
 
   _render() {
     if (!this.shadowRoot) return;
+    const activeElement = this.shadowRoot.activeElement;
+    const focusState = activeElement?.dataset?.todayControl
+      ? {type: "today-control", value: activeElement.dataset.todayControl}
+      : activeElement?.dataset?.quarter
+        ? {type: "quarter", value: activeElement.dataset.quarter}
+        : activeElement?.dataset?.hour
+          ? {type: "hour", value: activeElement.dataset.hour}
+          : null;
     const priorTimelineScroll = this.shadowRoot.querySelector(".timeline")?.scrollLeft;
     if (priorTimelineScroll != null) this._calendarScrollLeft = priorTimelineScroll;
+    const priorTodayScroll = this.shadowRoot.querySelector("[data-today-scroll]")?.scrollLeft;
+    if (priorTodayScroll != null) this._todayScrollLeft = priorTodayScroll;
     const nextChartDataKey = this._live?.quarter?.start_utc
       ? `${this._entryId}:${this._live.quarter.start_utc}` : null;
     const chartView = chartViewStateForRender(
@@ -599,18 +759,34 @@ class SIGridMonitorPanel extends HTMLElement {
     if (nextChartDataKey) this._chartDataKey = nextChartDataKey;
     this._resetChartScrollOnRender = false;
     const active = this._entries.find(entry => entry.entry_id === this._entryId);
-    this.shadowRoot.innerHTML = `<style>${this._styles()}</style><main><header><div class="brand"><span>SI</span><div><h1>SI Grid Monitor</h1><p>Import-only contractual demand intelligence</p></div></div><div class="meter"><small>Active meter</small>${this._entries.length > 1 ? `<select data-entry>${this._entries.map(entry => `<option value="${esc(entry.entry_id)}" ${entry.entry_id === this._entryId ? "selected" : ""}>${esc(entry.title)}</option>`).join("")}</select>` : `<strong>${esc(active?.title || "None")}</strong>`}</div></header><nav>${[["overview", "OVERVIEW"], ["today", "TODAY"], ["calendar", "TARIFF CALENDAR"]].map(([id, label]) => `<button data-tab="${id}" class="${this._tab === id ? "active" : ""}">${label}</button>`).join("")}</nav>${this._error ? `<div class="error">Connection error: ${esc(this._error)}. The panel will retry automatically.</div>` : ""}${!this._entries.length ? `<section class="card"><h2>No configured meter</h2><p>Complete the SI Grid Monitor integration setup wizard first.</p></section>` : this._tab === "overview" ? this._overview() : this._tab === "today" ? this._today() : this._calendarView()}</main>`;
+    this.shadowRoot.innerHTML = `<style>${this._styles()}</style><style>${this._legendStyles()}</style><main><header><div class="brand"><span>SI</span><div><h1>SI Grid Monitor</h1><p>Import-only contractual demand intelligence</p></div></div><div class="meter"><small>Active meter</small>${this._entries.length > 1 ? `<select data-entry>${this._entries.map(entry => `<option value="${esc(entry.entry_id)}" ${entry.entry_id === this._entryId ? "selected" : ""}>${esc(entry.title)}</option>`).join("")}</select>` : `<strong>${esc(active?.title || "None")}</strong>`}</div></header><nav>${[["overview", "OVERVIEW"], ["today", "TODAY"], ["calendar", "TARIFF CALENDAR"]].map(([id, label]) => `<button data-tab="${id}" class="${this._tab === id ? "active" : ""}">${label}</button>`).join("")}</nav>${this._error ? `<div class="error">Connection error: ${esc(this._error)}. The panel will retry automatically.</div>` : ""}${!this._entries.length ? `<section class="card"><h2>No configured meter</h2><p>Complete the SI Grid Monitor integration setup wizard first.</p></section>` : this._tab === "overview" ? this._overview() : this._tab === "today" ? this._today() : this._calendarView()}</main>`;
     this._bind();
     restoreChartScrollState(
       this.shadowRoot, this._chartScrollPositions, chartView.focused,
     );
     const timeline = this.shadowRoot.querySelector(".timeline");
     if (timeline) timeline.scrollLeft = this._calendarScrollLeft || 0;
+    const todayChart = this.shadowRoot.querySelector("[data-today-scroll]");
+    if (todayChart) todayChart.scrollLeft = this._todayScrollLeft || 0;
+    const focusTarget = focusState?.type === "today-control"
+      ? this.shadowRoot.querySelector(`[data-today-control="${focusState.value}"]`)
+      : focusState?.type === "quarter"
+        ? [...this.shadowRoot.querySelectorAll("[data-quarter]")]
+          .find(element => element.dataset.quarter === focusState.value)
+        : focusState?.type === "hour"
+          ? [...this.shadowRoot.querySelectorAll("[data-hour]")]
+            .find(element => element.dataset.hour === focusState.value)
+          : null;
+    focusTarget?.focus({preventScroll: true});
     this._tick();
   }
 
+  _legendStyles() {
+    return `.legend-line{width:28px;height:6px;min-width:28px;background:none}.legend-line line{fill:none;stroke-width:3}.legend-line .import,.legend-line .energy-actual{stroke:${CHART_SERIES.import.color}}.legend-line .export{stroke:${CHART_SERIES.export.color}}.legend-line .smooth{stroke:${CHART_SERIES.smooth.color}}.legend-line .future{stroke:${CHART_SERIES.future.color};stroke-dasharray:${CHART_SERIES.future.dash}}.legend-line .energy-projection{stroke:${CHART_SERIES.energyProjection.color};stroke-dasharray:${CHART_SERIES.energyProjection.dash}}.legend-line .contract{stroke:${CHART_SERIES.contract.color};stroke-dasharray:${CHART_SERIES.contract.dash}}.legend-line .contract-safety{stroke:${CHART_SERIES.contractSafety.color};stroke-dasharray:${CHART_SERIES.contractSafety.dash}}.legend-line .simulation{stroke:${CHART_SERIES.simulation.color};stroke-dasharray:${CHART_SERIES.simulation.dash}}.legend-line .operational{stroke:${CHART_SERIES.operational.color};stroke-dasharray:${CHART_SERIES.operational.dash}}`;
+  }
+
   _styles() {
-    return `:host{display:block;min-height:100%;font-family:var(--paper-font-body1_-_font-family,system-ui);background:var(--primary-background-color);color:var(--primary-text-color);--line:var(--divider-color,#d6d9de);--card:var(--card-background-color,#fff)}*{box-sizing:border-box}main{max-width:1450px;margin:auto;padding:18px}header,.row,.herohead,.direction,nav{display:flex;align-items:center;gap:12px}header{justify-content:space-between}.brand{display:flex;align-items:center;gap:12px}.brand>span{display:grid;place-items:center;width:48px;height:48px;border:4px solid #15803d;border-left-color:#e11d48;border-radius:50%;font-weight:800}.brand h1{margin:0;font-size:1.45rem}.brand p,.eyebrow,.meter small{margin:2px 0;color:var(--secondary-text-color);font-size:.78rem}.meter{display:flex;flex-direction:column;align-items:flex-end;gap:3px}nav{margin:18px 0;border-bottom:1px solid var(--line)}button,select,input{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:8px;padding:9px 12px;cursor:pointer}nav button{border:0;border-radius:0;font-weight:700}nav .active{border-bottom:3px solid var(--primary-color,#03a9f4);color:var(--primary-color,#03a9f4)}.card{background:var(--card);border-radius:14px;padding:18px;margin:14px 0;box-shadow:var(--ha-card-box-shadow,0 2px 8px #0002)}.herohead{justify-content:space-between}.hero h2{margin:4px 0}.count{font:700 2.2rem ui-monospace}.direction>div{flex:1;padding:14px;border-radius:10px}.import{background:#ef444418;color:#c62828}.export{background:#22c55e18;color:#15803d}.direction b{display:block;font-size:1.7rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:10px;margin:14px 0}.metric{padding:12px;background:color-mix(in srgb,var(--card),var(--primary-text-color) 5%);border-radius:9px}.metric span{display:block;color:var(--secondary-text-color);font-size:.78rem}.metric strong{font-size:1.2rem}.metric small{font-size:.75rem}.metric.good{border-left:4px solid #16a34a}.metric.bad{border-left:4px solid #dc2626}.metric.accent{border-left:4px solid #0284c7}.notice,.empty,.error,.safety{padding:12px;border-radius:8px;background:#0284c715}.error{background:#f59e0b22}.safety{font-size:.85rem;background:#64748b18}svg{width:100%;height:auto;background:color-mix(in srgb,var(--card),var(--primary-text-color) 3%);border-radius:10px}svg .zero{stroke:var(--primary-text-color);stroke-width:1.8}.contractual-target,.energy-contractual-limit,.target-step{stroke:#f59e0b;stroke-width:2;stroke-dasharray:7 4}.operational-target,.energy-operational-target{stroke:#ea580c;stroke-width:2;stroke-dasharray:2 3}.simulation-target,.energy-simulation-target{stroke:#8b5cf6;stroke-width:2;stroke-dasharray:10 3 2 3}.power-grid{stroke:var(--divider-color,#d6d9de);stroke-width:.7}.import-trace{fill:none;stroke:#dc2626;stroke-width:3}.export-trace{fill:none;stroke:#16a34a;stroke-width:3}.smoothed-trace{fill:none;stroke:#38bdf8;stroke-width:2.5}.forecast-continuation{fill:none;stroke:#0284c7;stroke-width:2.5;stroke-dasharray:7 4}.energy-actual{fill:none;stroke:#dc2626;stroke-width:3}.energy-projection{fill:none;stroke:#8b5cf6;stroke-width:2.5;stroke-dasharray:7 4}.energy-zero{stroke:var(--primary-text-color);stroke-width:1}.energy-current{fill:#dc2626;stroke:var(--card);stroke-width:2}.reference-label{paint-order:stroke;stroke:var(--card);stroke-width:4px;stroke-linejoin:round}svg text{fill:var(--secondary-text-color);font-size:12px}.transition-list>div{display:grid;grid-template-columns:1fr 1.4fr 1.2fr;padding:8px;border-bottom:1px solid var(--line)}.daychart{width:100%;overflow-x:auto}.daychart svg{min-width:1000px}.gridline{stroke:var(--divider-color,#d6d9de);stroke-width:1}.import-bar{fill:#e5484d}.export-bar{fill:#2f9e67}.target-step{stroke:#e6a700}.projection{fill:#8b5cf6;stroke:var(--card);stroke-width:1.5}.exceeded{fill:none;stroke:#dc2626;stroke-width:2}.state{fill:transparent;stroke:#94a3b8;stroke-dasharray:3 3}.state.missing,.state.incomplete,.state.unavailable{fill:url(#hatch);stroke:#f59e0b}.state.upcoming{stroke-opacity:.35}.state.provisional_estimate{stroke:#8b5cf6;stroke-width:2}.axis-title{font-weight:700}.quarter-slot{cursor:pointer}.chart-key{font-size:.78rem;color:var(--secondary-text-color);margin:8px 0}.selected-quarter{border:1px solid var(--line);padding:12px;border-radius:10px;margin-top:12px}table{width:100%;border-collapse:collapse;overflow:auto;display:block}th,td{padding:9px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}.chip{display:inline-block;padding:4px 8px;border-radius:12px;color:white}.b1{background:${BLOCK_COLORS[1]}}.b2{background:${BLOCK_COLORS[2]}}.b3{background:${BLOCK_COLORS[3]}}.b4{background:${BLOCK_COLORS[4]}}.b5{background:${BLOCK_COLORS[5]}}.b0{background:#64748b}.timeline{display:flex;overflow-x:auto;gap:3px}.hour{min-width:72px;padding:10px 6px;color:white;display:flex;flex-direction:column;border-radius:7px;text-align:left;border:0}.hour.selected{outline:3px solid var(--primary-color,#03a9f4);outline-offset:-3px}.hour small{font-size:.67rem}.legend{display:flex;gap:8px;margin:15px 0}@media(max-width:700px){main{padding:8px}.brand p{display:none}.herohead{align-items:flex-start}.count{font-size:1.6rem}.direction{flex-direction:column}.direction>div{width:100%}.grid{grid-template-columns:repeat(2,1fr)}.transition-list>div{grid-template-columns:1fr}.card{padding:12px}nav{overflow-x:auto}nav button{white-space:nowrap}.meter{max-width:45%}.reference-label{font-size:10px}}.contractual-safety-target,.energy-contractual-safety-target{stroke:#ea580c;stroke-width:2;stroke-dasharray:2 3}.operational-target,.energy-operational-target{stroke:#0891b2;stroke-width:2.4;stroke-dasharray:10 3 2 3}.simulation-target,.energy-simulation-target{stroke:#8b5cf6;stroke-width:2;stroke-dasharray:12 4}.chart-scroll{width:100%;max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain;-webkit-overflow-scrolling:touch}.chart-scroll svg{display:block;width:max(100%,1120px);min-width:1120px}.chart-legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin:8px 0;font-size:.78rem;color:var(--secondary-text-color)}.chart-legend span{display:inline-flex;align-items:center;gap:6px}.swatch{display:inline-block;width:24px;height:0;border-top:3px solid}.swatch.import,.swatch.energy-actual{border-color:#dc2626}.swatch.export{border-color:#16a34a}.swatch.smooth{border-color:#38bdf8}.swatch.future,.swatch.energy-projection{border-color:#0284c7;border-top-style:dashed}.swatch.contract{border-color:#f59e0b;border-top-style:dashed}.swatch.contract-safety{border-color:#ea580c;border-top-style:dotted}.swatch.simulation{border-color:#8b5cf6;border-top-style:dashed}.swatch.operational{border-color:#0891b2;border-top-style:dashed}.forecast-anchor{fill:var(--card);stroke:#0284c7;stroke-width:4}.time-label{font-size:12px}.axis-title{font-size:13px}@media(max-width:700px){.chart-legend{font-size:.78rem;gap:8px 12px}.chart-key{font-size:.78rem;line-height:1.4}.time-label{font-size:13px}.axis-title{font-size:14px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}`;
+    return `:host{display:block;min-height:100%;font-family:var(--paper-font-body1_-_font-family,system-ui);background:var(--primary-background-color);color:var(--primary-text-color);--line:var(--divider-color,#d6d9de);--card:var(--card-background-color,#fff)}*{box-sizing:border-box}main{max-width:1450px;margin:auto;padding:18px;overflow-x:hidden}header,.row,.herohead,.direction,nav{display:flex;align-items:center;gap:12px}header{justify-content:space-between}.brand{display:flex;align-items:center;gap:12px}.brand>span{display:grid;place-items:center;width:48px;height:48px;border:4px solid #15803d;border-left-color:#e11d48;border-radius:50%;font-weight:800}.brand h1{margin:0;font-size:1.45rem}.brand p,.eyebrow,.meter small{margin:2px 0;color:var(--secondary-text-color);font-size:.78rem}.meter{display:flex;flex-direction:column;align-items:flex-end;gap:3px}nav{margin:18px 0;border-bottom:1px solid var(--line)}button,select,input{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:8px;padding:9px 12px;cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}nav button{border:0;border-radius:0;font-weight:700}nav .active{border-bottom:3px solid var(--primary-color,#03a9f4);color:var(--primary-color,#03a9f4)}.card{background:var(--card);border-radius:14px;padding:18px;margin:14px 0;box-shadow:var(--ha-card-box-shadow,0 2px 8px #0002)}.herohead{justify-content:space-between}.hero h2{margin:4px 0}.count{font:700 2.2rem ui-monospace}.direction>div{flex:1;padding:14px;border-radius:10px}.import{background:#ef444418;color:#c62828}.export{background:#22c55e18;color:#15803d}.direction b{display:block;font-size:1.7rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:10px;margin:14px 0}.metric{padding:12px;background:color-mix(in srgb,var(--card),var(--primary-text-color) 5%);border-radius:9px}.metric span{display:block;color:var(--secondary-text-color);font-size:.78rem}.metric strong{font-size:1.2rem;overflow-wrap:anywhere}.metric small{font-size:.75rem}.metric.good{border-left:4px solid #16a34a}.metric.bad{border-left:4px solid #dc2626}.metric.accent{border-left:4px solid #0284c7}.notice,.empty,.error,.safety{padding:12px;border-radius:8px;background:#0284c715}.error{background:#f59e0b22}.safety{font-size:.85rem;background:#64748b18}svg{width:100%;height:auto;background:color-mix(in srgb,var(--card),var(--primary-text-color) 3%);border-radius:10px}svg .zero{stroke:var(--primary-text-color);stroke-width:1.8}.contractual-target,.energy-contractual-limit,.target-step{stroke:${CHART_SERIES.contract.color};stroke-width:2;stroke-dasharray:${CHART_SERIES.contract.dash}}.contractual-safety-target,.energy-contractual-safety-target{stroke:${CHART_SERIES.contractSafety.color};stroke-width:2;stroke-dasharray:${CHART_SERIES.contractSafety.dash}}.operational-target,.energy-operational-target{stroke:${CHART_SERIES.operational.color};stroke-width:2.4;stroke-dasharray:${CHART_SERIES.operational.dash}}.simulation-target,.energy-simulation-target{stroke:${CHART_SERIES.simulation.color};stroke-width:2;stroke-dasharray:${CHART_SERIES.simulation.dash}}.power-grid{stroke:var(--divider-color,#d6d9de);stroke-width:.7}.import-trace{fill:none;stroke:${CHART_SERIES.import.color};stroke-width:3}.export-trace{fill:none;stroke:${CHART_SERIES.export.color};stroke-width:3}.smoothed-trace{fill:none;stroke:${CHART_SERIES.smooth.color};stroke-width:2.5}.forecast-continuation{fill:none;stroke:${CHART_SERIES.future.color};stroke-width:2.5;stroke-dasharray:${CHART_SERIES.future.dash}}.energy-actual{fill:none;stroke:${CHART_SERIES.energyActual.color};stroke-width:3}.energy-projection{fill:none;stroke:${CHART_SERIES.energyProjection.color};stroke-width:2.5;stroke-dasharray:${CHART_SERIES.energyProjection.dash}}.energy-current{fill:${CHART_SERIES.energyActual.color};stroke:var(--card);stroke-width:2}.reference-label{paint-order:stroke;stroke:var(--card);stroke-width:4px;stroke-linejoin:round}svg text{fill:var(--secondary-text-color);font-size:12px}.transition-list>div{display:grid;grid-template-columns:1fr 1.4fr 1.2fr;padding:8px;border-bottom:1px solid var(--line)}.daychart{width:100%;max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain}.daychart svg{min-width:1000px}.gridline{stroke:var(--divider-color,#d6d9de);stroke-width:1}.import-bar{fill:#e5484d}.export-bar{fill:#2f9e67}.target-step{stroke:#e6a700}.projection{fill:#8b5cf6;stroke:var(--card);stroke-width:1.5}.exceeded{fill:none;stroke:#dc2626;stroke-width:2}.state{fill:transparent;stroke:#94a3b8;stroke-dasharray:3 3}.state.missing,.state.incomplete,.state.unavailable{fill:url(#hatch);stroke:#f59e0b}.state.upcoming{stroke-opacity:.35}.state.provisional_estimate{stroke:#8b5cf6;stroke-width:2}.quarter-selection{fill:none;stroke:var(--primary-color,#03a9f4);stroke-width:3}.axis-title{font-weight:700}.quarter-slot{cursor:pointer}.quarter-slot:focus{outline:none}.quarter-selector{display:grid;grid-template-columns:auto minmax(220px,1fr) auto;gap:8px;margin:12px 0}.chart-key{font-size:.78rem;color:var(--secondary-text-color);margin:8px 0}.selected-quarter{border:1px solid var(--line);padding:12px;border-radius:10px;margin-top:12px}table{width:100%;border-collapse:collapse;overflow:auto;display:block}th,td{padding:9px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}.chip{display:inline-block;padding:4px 8px;border-radius:12px;color:white}.b1{background:${BLOCK_COLORS[1]}}.b2{background:${BLOCK_COLORS[2]}}.b3{background:${BLOCK_COLORS[3]}}.b4{background:${BLOCK_COLORS[4]}}.b5{background:${BLOCK_COLORS[5]}}.b0{background:#64748b}.timeline{display:flex;overflow-x:auto;gap:3px}.hour{min-width:72px;padding:10px 6px;color:white;display:flex;flex-direction:column;border-radius:7px;text-align:left;border:0}.hour.selected{outline:3px solid var(--primary-color,#03a9f4);outline-offset:-3px}.hour small{font-size:.67rem}.legend{display:flex;gap:8px;margin:15px 0}.chart-scroll{width:100%;max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain;-webkit-overflow-scrolling:touch}.chart-scroll svg{display:block;width:max(100%,1120px);min-width:1120px}.chart-legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin:8px 0;font-size:.78rem;color:var(--secondary-text-color)}.chart-legend span{display:inline-flex;align-items:center;gap:6px}.swatch{display:inline-block;width:24px;height:0;border-top:3px solid}.swatch.import,.swatch.energy-actual{border-color:${CHART_SERIES.import.color}}.swatch.export{border-color:${CHART_SERIES.export.color}}.swatch.smooth{border-color:${CHART_SERIES.smooth.color}}.swatch.future{border-color:${CHART_SERIES.future.color};border-top-style:dashed}.swatch.energy-projection{border-color:${CHART_SERIES.energyProjection.color};border-top-style:dashed}.swatch.contract{border-color:${CHART_SERIES.contract.color};border-top-style:dashed}.swatch.contract-safety{border-color:${CHART_SERIES.contractSafety.color};border-top-style:dotted}.swatch.simulation{border-color:${CHART_SERIES.simulation.color};border-top-style:dashed}.swatch.operational{border-color:${CHART_SERIES.operational.color};border-top-style:dashed}.forecast-anchor{fill:var(--card);stroke:${CHART_SERIES.future.color};stroke-width:4}.time-label{font-size:12px}.axis-title{font-size:13px}@media(max-width:700px){main{padding:8px}.brand p{display:none}.herohead{align-items:flex-start}.count{font-size:1.6rem}.direction{flex-direction:column}.direction>div{width:100%}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.transition-list>div{grid-template-columns:1fr}.card{padding:12px}nav{overflow-x:auto}nav button{white-space:nowrap}.meter{max-width:45%}.reference-label{font-size:10px}.quarter-selector{grid-template-columns:1fr 1fr}.quarter-selector select{grid-column:1/-1;grid-row:1}.chart-legend{font-size:.78rem;gap:8px 12px}.chart-key{font-size:.78rem;line-height:1.4}.time-label{font-size:13px}.axis-title{font-size:14px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}`;
   }
 }
 

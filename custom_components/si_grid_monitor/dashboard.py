@@ -253,9 +253,11 @@ async def ws_day(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> N
         )
         rows = [_row(row) for row in stored]
         live = runtime.dashboard_current()
-        now = datetime.fromisoformat(str(live.get("now_utc"))).astimezone(UTC) if live.get(
-            "now_utc"
-        ) else datetime.now(UTC)
+        now = (
+            datetime.fromisoformat(str(live.get("now_utc"))).astimezone(UTC)
+            if live.get("now_utc")
+            else datetime.now(UTC)
+        )
         response = build_day_view(
             runtime=runtime,
             local_date=local_date,
