@@ -291,6 +291,10 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             DEFAULT_SUSTAINED_HORIZON_MINUTES,
         )
         margin, margin_selector = _number_field(CONF_SAFETY_MARGIN_KW, DEFAULT_SAFETY_MARGIN_KW)
+        simulation_target, simulation_target_selector = _number_field(
+            CONF_SIMULATION_TARGET_KW,
+            float(self._values.get(CONF_TARGET_KW, DEFAULT_TARGET_KW)),
+        )
         return self.async_show_form(
             step_id="calculation",
             data_schema=vol.Schema(
@@ -306,6 +310,10 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     vol.Required(
                         CONF_ALLOW_PROVISIONAL_TARIFF, default=False
                     ): selector.BooleanSelector(),
+                    vol.Required(
+                        CONF_SIMULATION_ENABLED, default=False
+                    ): selector.BooleanSelector(),
+                    simulation_target: simulation_target_selector,
                 }
             ),
         )
@@ -398,6 +406,15 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
             CONF_SAFETY_MARGIN_KW,
             float(current.get(CONF_SAFETY_MARGIN_KW, DEFAULT_SAFETY_MARGIN_KW)),
         )
+        simulation_target, simulation_target_selector = _number_field(
+            CONF_SIMULATION_TARGET_KW,
+            float(
+                current.get(
+                    CONF_SIMULATION_TARGET_KW,
+                    current.get(CONF_TARGET_KW, DEFAULT_TARGET_KW),
+                )
+            ),
+        )
         return self.async_show_form(
             step_id="settings",
             data_schema=vol.Schema(
@@ -421,6 +438,11 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
                         CONF_ALLOW_PROVISIONAL_TARIFF,
                         default=bool(current.get(CONF_ALLOW_PROVISIONAL_TARIFF, False)),
                     ): selector.BooleanSelector(),
+                    vol.Required(
+                        CONF_SIMULATION_ENABLED,
+                        default=bool(current.get(CONF_SIMULATION_ENABLED, False)),
+                    ): selector.BooleanSelector(),
+                    simulation_target: simulation_target_selector,
                 }
             ),
         )

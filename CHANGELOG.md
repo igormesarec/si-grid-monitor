@@ -4,6 +4,48 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-19
+
+- Fixed the historical-quarter and Today WebSocket crash caused by treating
+  `sqlite3.Row` values as column names; both paths now enumerate `row.keys()`.
+- Added safe history error codes, server-side traceback logging and explicit
+  retry states so archive failures are never presented as an empty archive.
+- Localized the selected tariff-calendar weekday and preserved the horizontal
+  timeline position, hour highlight and keyboard focus on 23/24/25-hour days.
+- Added an import/export live-power chart with shared 1 kW support lines and an
+  import-only cumulative quarter-energy chart with target and projection.
+- Separated historical smoothed import from the dashed future-power assumption
+  supplied by the engine; the final 15-minute average remains a labeled result,
+  never an instantaneous power series.
+- Aligned the last historical smoothing point with the backend forecast anchor
+  using the engine's time-weighted, stale-limited coverage rules across varying
+  sensor update intervals; gaps are never bridged.
+- Made cumulative-energy history gap-aware: only fully supported, reconciled
+  traces are connected, while incomplete/restarted traces show the authoritative
+  backend point without fabricating earlier energy.
+- Distinguished the verified distributor limit, contractual safety reference,
+  temporary simulation threshold and actual engine operational target on both
+  live charts (for example 3.50 - 0.20 versus 2.50 - 0.20 = 2.30 kW).
+- Suppressed a projected line and user-facing value whenever its final imported
+  energy is lower than energy already imported, while retaining the raw value
+  internally for diagnosis and showing the reason.
+- Added wrapping legends, explicit power/energy units, local time endpoints and
+  non-overlapping reference labels for narrow Android light/dark layouts.
+- Made live SVGs horizontally scroll inside their cards at their native 1120-pixel
+  minimum drawing width, preserving labels and strokes without overflowing the
+  full panel at 320/360/390/768-pixel viewport widths.
+- Added GMT-offset chart times for unambiguous DST rollback intervals and a
+  distinct forecast-anchor marker when post-rollover trace coverage cannot
+  support a connected historical smoothing path.
+- Preserved independent power/energy chart scroll positions and focused chart
+  across 10-second refreshes, resetting them only for a meter or quarter change.
+- Moved shared scrolling, legend and line styling into the permanent component
+  stylesheet so the energy chart remains scrollable when no live trace exists.
+- Exposed the existing temporary simulation threshold through setup and Options
+  without changing dated assignments or confirmed archive statistics.
+- Kept SQLite schema 5, configuration epochs, entity identities and archived
+  measurements unchanged.
+
 ## [0.4.0] - 2026-10-18
 
 - Added a guided six-step setup flow and fixed untouched dropdown defaults.

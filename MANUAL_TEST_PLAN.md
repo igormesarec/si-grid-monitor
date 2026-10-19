@@ -1,4 +1,4 @@
-# SI Grid Monitor V0.4 - Real Home Assistant Test Plan
+# SI Grid Monitor V0.4.1 - Real Home Assistant Test Plan
 
 Use a disposable or backed-up Home Assistant instance. Never infer physical
 connection capacity from CAN ADD values.
@@ -146,3 +146,78 @@ software behavior only; distributor readings remain authoritative.
 10. On spring-forward, normal and autumn-fallback dates verify 92, 96 and 100 fixed-quarter slots. For the repeated local hour, verify the archive detail labels show distinct UTC offsets.
 11. Compare the sum of B1-B5 valid counts, import/export energy and confirmed exceedances with the daily totals. Add incomplete, provisional, unknown-configuration and simulation rows in a disposable test archive and confirm none become confirmed contractual exceedances.
 12. Disconnect/reconnect the Home Assistant frontend and reload the integration. Confirm there is one refresh timer, one sidebar item, automatic retry after a temporary WebSocket error, and no per-second Recorder writes from the countdown.
+
+## V0.4.1 hotfix acceptance
+
+1. With at least eight schema-5 quarter rows, open Previous quarter and TODAY.
+   Confirm both load and Home Assistant logs contain no `IndexError: No item
+   with that key` from `dashboard.py`.
+2. Test a genuinely empty day and confirm it is shown as empty/missing. Then
+   temporarily make the archive unavailable and confirm a useful error with a
+   Retry button appears instead of “No archived summary exists” or perpetual
+   “Loading day…”. Restore access and retry.
+3. Open Tariff Calendar for 18 October 2026 in English and Slovenian. Confirm
+   the heading contains Sunday / nedelja. Scroll to 22:00, select it, and verify
+   the scroll position and highlight stay in place while details update.
+4. Repeat calendar selection on the 23-hour spring-forward and 25-hour
+   autumn-fallback days. Verify repeated hours remain distinguishable by offset
+   and fold and arrow-key navigation preserves focus.
+5. On Overview, verify the live chart uses the same kW scale for import, export,
+   smoothing and target with visible 1 kW support lines. Verify the separate
+   energy-progress chart accumulates only imported kWh; export never lowers it.
+6. Enable the temporary simulation threshold in setup/Options and verify the
+   real dated B1–B5 schedule and confirmed archive statistics remain unchanged.
+7. Upgrade from V0.4.0 and confirm the SQLite file still reports schema 5, all
+   prior rows/configuration epochs remain byte-for-byte semantically unchanged,
+   existing entity unique IDs remain stable and no historical recalculation is
+   triggered.
+8. During a quarter with complete 120-second coverage, confirm the solid blue
+   historical-smoothed line stops at the forecast anchor and the dashed blue
+   future assumption continues to the exact quarter boundary. Confirm the
+   separately labeled projected final quarter average is not plotted as an
+   instantaneous power value. Repeat with 15-, 30- and 55-second source update
+   intervals and confirm the solid line reaches the same backend anchor.
+9. Create a sensor gap longer than the stale limit and restart HA mid-quarter.
+   Confirm measured power paths remain broken across the gap. The energy chart
+   must show the authoritative current imported-kWh point and explain why its
+   preceding trajectory is unavailable instead of distributing prior energy.
+10. Configure 3.50 kW contracted power, a 0.20 kW safety margin and a 2.50 kW
+    simulation threshold. Confirm both charts separately identify 3.50 kW as
+    the distributor limit, 3.30 kW as its safety reference, 2.50 kW as the
+    simulation threshold and 2.30 kW as the target actually used by the engine.
+11. With 0.30 kWh imported and a 2.80 kW smoothed final-demand forecast, verify
+    the dashed energy projection begins at exactly 0.30 kWh and ends at 0.70
+    kWh. It must never fall when the source exports.
+12. Enable simulation and confirm its purple threshold is explicitly labeled
+    SIMULATION and never replaces or masquerades as a confirmed distributor
+    line. Disable the assignment/provisional rule and confirm no contractual
+    line is invented.
+13. Repeat on narrow mobile, tablet and desktop layouts in light/dark themes;
+    axes, kW/kWh units, time endpoints, wrapping legends and forecast lines must
+    remain readable, reference labels must not overlap and the 1 kW
+    positive/negative grid must remain symmetric.
+14. Inject or capture a diagnostic forecast whose projected final energy is
+    lower than imported energy already accumulated. Confirm neither chart nor
+    metric presents that projection; an explanatory unavailable reason appears.
+15. Exercise normal updates, a stale gap, sufficient recovery coverage, a fixed
+    quarter rollover and a mid-quarter restart. Confirm no smoothing line bridges
+    unsupported time and a new quarter starts from its own backend total.
+16. In Android Home Assistant, test exact content widths of 320, 360, 390 and
+    768 pixels. Each live chart must scroll horizontally inside its own card at
+    narrow widths; SVG text and strokes must retain readable size and the whole
+    dashboard must not acquire a horizontal scrollbar.
+17. Select quarters around the 25 October 2026 rollback. Confirm the two local
+    02:xx intervals show different `GMT+2` and `GMT+1` labels (or CEST/CET),
+    including at chart endpoints.
+18. During the first 120 seconds after a quarter rollover, verify that inherited
+    backend smoothing is shown as an outlined forecast anchor and dashed future
+    assumption when the current-quarter trace cannot support a solid smoothing
+    trajectory. The UI must not connect that anchor to unsupported history.
+19. Scroll the live power and cumulative energy charts to different horizontal
+    positions. Leave keyboard focus on each chart in turn and wait through at
+    least two automatic 10-second refreshes. Confirm both positions remain
+    independent and the focused chart remains focused without page jumping.
+20. Immediately after rollover, while the live trace is empty, horizontally
+    scroll the cumulative energy chart and wait for refresh. Confirm it remains
+    styled and scrollable. Switching meters must reset both chart positions;
+    ordinary refreshes within the same meter and quarter must not.

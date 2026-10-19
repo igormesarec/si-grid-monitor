@@ -219,6 +219,42 @@ class GridMonitorRuntime:
         projection = snapshot.projection
         sustained = self.sustained_forecast
         quarter_start = snapshot.bounds.start_utc
+        settings = self.settings
+        safety_margin_kw = float(settings[CONF_SAFETY_MARGIN_KW])
+        simulation_enabled = bool(settings[CONF_SIMULATION_ENABLED])
+        confirmed_contractual_target_kw = (
+            self.target_for_tariff(tariff)
+            if tariff is not None and tariff.rule_status == RuleStatus.OFFICIAL
+            else None
+        )
+        contractual_operational_target_kw = (
+            max(0.0, confirmed_contractual_target_kw - safety_margin_kw)
+            if confirmed_contractual_target_kw is not None
+            else None
+        )
+        smoothed_future_import_kw = (
+            snapshot.smoothed_import.value_kw
+            if projection.forecast_smoothed_kw is not None
+            and snapshot.smoothed_import.complete
+            else None
+        )
+        if smoothed_future_import_kw is not None and (
+            simulation_enabled
+            or (tariff is not None and tariff.rule_status == RuleStatus.PROVISIONAL)
+        ):
+            smoothed_forecast_reason = self.contractual_status_reason
+        elif smoothed_future_import_kw is not None:
+            smoothed_forecast_reason = None
+        elif projection.forecast_smoothed_kw is None and self.contractual_status_reason:
+            smoothed_forecast_reason = self.contractual_status_reason
+        elif snapshot.input_stale:
+            smoothed_forecast_reason = "latest source measurement is stale"
+        else:
+            smoothed_forecast_reason = (
+                "smoothing window has insufficient valid coverage: "
+                f"{snapshot.smoothed_import.coverage_seconds:.1f}/"
+                f"{int(settings[CONF_SMOOTHING_SECONDS])} seconds"
+            )
         trace = [
             {"timestamp": sample.timestamp_utc.isoformat(), "signed_kw": sample.signed_kw}
             for sample in self.engine.buffer.samples
@@ -266,6 +302,15 @@ class GridMonitorRuntime:
                 "rule_status": tariff.rule_status.value if tariff else None,
                 "rule_version": tariff.rule_version if tariff else None,
                 "target_kw": self.effective_target_kw,
+                "contractual_target_kw": confirmed_contractual_target_kw,
+                "contractual_operational_target_kw": contractual_operational_target_kw,
+                "safety_margin_kw": safety_margin_kw,
+                "simulation_enabled": simulation_enabled,
+                "simulation_target_kw": (
+                    float(settings[CONF_SIMULATION_TARGET_KW])
+                    if simulation_enabled
+                    else None
+                ),
                 "assignment_effective_from": (
                     assignment.effective_from.isoformat() if assignment else None
                 ),
@@ -280,6 +325,27 @@ class GridMonitorRuntime:
                 "allowed_remaining_import_kw": projection.allowed_remaining_import_kw,
                 "forecast_instant_kw": projection.forecast_instant_kw,
                 "forecast_smoothed_kw": projection.forecast_smoothed_kw,
+                "smoothed_future_import_kw": smoothed_future_import_kw,
+                "smoothed_future_anchor_utc": (
+                    snapshot.now_utc.isoformat() if smoothed_future_import_kw is not None else None
+                ),
+                "smoothed_future_end_utc": (
+                    snapshot.bounds.end_utc.isoformat()
+                    if smoothed_future_import_kw is not None
+                    else None
+                ),
+                "smoothed_future_quality": (
+                    "simulation"
+                    if smoothed_future_import_kw is not None and simulation_enabled
+                    else "provisional"
+                    if smoothed_future_import_kw is not None
+                    and tariff is not None
+                    and tariff.rule_status == RuleStatus.PROVISIONAL
+                    else "estimated"
+                    if smoothed_future_import_kw is not None
+                    else "unavailable"
+                ),
+                "smoothed_future_reason": smoothed_forecast_reason,
                 "forecast_instant_utilization_pct": (projection.forecast_instant_utilization_pct),
                 "forecast_smoothed_utilization_pct": (projection.forecast_smoothed_utilization_pct),
                 "current_utilization_pct": projection.current_utilization_pct,
@@ -314,6 +380,7 @@ class GridMonitorRuntime:
             "last_completed_import_demand_kw": self.last_completed_import_demand_kw,
             "last_completed_signed_average_kw": self.last_completed_signed_average_kw,
             "trace": trace,
+            "trace_stale_after_seconds": DEFAULT_STALE_AFTER_SECONDS,
             "detailed_trace_provenance": "bounded_runtime_samples",
         }
 
