@@ -34,7 +34,7 @@ const esc = value => String(value ?? "").replace(/[&<>"']/g, character => ({
 const localDate = value => ljubljanaDate(value);
 const localTime = value => ljubljanaTimeLabel(value);
 
-class SIGridMonitorPanel extends HTMLElement {
+export class SIGridMonitorPanel extends HTMLElement {
   constructor() {
     super();
     this.attachShadow({mode: "open"});
@@ -43,6 +43,7 @@ class SIGridMonitorPanel extends HTMLElement {
     this._entries = [];
     this._selectedDate = localDate();
     this._gate = new RequestGate();
+    this._historyGate = new RequestGate();
     this._resetEntryState();
   }
 
@@ -66,6 +67,7 @@ class SIGridMonitorPanel extends HTMLElement {
     this._timer = null;
     this._refresh = null;
     this._gate.invalidate();
+    this._historyGate.invalidate();
   }
 
   _resetEntryState() {
@@ -80,6 +82,9 @@ class SIGridMonitorPanel extends HTMLElement {
     this._historicalDate = null;
     this._historicalError = null;
     this._historicalLoading = false;
+    this._historicalRequestOwner = null;
+    this._historicalRequestPromise = null;
+    this._historicalRequestToken = null;
     this._selectedHourUtc = null;
     this._selectedTodayQuarterUtc = null;
     this._todaySelectionMessage = null;
@@ -113,6 +118,7 @@ class SIGridMonitorPanel extends HTMLElement {
       if (entryId !== this._entryId) {
         this._entryId = entryId;
         this._gate.switchEntry(entryId);
+        this._historyGate.switchEntry(entryId);
         this._resetEntryState();
       }
       await this._loadTab();
@@ -130,6 +136,7 @@ class SIGridMonitorPanel extends HTMLElement {
     if (entryId === this._entryId) return;
     this._entryId = entryId;
     this._gate.switchEntry(entryId);
+    this._historyGate.switchEntry(entryId);
     this._resetEntryState();
     this._render();
     await this._loadTab();
@@ -162,24 +169,16 @@ class SIGridMonitorPanel extends HTMLElement {
         const selectedQuarter = (day.quarters || []).find(
           item => item.start_utc === this._selectedTodayQuarterUtc,
         );
-        if (todayQuarterAction(selectedQuarter) === "archive"
-            && this._historicalStart !== selectedQuarter.start_utc) {
-          try {
-            this._historical = await this._call(
-              "quarter", {start_utc: selectedQuarter.start_utc}, entryId,
-            );
-            if (!this._gate.accepts(token)) return;
-            this._historicalStart = selectedQuarter.start_utc;
-            this._historicalDate = this._selectedDate;
-            this._historicalError = null;
-          } catch (error) {
-            if (!this._gate.accepts(token)) return;
-            this._historical = null;
-            this._historicalStart = selectedQuarter.start_utc;
-            this._historicalDate = this._selectedDate;
-            this._historicalError = historyErrorMessage("quarter", error);
-          }
+        if (todayQuarterAction(selectedQuarter) === "archive") {
+          await this._loadHistoricalQuarter(selectedQuarter.start_utc, {
+            entryId, selectedDate: this._selectedDate, render: false,
+          });
+          if (!this._gate.accepts(token)) return;
         } else if (todayQuarterAction(selectedQuarter) !== "archive") {
+          this._historyGate.invalidate();
+          this._historicalRequestOwner = null;
+          this._historicalRequestPromise = null;
+          this._historicalRequestToken = null;
           this._historical = null;
           this._historicalStart = null;
           this._historicalDate = null;
@@ -231,6 +230,7 @@ class SIGridMonitorPanel extends HTMLElement {
 
   async _setDate(value) {
     this._selectedDate = value;
+    this._historyGate.invalidate();
     this._selectedHourUtc = null;
     this._selectedTodayQuarterUtc = null;
     this._todaySelectionMessage = null;
@@ -239,6 +239,9 @@ class SIGridMonitorPanel extends HTMLElement {
     this._historicalDate = null;
     this._historicalError = null;
     this._historicalLoading = false;
+    this._historicalRequestOwner = null;
+    this._historicalRequestPromise = null;
+    this._historicalRequestToken = null;
     this._calendarScrollLeft = 0;
     this._todayScrollLeft = 0;
     if (this._tab === "today") {
@@ -258,31 +261,68 @@ class SIGridMonitorPanel extends HTMLElement {
     await this._setDate(localDate(selected));
   }
 
-  async _quarter(startUtc) {
-    if (!startUtc) return;
-    const token = this._gate.invalidate();
-    const entryId = this._entryId;
+  async _loadHistoricalQuarter(startUtc, {
+    entryId = this._entryId,
+    selectedDate = localDate(new Date(startUtc)),
+    render = true,
+    force = false,
+  } = {}) {
+    if (!startUtc || !entryId) return null;
+    const owner = `${entryId}|${selectedDate}|${startUtc}`;
+    if (!force && owner === this._historicalRequestOwner) {
+      if (this._historicalRequestPromise && this._historicalRequestToken
+          && this._historyGate.accepts(this._historicalRequestToken)) {
+        return this._historicalRequestPromise;
+      }
+      this._historicalRequestPromise = null;
+      this._historicalRequestToken = null;
+      this._historicalLoading = false;
+      if (this._historical || this._historicalError) return this._historical;
+    }
+    const token = this._historyGate.invalidate();
+    this._historicalRequestOwner = owner;
     this._historicalStart = startUtc;
-    this._historicalDate = localDate(new Date(startUtc));
+    this._historicalDate = selectedDate;
     this._historical = null;
     this._historicalError = null;
     this._historicalLoading = true;
-    this._render();
-    try {
-      const historical = await this._call("quarter", {start_utc: startUtc}, entryId);
-      if (!this._gate.accepts(token)) return;
-      this._historical = historical;
-      this._historicalError = null;
-      this._error = null;
-    } catch (error) {
-      if (this._gate.accepts(token)) {
-        this._historical = null;
-        this._historicalError = historyErrorMessage("quarter", error);
+    this._historicalRequestToken = token;
+    if (render) this._render();
+    let request;
+    request = (async () => {
+      try {
+        const historical = await this._call("quarter", {start_utc: startUtc}, entryId);
+        if (!this._historyGate.accepts(token)
+            || this._historicalRequestOwner !== owner) return null;
+        this._historical = historical;
+        this._historicalError = null;
+        this._error = null;
+        return historical;
+      } catch (error) {
+        if (this._historyGate.accepts(token)
+            && this._historicalRequestOwner === owner) {
+          this._historical = null;
+          this._historicalError = historyErrorMessage("quarter", error);
+        }
+        return null;
+      } finally {
+        if (this._historyGate.accepts(token)
+            && this._historicalRequestOwner === owner) {
+          this._historicalLoading = false;
+          if (this._historicalRequestPromise === request) {
+            this._historicalRequestPromise = null;
+            this._historicalRequestToken = null;
+          }
+          if (render) this._render();
+        }
       }
-    } finally {
-      if (this._gate.accepts(token)) this._historicalLoading = false;
-    }
-    this._render();
+    })();
+    this._historicalRequestPromise = request;
+    return request;
+  }
+
+  async _quarter(startUtc, {force = false} = {}) {
+    return this._loadHistoricalQuarter(startUtc, {force});
   }
 
   async _selectTodayQuarter(startUtc, focus = false) {
@@ -303,7 +343,10 @@ class SIGridMonitorPanel extends HTMLElement {
     if (action === "archive") {
       await this._quarter(startUtc);
     } else {
-      this._gate.invalidate();
+      this._historyGate.invalidate();
+      this._historicalRequestOwner = null;
+      this._historicalRequestPromise = null;
+      this._historicalRequestToken = null;
       this._historical = null;
       this._historicalStart = null;
       this._historicalDate = null;
@@ -572,9 +615,10 @@ class SIGridMonitorPanel extends HTMLElement {
       const exceeded = item.confirmed_exceeded ? `<rect class="exceeded" x="${item.centerX - model.slot * 0.42}" y="${slotTop}" width="${model.slot * 0.84}" height="${slotHeight}"/>` : "";
       const projection = item.display_status === "live" && item.projected_import_demand_kw != null
         ? `<circle class="projection" cx="${item.centerX}" cy="${model.valueToY(item.projected_import_demand_kw)}" r="4"/>` : "";
+      const hitArea = `<rect class="quarter-hit-area" x="${item.centerX - model.slot / 2}" y="${slotTop}" width="${model.slot}" height="${slotHeight}"/>`;
       const selection = item.start_utc === this._selectedTodayQuarterUtc
         ? `<rect class="quarter-selection" x="${item.centerX - model.slot * 0.46}" y="${slotTop}" width="${model.slot * 0.92}" height="${slotHeight}"/>` : "";
-      return `<g class="${esc(classes.join(" "))}" tabindex="0" role="button" aria-pressed="${item.start_utc === this._selectedTodayQuarterUtc}" data-quarter="${esc(item.start_utc)}" data-status="${esc(item.display_status)}" aria-label="${esc(`${localQuarterLabel(item.start_utc)}; ${dayStatusLabel(item)}; import ${fmt(item.importKw)} kW; export ${fmt(item.exportKw)} kW; target ${fmt(item.targetKw)} kW`)}">${stateRect}${importBar}${exportBar}${exceeded}${projection}${selection}</g>`;
+      return `<g class="${esc(classes.join(" "))}" tabindex="0" role="button" aria-pressed="${item.start_utc === this._selectedTodayQuarterUtc}" data-quarter="${esc(item.start_utc)}" data-status="${esc(item.display_status)}" aria-label="${esc(`${localQuarterLabel(item.start_utc)}; ${dayStatusLabel(item)}; import ${fmt(item.importKw)} kW; export ${fmt(item.exportKw)} kW; target ${fmt(item.targetKw)} kW`)}">${hitArea}${stateRect}${importBar}${exportBar}${exceeded}${projection}${selection}</g>`;
     }).join("");
     const targets = model.targetSegments.map(segment => `<line class="target-step" x1="${segment.x1}" x2="${segment.x2}" y1="${segment.y}" y2="${segment.y}"/>`).join("");
     const axis = ticks.map(value => `<g><line class="gridline ${value === 0 ? "zero" : ""}" x1="${model.margin.left}" x2="${model.width - model.margin.right}" y1="${model.valueToY(value)}" y2="${model.valueToY(value)}"/><text x="4" y="${model.valueToY(value) + 4}">${value > 0 ? "+" : value < 0 ? "−" : ""}${fmt(Math.abs(value))} kW</text></g>`).join("");
@@ -590,6 +634,9 @@ class SIGridMonitorPanel extends HTMLElement {
     }
     if (["completed", "simulation"].includes(selected.display_status)) {
       return `<div class="selected-quarter"><h3>${esc(heading)}</h3>${this._historicalCard()}</div>`;
+    }
+    if (selected.display_status === "live_unavailable") {
+      return `<div class="selected-quarter"><h3>${esc(heading)}</h3><p class="empty">Current measurements are unavailable. SI Grid Monitor is waiting for a valid live source reading; this is not a missing historical archive record.</p></div>`;
     }
     return `<div class="selected-quarter"><h3>${esc(heading)}</h3><p class="empty">${esc(this._todaySelectionMessage || (selected.display_status === "upcoming" ? "Not measured yet." : "No valid archived measurement exists."))}</p></div>`;
   }
@@ -681,7 +728,7 @@ class SIGridMonitorPanel extends HTMLElement {
       this._render();
     });
     root.querySelector("[data-retry-quarter]")?.addEventListener("click", () => {
-      if (this._historicalStart) this._quarter(this._historicalStart);
+      if (this._historicalStart) this._quarter(this._historicalStart, {force: true});
     });
     root.querySelector("[data-retry-day]")?.addEventListener("click", () => this._loadTab());
     root.querySelector("[data-retry-calendar]")?.addEventListener("click", () => this._loadTab());
@@ -782,7 +829,7 @@ class SIGridMonitorPanel extends HTMLElement {
   }
 
   _legendStyles() {
-    return `.legend-line{width:28px;height:6px;min-width:28px;background:none}.legend-line line{fill:none;stroke-width:3}.legend-line .import,.legend-line .energy-actual{stroke:${CHART_SERIES.import.color}}.legend-line .export{stroke:${CHART_SERIES.export.color}}.legend-line .smooth{stroke:${CHART_SERIES.smooth.color}}.legend-line .future{stroke:${CHART_SERIES.future.color};stroke-dasharray:${CHART_SERIES.future.dash}}.legend-line .energy-projection{stroke:${CHART_SERIES.energyProjection.color};stroke-dasharray:${CHART_SERIES.energyProjection.dash}}.legend-line .contract{stroke:${CHART_SERIES.contract.color};stroke-dasharray:${CHART_SERIES.contract.dash}}.legend-line .contract-safety{stroke:${CHART_SERIES.contractSafety.color};stroke-dasharray:${CHART_SERIES.contractSafety.dash}}.legend-line .simulation{stroke:${CHART_SERIES.simulation.color};stroke-dasharray:${CHART_SERIES.simulation.dash}}.legend-line .operational{stroke:${CHART_SERIES.operational.color};stroke-dasharray:${CHART_SERIES.operational.dash}}`;
+    return `.legend-line{width:28px;height:6px;min-width:28px;background:none}.legend-line line{fill:none;stroke-width:3}.legend-line .import,.legend-line .energy-actual{stroke:${CHART_SERIES.import.color}}.legend-line .export{stroke:${CHART_SERIES.export.color}}.legend-line .smooth{stroke:${CHART_SERIES.smooth.color}}.legend-line .future{stroke:${CHART_SERIES.future.color};stroke-dasharray:${CHART_SERIES.future.dash}}.legend-line .energy-projection{stroke:${CHART_SERIES.energyProjection.color};stroke-dasharray:${CHART_SERIES.energyProjection.dash}}.legend-line .contract{stroke:${CHART_SERIES.contract.color};stroke-dasharray:${CHART_SERIES.contract.dash}}.legend-line .contract-safety{stroke:${CHART_SERIES.contractSafety.color};stroke-dasharray:${CHART_SERIES.contractSafety.dash}}.legend-line .simulation{stroke:${CHART_SERIES.simulation.color};stroke-dasharray:${CHART_SERIES.simulation.dash}}.legend-line .operational{stroke:${CHART_SERIES.operational.color};stroke-dasharray:${CHART_SERIES.operational.dash}}.quarter-hit-area{fill:transparent;pointer-events:all}.quarter-selection{pointer-events:none}`;
   }
 
   _styles() {
