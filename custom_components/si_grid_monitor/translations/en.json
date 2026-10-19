@@ -103,14 +103,18 @@
           "smoothing_seconds": "Forecast smoothing window",
           "sustained_horizon_minutes": "Sustained load forecast horizon",
           "retention": "Archive retention",
-          "allow_provisional_tariff": "Allow provisional tariffs for unverified years"
+          "allow_provisional_tariff": "Allow provisional tariffs for unverified years",
+          "simulation_enabled": "Enable temporary simulation threshold",
+          "simulation_target_kw": "Temporary simulation threshold"
         },
         "data_description": {
           "safety_margin_kw": "Optional planning buffer (kW) subtracted from the agreed limit when calculating operational headroom. Default 0.00 kW; does not change the contract.",
           "smoothing_seconds": "Averages recent signed power for the end-of-quarter forecast. 30 s reacts faster; 120 s is steadier but slower to follow changes.",
           "sustained_horizon_minutes": "How long (15/30/60/120 min) continuous extra demand is evaluated, including any stricter tariff blocks coming next.",
           "retention": "How long completed 15-minute quarters remain in the integration-owned SQLite database. 'Forever' preserves them across normal HA recorder purges.",
-          "allow_provisional_tariff": "Opt in to explicitly provisional continuation of the 2027 block pattern for unverified years 2028–2030. Without opt-in no future block/limit is claimed as confirmed."
+          "allow_provisional_tariff": "Opt in to explicitly provisional continuation of the 2027 block pattern for unverified years 2028–2030. Without opt-in no future block/limit is claimed as confirmed.",
+          "simulation_enabled": "Use a temporary comparison threshold without changing the distributor-assigned B1–B5 schedule. Simulated results never count as confirmed contractual statistics.",
+          "simulation_target_kw": "Temporary kW threshold used only while simulation is enabled. It does not overwrite dated contracted-power assignments or archived provenance."
         }
       },
       "review": {
@@ -145,7 +149,9 @@
           "safety_margin_kw": "Safety margin",
           "smoothing_seconds": "Forecast smoothing window",
           "sustained_horizon_minutes": "Sustained load forecast horizon",
-          "retention": "Archive retention"
+          "retention": "Archive retention",
+          "simulation_enabled": "Enable temporary simulation threshold",
+          "simulation_target_kw": "Temporary simulation threshold"
         },
         "data_description": {
           "power_entity": "Select the grid-connection power sensor (W or kW), not total house consumption or PV production. Current readings will be normalized into import (+) and export (−).",
@@ -154,7 +160,9 @@
           "safety_margin_kw": "Optional planning buffer (kW) subtracted from the agreed limit when calculating operational headroom. Default 0.00 kW; does not change the contract.",
           "smoothing_seconds": "Averages recent signed power for the end-of-quarter forecast. 30 s reacts faster; 120 s is steadier but slower to follow changes.",
           "sustained_horizon_minutes": "How long (15/30/60/120 min) continuous extra demand is evaluated, including any stricter tariff blocks coming next.",
-          "retention": "How long completed 15-minute quarters remain in the integration-owned SQLite database. 'Forever' preserves them across normal HA recorder purges."
+          "retention": "How long completed 15-minute quarters remain in the integration-owned SQLite database. 'Forever' preserves them across normal HA recorder purges.",
+          "simulation_enabled": "Use a temporary comparison threshold without changing the distributor-assigned B1–B5 schedule. Simulated results never count as confirmed contractual statistics.",
+          "simulation_target_kw": "Temporary kW threshold used only while simulation is enabled. It does not overwrite dated contracted-power assignments or archived provenance."
         }
       },
       "assignments": {

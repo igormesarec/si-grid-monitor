@@ -4,6 +4,21 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-10-19
+
+- Fixed the historical-quarter and Today WebSocket crash caused by treating
+  `sqlite3.Row` values as column names; both paths now enumerate `row.keys()`.
+- Added safe history error codes, server-side traceback logging and explicit
+  retry states so archive failures are never presented as an empty archive.
+- Localized the selected tariff-calendar weekday and preserved the horizontal
+  timeline position, hour highlight and keyboard focus on 23/24/25-hour days.
+- Added an import/export live-power chart with shared 1 kW support lines and an
+  import-only cumulative quarter-energy chart with target and projection.
+- Exposed the existing temporary simulation threshold through setup and Options
+  without changing dated assignments or confirmed archive statistics.
+- Kept SQLite schema 5, configuration epochs, entity identities and archived
+  measurements unchanged.
+
 ## [0.4.0] - 2026-10-18
 
 - Added a guided six-step setup flow and fixed untouched dropdown defaults.

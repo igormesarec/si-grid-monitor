@@ -1,0 +1,275 @@
+"""WebSocket history regression tests with genuine SQLite V5 rows."""
+
+from __future__ import annotations
+
+import json
+import sqlite3
+import sys
+import types
+from datetime import date, datetime, timedelta
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
+
+from custom_components.si_grid_monitor.archive import ArchiveRecord, QuarterArchive
+from custom_components.si_grid_monitor.engine import quarter_starts_for_local_day
+from custom_components.si_grid_monitor.tariffs import SlovenianTariffCalendar
+
+
+def _install_dashboard_import_stubs() -> None:
+    """Extend the lightweight HA stubs used by runtime tests."""
+
+    homeassistant = sys.modules.setdefault("homeassistant", types.ModuleType("homeassistant"))
+    homeassistant.__path__ = []  # type: ignore[attr-defined]
+    core = sys.modules.setdefault("homeassistant.core", types.ModuleType("homeassistant.core"))
+    core.HomeAssistant = object  # type: ignore[attr-defined]
+    core.callback = lambda function: function  # type: ignore[attr-defined]
+    components = types.ModuleType("homeassistant.components")
+    components.__path__ = []  # type: ignore[attr-defined]
+    frontend = types.ModuleType("homeassistant.components.frontend")
+    frontend.async_panel_exists = lambda *_args: False  # type: ignore[attr-defined]
+    frontend.async_remove_panel = lambda *_args, **_kwargs: None  # type: ignore[attr-defined]
+    panel_custom = types.ModuleType("homeassistant.components.panel_custom")
+
+    async def async_register_panel(*_args: Any, **_kwargs: Any) -> None:
+        return None
+
+    panel_custom.async_register_panel = async_register_panel  # type: ignore[attr-defined]
+    websocket_api = types.ModuleType("homeassistant.components.websocket_api")
+    websocket_api.websocket_command = lambda _schema: lambda function: function  # type: ignore[attr-defined]
+    websocket_api.async_response = lambda function: function  # type: ignore[attr-defined]
+    http = types.ModuleType("homeassistant.components.http")
+    http.StaticPathConfig = lambda *args: args  # type: ignore[attr-defined]
+    components.frontend = frontend  # type: ignore[attr-defined]
+    components.panel_custom = panel_custom  # type: ignore[attr-defined]
+    components.websocket_api = websocket_api  # type: ignore[attr-defined]
+    voluptuous = types.ModuleType("voluptuous")
+    voluptuous.Required = lambda key: key  # type: ignore[attr-defined]
+    voluptuous.Optional = lambda key: key  # type: ignore[attr-defined]
+    sys.modules.update(
+        {
+            "homeassistant.components": components,
+            "homeassistant.components.frontend": frontend,
+            "homeassistant.components.panel_custom": panel_custom,
+            "homeassistant.components.websocket_api": websocket_api,
+            "homeassistant.components.http": http,
+            "homeassistant.core": core,
+            "voluptuous": voluptuous,
+        }
+    )
+
+
+_install_dashboard_import_stubs()
+
+from custom_components.si_grid_monitor import dashboard  # noqa: E402
+from custom_components.si_grid_monitor.const import DOMAIN  # noqa: E402
+
+
+class _Hass:
+    def __init__(self, runtime: Any) -> None:
+        self.data = {DOMAIN: {dashboard.DATA_RUNTIMES: {runtime.entry.entry_id: runtime}}}
+
+    async def async_add_executor_job(self, function: Any, *args: Any) -> Any:
+        return function(*args)
+
+
+class _Connection:
+    def __init__(self) -> None:
+        self.result: Any = None
+        self.error: tuple[int, str, str] | None = None
+
+    def send_result(self, _message_id: int, result: Any) -> None:
+        self.result = result
+
+    def send_error(self, message_id: int, code: str, message: str) -> None:
+        self.error = (message_id, code, message)
+
+
+def _run(coroutine: Any) -> Any:
+    """Drive these synchronous test coroutines without a Windows event-loop socketpair."""
+
+    try:
+        while True:
+            coroutine.send(None)
+    except StopIteration as completed:
+        return completed.value
+
+
+def _record(start: datetime, index: int, *, incomplete: bool = False) -> ArchiveRecord:
+    target = 3.5
+    import_kwh = 0.2 + index * 0.01
+    demand = import_kwh / 0.25
+    quality = "incomplete" if incomplete else "reconstructed"
+    confirmed = None if incomplete else demand > target
+    return ArchiveRecord(
+        namespace="meter-a",
+        start_utc=start,
+        end_utc=start + timedelta(minutes=15),
+        import_kwh=import_kwh,
+        export_kwh=0.03 if index % 2 else 0.0,
+        signed_average_kw=(import_kwh - (0.03 if index % 2 else 0.0)) / 0.25,
+        import_demand_kw=demand,
+        coverage_seconds=450 if incomplete else 900,
+        gap_seconds=450 if incomplete else 0,
+        quality=quality,
+        provenance="live_reconstructed",
+        source_id="sensor.grid",
+        source_epoch=1,
+        configuration_status="known",
+        contractual_target_kw=target,
+        safety_margin_kw=0.0,
+        operational_target_kw=target,
+        utilization_pct=None if incomplete else 100 * demand / target,
+        exceeded=confirmed,
+        excess_kw=None if incomplete else max(0.0, demand - target),
+        tariff_block=1,
+        tariff_rule_version="si-2026-verified",
+        tariff_calendar_year=2026,
+        tariff_season="higher",
+        tariff_day_type="working_day",
+        tariff_rule_status="official",
+        tariff_source_url="https://www.uro.si/",
+        tariff_policy="official_only",
+        contractual_status="confirmed" if not incomplete else "measurement_incomplete",
+        confirmed_exceeded=confirmed,
+        target_effective_from="2026-01-01",
+        target_effective_to="2026-12-31",
+        target_provenance="distributor_record",
+        target_recorded_on="2025-10-17",
+    )
+
+
+def _runtime(archive: QuarterArchive) -> Any:
+    calendar = SlovenianTariffCalendar()
+    return SimpleNamespace(
+        entry=SimpleNamespace(entry_id="entry-a", title="Meter A"),
+        archive=archive,
+        namespace="meter-a",
+        tariff_calendar=calendar,
+        target_for_tariff=lambda tariff: 3.5 if tariff.block is not None else None,
+        dashboard_current=lambda: {"available": False, "now_utc": "2026-01-02T12:00:00+00:00"},
+    )
+
+
+def test_history_commands_use_real_sqlite_rows_and_preserve_archive(tmp_path: Path) -> None:
+    archive = QuarterArchive(tmp_path / "history.db")
+    archive.open()
+    starts = quarter_starts_for_local_day(date(2026, 1, 2))
+    archive.register_configuration_epoch(
+        namespace="meter-a",
+        source_id="sensor.grid",
+        positive_means_import=True,
+        contractual_target_kw=3.5,
+        safety_margin_kw=0.0,
+        effective_utc=starts[0],
+    )
+    for index, start in enumerate(starts[:8]):
+        archive.upsert_quarter(_record(start, index, incomplete=index == 7))
+
+    raw_rows = archive.list_quarters("meter-a", starts[0], starts[8])
+    assert len(raw_rows) == 8
+    assert isinstance(raw_rows[0], sqlite3.Row)
+    assert dashboard._row(raw_rows[0])["namespace"] == "meter-a"
+    before = [dict(row) for row in raw_rows]
+
+    runtime = _runtime(archive)
+    hass = _Hass(runtime)
+    quarter_connection = _Connection()
+    _run(
+        dashboard.ws_quarter(
+            hass,
+            quarter_connection,
+            {"id": 1, "entry_id": "entry-a", "start_utc": starts[0].isoformat()},
+        )
+    )
+    assert quarter_connection.error is None
+    assert quarter_connection.result["status"] == "found"
+    assert quarter_connection.result["quarter"]["target_provenance"] == "distributor_record"
+    json.dumps(quarter_connection.result)
+
+    incomplete_connection = _Connection()
+    _run(
+        dashboard.ws_quarter(
+            hass,
+            incomplete_connection,
+            {"id": 2, "entry_id": "entry-a", "start_utc": starts[7].isoformat()},
+        )
+    )
+    assert incomplete_connection.result["status"] == "unavailable"
+    assert incomplete_connection.result["quarter"]["quality"] == "incomplete"
+
+    empty_connection = _Connection()
+    _run(
+        dashboard.ws_quarter(
+            hass,
+            empty_connection,
+            {"id": 3, "entry_id": "entry-a", "start_utc": starts[20].isoformat()},
+        )
+    )
+    assert empty_connection.result == {
+        "status": "not_found",
+        "quarter": None,
+        "detailed_trace_available": False,
+    }
+
+    day_connection = _Connection()
+    _run(
+        dashboard.ws_day(
+            hass,
+            day_connection,
+            {"id": 4, "entry_id": "entry-a", "date": "2026-01-02"},
+        )
+    )
+    assert day_connection.error is None
+    assert day_connection.result["status"] == "ok"
+    assert day_connection.result["summary"]["valid_count"] == 7
+    assert day_connection.result["summary"]["incomplete_count"] == 1
+    assert len(day_connection.result["quarters"]) == 96
+    json.dumps(day_connection.result)
+
+    empty_day = _Connection()
+    _run(
+        dashboard.ws_day(
+            hass,
+            empty_day,
+            {"id": 5, "entry_id": "entry-a", "date": "2026-01-01"},
+        )
+    )
+    assert empty_day.result["status"] == "ok"
+    assert empty_day.result["summary"]["valid_count"] == 0
+    assert empty_day.result["summary"]["missing_count"] == 96
+
+    after = [dict(row) for row in archive.list_quarters("meter-a", starts[0], starts[8])]
+    assert after == before
+    assert archive.schema_version == 5
+    archive.close()
+
+
+class _BrokenArchive:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    def list_quarters(self, *_args: Any) -> list[Any]:
+        raise self.error
+
+
+def test_history_commands_return_safe_errors_for_archive_and_bad_rows() -> None:
+    for operation, error, expected in (
+        ("quarter", sqlite3.OperationalError("private database detail"), "archive_unavailable"),
+        ("quarter", RuntimeError("malformed record"), "quarter_query_failed"),
+        ("day", sqlite3.OperationalError("private database detail"), "archive_unavailable"),
+        ("day", RuntimeError("malformed record"), "day_query_failed"),
+    ):
+        runtime = _runtime(_BrokenArchive(error))  # type: ignore[arg-type]
+        connection = _Connection()
+        message = {"id": 8, "entry_id": "entry-a"}
+        if operation == "quarter":
+            message["start_utc"] = "2026-01-02T00:00:00+00:00"
+            _run(dashboard.ws_quarter(_Hass(runtime), connection, message))
+        else:
+            message["date"] = "2026-01-02"
+            _run(dashboard.ws_day(_Hass(runtime), connection, message))
+        assert connection.error is not None
+        assert connection.error[1] == expected
+        assert "private database detail" not in connection.error[2]
+        assert "malformed record" not in connection.error[2]

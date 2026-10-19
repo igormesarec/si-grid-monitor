@@ -1,4 +1,4 @@
-# SI Grid Monitor V0.4 - Real Home Assistant Test Plan
+# SI Grid Monitor V0.4.1 - Real Home Assistant Test Plan
 
 Use a disposable or backed-up Home Assistant instance. Never infer physical
 connection capacity from CAN ADD values.
@@ -146,3 +146,28 @@ software behavior only; distributor readings remain authoritative.
 10. On spring-forward, normal and autumn-fallback dates verify 92, 96 and 100 fixed-quarter slots. For the repeated local hour, verify the archive detail labels show distinct UTC offsets.
 11. Compare the sum of B1-B5 valid counts, import/export energy and confirmed exceedances with the daily totals. Add incomplete, provisional, unknown-configuration and simulation rows in a disposable test archive and confirm none become confirmed contractual exceedances.
 12. Disconnect/reconnect the Home Assistant frontend and reload the integration. Confirm there is one refresh timer, one sidebar item, automatic retry after a temporary WebSocket error, and no per-second Recorder writes from the countdown.
+
+## V0.4.1 hotfix acceptance
+
+1. With at least eight schema-5 quarter rows, open Previous quarter and TODAY.
+   Confirm both load and Home Assistant logs contain no `IndexError: No item
+   with that key` from `dashboard.py`.
+2. Test a genuinely empty day and confirm it is shown as empty/missing. Then
+   temporarily make the archive unavailable and confirm a useful error with a
+   Retry button appears instead of “No archived summary exists” or perpetual
+   “Loading day…”. Restore access and retry.
+3. Open Tariff Calendar for 18 October 2026 in English and Slovenian. Confirm
+   the heading contains Sunday / nedelja. Scroll to 22:00, select it, and verify
+   the scroll position and highlight stay in place while details update.
+4. Repeat calendar selection on the 23-hour spring-forward and 25-hour
+   autumn-fallback days. Verify repeated hours remain distinguishable by offset
+   and fold and arrow-key navigation preserves focus.
+5. On Overview, verify the live chart uses the same kW scale for import, export,
+   smoothing and target with visible 1 kW support lines. Verify the separate
+   energy-progress chart accumulates only imported kWh; export never lowers it.
+6. Enable the temporary simulation threshold in setup/Options and verify the
+   real dated B1–B5 schedule and confirmed archive statistics remain unchanged.
+7. Upgrade from V0.4.0 and confirm the SQLite file still reports schema 5, all
+   prior rows/configuration epochs remain byte-for-byte semantically unchanged,
+   existing entity unique IDs remain stable and no historical recalculation is
+   triggered.

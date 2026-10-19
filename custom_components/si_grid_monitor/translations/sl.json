@@ -103,14 +103,18 @@
           "smoothing_seconds": "Okno glajenja napovedi",
           "sustained_horizon_minutes": "Obzorje napovedi trajne obremenitve",
           "retention": "Hramba arhiva",
-          "allow_provisional_tariff": "Dovoli začasna pravila za nepotrjena leta"
+          "allow_provisional_tariff": "Dovoli začasna pravila za nepotrjena leta",
+          "simulation_enabled": "Omogoči začasni simulacijski prag",
+          "simulation_target_kw": "Začasni simulacijski prag"
         },
         "data_description": {
           "safety_margin_kw": "Neobvezna rezerva (kW), odšteta od dogovorjene moči pri načrtovanju porabe. Privzeto 0,00 kW; pogodbe ne spreminja.",
           "smoothing_seconds": "Povprečenje zadnjih meritev za napoved ob koncu 15-minutnega intervala. 30 s se hitreje odziva, 120 s je bolj mirno.",
           "sustained_horizon_minutes": "Koliko časa (15/30/60/120 min) naprej se ocenjuje trajna dodatna obremenitev, tudi ob prehodu v strožji blok.",
           "retention": "Čas hrambe zaključenih 15-minutnih intervalov v podatkovni zbirki SQLite. 'Za vedno' ohrani podatke tudi po čiščenju HA Recorder.",
-          "allow_provisional_tariff": "Izrecno dovolite začasno nadaljevanje pravil 2027 za še nepotrjena leta 2028–2030. Brez potrditve se bloki ne prikazujejo kot uradni."
+          "allow_provisional_tariff": "Izrecno dovolite začasno nadaljevanje pravil 2027 za še nepotrjena leta 2028–2030. Brez potrditve se bloki ne prikazujejo kot uradni.",
+          "simulation_enabled": "Uporabi začasni primerjalni prag, ne da bi spremenili distributerjeve dodelitve B1–B5. Simulirani rezultati niso potrjena pogodbena statistika.",
+          "simulation_target_kw": "Začasni prag v kW velja samo med simulacijo. Ne prepiše časovno omejenih dodelitev ali arhivske provenience."
         }
       },
       "review": {
@@ -145,7 +149,9 @@
           "safety_margin_kw": "Varnostna rezerva",
           "smoothing_seconds": "Okno glajenja napovedi",
           "sustained_horizon_minutes": "Obzorje napovedi trajne obremenitve",
-          "retention": "Hramba arhiva"
+          "retention": "Hramba arhiva",
+          "simulation_enabled": "Omogoči začasni simulacijski prag",
+          "simulation_target_kw": "Začasni simulacijski prag"
         },
         "data_description": {
           "power_entity": "Izberite senzor moči na priključku v omrežje (W ali kW), ne skupne porabe hiše ali proizvodnje elektrarne. Interno je uvoz pozitiven, izvoz negativen.",
@@ -154,7 +160,9 @@
           "safety_margin_kw": "Neobvezna rezerva (kW), odšteta od dogovorjene moči pri načrtovanju porabe. Privzeto 0,00 kW; pogodbe ne spreminja.",
           "smoothing_seconds": "Povprečenje zadnjih meritev za napoved ob koncu 15-minutnega intervala. 30 s se hitreje odziva, 120 s je bolj mirno.",
           "sustained_horizon_minutes": "Koliko časa (15/30/60/120 min) naprej se ocenjuje trajna dodatna obremenitev, tudi ob prehodu v strožji blok.",
-          "retention": "Čas hrambe zaključenih 15-minutnih intervalov v podatkovni zbirki SQLite. 'Za vedno' ohrani podatke tudi po čiščenju HA Recorder."
+          "retention": "Čas hrambe zaključenih 15-minutnih intervalov v podatkovni zbirki SQLite. 'Za vedno' ohrani podatke tudi po čiščenju HA Recorder.",
+          "simulation_enabled": "Uporabi začasni primerjalni prag, ne da bi spremenili distributerjeve dodelitve B1–B5. Simulirani rezultati niso potrjena pogodbena statistika.",
+          "simulation_target_kw": "Začasni prag v kW velja samo med simulacijo. Ne prepiše časovno omejenih dodelitev ali arhivske provenience."
         }
       },
       "assignments": {

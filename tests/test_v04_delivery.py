@@ -14,7 +14,7 @@ def test_v04_manifest_packages_supported_panel_dependencies() -> None:
     manifest = json.loads(
         (ROOT / "custom_components/si_grid_monitor/manifest.json").read_text(encoding="utf-8")
     )
-    assert manifest["version"] == VERSION == "0.4.0"
+    assert manifest["version"] == VERSION == "0.4.1"
     assert {"frontend", "http", "websocket_api"} <= set(manifest["dependencies"])
     assert PANEL_URL_PATH == "si-grid-monitor"
 
@@ -67,7 +67,7 @@ def test_today_and_calendar_expose_interactive_details_and_target() -> None:
     assert "this._historicalCard()" in bundle
     assert 'data-hour=' in bundle
     assert "Selected hour" in bundle
-    assert "this._selectedHourUtc = element.dataset.hour" in bundle
+    assert "this._selectCalendarHour(element.dataset.hour)" in bundle
     assert 'class="target-step"' in bundle
     assert "todayChartModel(quarters)" in bundle
     assert "No archived summary exists" in bundle
@@ -81,3 +81,20 @@ def test_future_limit_message_distinguishes_forecast_horizon() -> None:
     assert "Forecast reduction needed" in bundle
     assert "outside the sustained forecast horizon" in bundle
     assert "Forecast unavailable" in bundle
+
+
+def test_v041_setup_exposes_simulation_without_manual_schedule_json() -> None:
+    source = (ROOT / "custom_components/si_grid_monitor/config_flow.py").read_text(
+        encoding="utf-8"
+    )
+    assert "CONF_SIMULATION_ENABLED" in source
+    assert "CONF_SIMULATION_TARGET_KW" in source
+    assert "CONF_CONTRACTED_POWER_PERIODS" in source
+    for name in ("strings.json", "translations/en.json", "translations/sl.json"):
+        translations = json.loads(
+            (ROOT / "custom_components/si_grid_monitor" / name).read_text(encoding="utf-8")
+        )
+        calculation = translations["config"]["step"]["calculation"]["data"]
+        settings = translations["options"]["step"]["settings"]["data"]
+        assert {"simulation_enabled", "simulation_target_kw"} <= set(calculation)
+        assert {"simulation_enabled", "simulation_target_kw"} <= set(settings)

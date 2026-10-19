@@ -98,6 +98,164 @@ export function ljubljanaDate(value = new Date()) {
   return `${values.year}-${values.month}-${values.day}`;
 }
 
+export function calendarDateLabel(dateString, locale = "en") {
+  const language = String(locale).toLowerCase().startsWith("sl") ? "sl-SI" : "en-GB";
+  return new Intl.DateTimeFormat(language, {
+    timeZone: "Europe/Ljubljana",
+    weekday: "long",
+    year: "numeric",
+    month: "long",
+    day: "numeric",
+  }).format(new Date(`${dateString}T12:00:00Z`));
+}
+
+export function selectTimelineHour(timeline, startUtc) {
+  if (!timeline) return null;
+  const scrollLeft = timeline.scrollLeft;
+  let selected = null;
+  for (const button of timeline.querySelectorAll("[data-hour]")) {
+    const active = button.dataset.hour === startUtc;
+    button.classList.toggle("selected", active);
+    button.setAttribute("aria-pressed", String(active));
+    if (active) selected = button;
+  }
+  timeline.scrollLeft = scrollLeft;
+  return selected;
+}
+
+export function historyErrorMessage(operation, error) {
+  const code = error?.code || "unknown_error";
+  const messages = {
+    archive_unavailable: "Historical archive is temporarily unavailable.",
+    quarter_query_failed: "Could not retrieve the selected quarter.",
+    day_query_failed: "Could not load the selected day's measurements.",
+    invalid_date: "The selected historical date is invalid.",
+    entry_not_found: "The selected SI Grid Monitor meter is no longer available.",
+  };
+  return messages[code] || (operation === "day"
+    ? "Could not load the selected day's measurements."
+    : "Could not retrieve the selected quarter.");
+}
+
+function sampleTime(sample) {
+  return new Date(sample.timestamp).getTime();
+}
+
+function importPower(sample) {
+  return Math.max(0, Number(sample.signed_kw));
+}
+
+export function smoothedImportSeries(trace, windowSeconds = 120) {
+  if (!trace.length) return [];
+  const windowMs = Math.max(1, Number(windowSeconds)) * 1000;
+  return trace.map((sample, index) => {
+    const end = sampleTime(sample);
+    const start = end - windowMs;
+    let energyKwMs = 0;
+    let coverageMs = 0;
+    for (let cursor = 0; cursor <= index; cursor += 1) {
+      const segmentStart = Math.max(start, sampleTime(trace[cursor]));
+      const segmentEnd = Math.min(
+        end,
+        cursor < index ? sampleTime(trace[cursor + 1]) : end,
+      );
+      if (segmentEnd > segmentStart) {
+        const duration = segmentEnd - segmentStart;
+        energyKwMs += importPower(trace[cursor]) * duration;
+        coverageMs += duration;
+      }
+    }
+    return {
+      timestamp: sample.timestamp,
+      import_kw: coverageMs > 0 ? energyKwMs / coverageMs : importPower(sample),
+    };
+  });
+}
+
+export function livePowerChartModel(trace, targetKw, windowSeconds = 120) {
+  const actualImport = trace.map(sample => ({
+    timestamp: sample.timestamp,
+    kw: importPower(sample),
+  }));
+  const actualExport = trace.map(sample => {
+    const signed = Number(sample.signed_kw);
+    return {timestamp: sample.timestamp, kw: signed < 0 ? signed : 0};
+  });
+  const smoothedImport = smoothedImportSeries(trace, windowSeconds).map(sample => ({
+    timestamp: sample.timestamp,
+    kw: sample.import_kw,
+  }));
+  const magnitudes = [Number(targetKw) || 0];
+  for (const point of [...actualImport, ...actualExport, ...smoothedImport]) {
+    magnitudes.push(Math.abs(point.kw));
+  }
+  const gridLimitKw = Math.max(1, Math.ceil(Math.max(...magnitudes)));
+  const gridValues = Array.from(
+    {length: gridLimitKw * 2 + 1},
+    (_, index) => index - gridLimitKw,
+  );
+  return {actualImport, actualExport, smoothedImport, gridLimitKw, gridValues};
+}
+
+export function quarterEnergyModel({
+  trace,
+  quarterStartUtc,
+  quarterEndUtc,
+  nowUtc,
+  importKwh,
+  targetKw,
+  forecastSmoothedKw,
+}) {
+  const start = new Date(quarterStartUtc).getTime();
+  const end = new Date(quarterEndUtc).getTime();
+  const now = Math.min(end, Math.max(start, new Date(nowUtc).getTime()));
+  const samples = trace
+    .filter(sample => sampleTime(sample) <= now)
+    .sort((left, right) => sampleTime(left) - sampleTime(right));
+  let reconstructedKwh = 0;
+  for (let index = 0; index < samples.length; index += 1) {
+    const segmentStart = Math.max(start, sampleTime(samples[index]));
+    const segmentEnd = Math.min(
+      now,
+      index + 1 < samples.length ? sampleTime(samples[index + 1]) : now,
+    );
+    if (segmentEnd > segmentStart) {
+      reconstructedKwh += importPower(samples[index]) * (segmentEnd - segmentStart) / 3600000;
+    }
+  }
+  const usedKwh = Math.max(0, Number(importKwh) || 0);
+  const priorKwh = Math.max(0, usedKwh - reconstructedKwh);
+  let cumulative = priorKwh;
+  const actual = [];
+  if (samples.length) actual.push({timestamp: samples[0].timestamp, kwh: cumulative});
+  for (let index = 0; index < samples.length; index += 1) {
+    const segmentStart = Math.max(start, sampleTime(samples[index]));
+    const segmentEnd = Math.min(
+      now,
+      index + 1 < samples.length ? sampleTime(samples[index + 1]) : now,
+    );
+    if (segmentEnd > segmentStart) {
+      cumulative += importPower(samples[index]) * (segmentEnd - segmentStart) / 3600000;
+      actual.push({timestamp: new Date(segmentEnd).toISOString(), kwh: cumulative});
+    }
+  }
+  if (!actual.length) actual.push({timestamp: new Date(now).toISOString(), kwh: usedKwh});
+  actual[actual.length - 1].kwh = usedKwh;
+  const projectedFinalKwh = forecastSmoothedKw == null
+    ? null : Math.max(0, Number(forecastSmoothedKw)) * 0.25;
+  return {
+    actual,
+    projection: projectedFinalKwh == null ? [] : [
+      {timestamp: new Date(now).toISOString(), kwh: usedKwh},
+      {timestamp: new Date(end).toISOString(), kwh: projectedFinalKwh},
+    ],
+    usedKwh,
+    projectedFinalKwh,
+    limitKwh: targetKw == null ? null : Math.max(0, Number(targetKw)) * 0.25,
+    priorObservedKwh: priorKwh,
+  };
+}
+
 export class RequestGate {
   constructor() {
     this.generation = 0;
