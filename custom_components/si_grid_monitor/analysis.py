@@ -203,6 +203,18 @@ def _integer(value: Any) -> int:
     return 0 if value is None else int(value)
 
 
+def _utc_sort_instant(value: Any) -> datetime:
+    """Return one comparable UTC instant, placing malformed exceptional rows last."""
+
+    try:
+        parsed = value if isinstance(value, datetime) else datetime.fromisoformat(str(value))
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("archive timestamps must include a UTC offset")
+        return parsed.astimezone(UTC)
+    except (TypeError, ValueError):
+        return datetime.max.replace(tzinfo=UTC)
+
+
 def _expected_bins(
     bounds: PeriodBounds,
     completed_end: datetime,
@@ -324,9 +336,15 @@ def period_report(
     )
     stored = {_row_dict(row)["bin_key"]: _row_dict(row) for row in raw_bins}
     bins: list[dict[str, Any]] = []
+
+    def bin_sort_key(key: str) -> tuple[datetime, str]:
+        expected_start = expected_intervals.get(key, (None, None))[0]
+        archived_start = stored.get(key, {}).get("start_utc")
+        return (_utc_sort_instant(expected_start or archived_start), key)
+
     keys = sorted(
         set(expected) | set(stored),
-        key=lambda item: stored.get(item, {}).get("start_utc", item),
+        key=bin_sort_key,
     )
     for key in keys:
         item = stored.get(key, {"bin_key": key})

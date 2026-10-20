@@ -323,6 +323,115 @@ def test_missing_repeated_dst_hour_bins_keep_distinct_expected_utc_bounds(
     assert all(item["import_kwh"] is None for item in repeated)
 
 
+def _assert_bins_in_utc_order(report: dict[str, object]) -> None:
+    starts = [
+        datetime.fromisoformat(str(item["expected_start_utc"] or item["start_utc"])).astimezone(UTC)
+        for item in report["bins"]
+    ]
+    assert starts == sorted(starts)
+
+
+@pytest.mark.parametrize(
+    ("first_measured", "second_measured"), [(False, True), (True, False), (True, True)]
+)
+def test_hour_bins_remain_chronological_across_repeated_dst_hour(
+    archive: QuarterArchive,
+    first_measured: bool,
+    second_measured: bool,
+) -> None:
+    week = resolve_period(PeriodType.WEEK, date(2026, 10, 25))
+    first = datetime(2026, 10, 25, 0, 0, tzinfo=UTC)
+    second = datetime(2026, 10, 25, 1, 0, tzinfo=UTC)
+    if first_measured:
+        archive.upsert_quarter(record(first))
+    if second_measured:
+        archive.upsert_quarter(record(second))
+    report = period_report(
+        archive,
+        "meter-a",
+        week,
+        now_utc=week.end_utc,
+        include_comparison=False,
+    )
+    _assert_bins_in_utc_order(report)
+    repeated = [item for item in report["bins"] if item["bin_key"].startswith("2026-10-25T02|")]
+    assert [item["expected_start_utc"] for item in repeated] == [
+        "2026-10-25T00:00:00+00:00",
+        "2026-10-25T01:00:00+00:00",
+    ]
+    assert [bool(item["archived_count"]) for item in repeated] == [
+        first_measured,
+        second_measured,
+    ]
+
+
+def test_mixed_bins_sort_across_local_midnight_and_all_resolutions(
+    archive: QuarterArchive,
+) -> None:
+    day = resolve_period(PeriodType.DAY, date(2026, 1, 2))
+    assert day.start_utc.date() == date(2026, 1, 1)
+    archive.upsert_quarter(record(day.start_utc + timedelta(minutes=15)))
+    day_report = period_report(
+        archive, "meter-a", day, now_utc=day.end_utc, include_comparison=False
+    )
+    assert day_report["period"]["resolution"] == "quarter"
+    _assert_bins_in_utc_order(day_report)
+    assert day_report["bins"][0]["expected_start_utc"] == day.start_utc.isoformat()
+
+    month = resolve_period(PeriodType.MONTH, date(2026, 2, 10))
+    archive.upsert_quarter(record(month.start_utc + timedelta(days=12)))
+    month_report = period_report(
+        archive, "meter-a", month, now_utc=month.end_utc, include_comparison=False
+    )
+    assert month_report["period"]["resolution"] == "day"
+    _assert_bins_in_utc_order(month_report)
+
+    year = resolve_period(PeriodType.YEAR, date(2026, 6, 1))
+    year_report = period_report(
+        archive, "meter-a", year, now_utc=year.end_utc, include_comparison=False
+    )
+    assert year_report["period"]["resolution"] == "month"
+    _assert_bins_in_utc_order(year_report)
+
+
+def test_tariff_filtered_mixed_bins_sort_by_expected_utc_start(
+    archive: QuarterArchive,
+) -> None:
+    calendar = SlovenianTariffCalendar()
+    day = resolve_period(PeriodType.DAY, date(2026, 1, 5))
+    expected_b1: list[datetime] = []
+    outside_b1: list[datetime] = []
+    cursor = day.start_utc
+    while cursor < day.end_utc:
+        if calendar.classify(cursor).block == 1:
+            expected_b1.append(cursor)
+        else:
+            outside_b1.append(cursor)
+        cursor += timedelta(minutes=15)
+    assert len(expected_b1) > 4
+    assert outside_b1
+    archive.upsert_quarter(record(expected_b1[1], block=1))
+    archive.upsert_quarter(record(expected_b1[-2], block=1))
+    # An exceptional archived-only row retains its stored historical block and
+    # therefore needs the same UTC fallback ordering as expected calendar bins.
+    archive.upsert_quarter(record(outside_b1[0], block=1))
+    report = period_report(
+        archive,
+        "meter-a",
+        day,
+        now_utc=day.end_utc,
+        tariff_block=1,
+        classifier=calendar.classify,
+        include_comparison=False,
+    )
+    _assert_bins_in_utc_order(report)
+    actual_starts = [item["expected_start_utc"] or item["start_utc"] for item in report["bins"]]
+    assert actual_starts == [
+        instant.isoformat() for instant in sorted([*expected_b1, outside_b1[0]])
+    ]
+    assert sum(item["expected_start_utc"] is None for item in report["bins"]) == 1
+
+
 def test_block_filter_and_namespace_isolation(archive: QuarterArchive) -> None:
     calendar = SlovenianTariffCalendar()
     bounds = resolve_period(PeriodType.DAY, date(2026, 1, 5))
@@ -612,3 +721,28 @@ def test_ten_year_populated_report_is_bounded_and_classifies_at_most_hourly(
     assert report["summary"]["archived_count"] > 1_200
     assert classifier_calls <= 24 * 3660
     assert elapsed < 5.0
+
+
+def test_dense_ten_year_archive_returns_bounded_bins_without_frontend_sized_rows(
+    archive: QuarterArchive,
+) -> None:
+    bounds = resolve_period(
+        PeriodType.CUSTOM,
+        date(2021, 1, 1),
+        custom_start=date(2021, 1, 1),
+        custom_end=date(2030, 12, 31),
+    )
+    cursor = bounds.start_utc
+    while cursor < bounds.end_utc:
+        archive.upsert_quarter(record(cursor))
+        cursor += timedelta(days=1)
+    report = period_report(
+        archive,
+        "meter-a",
+        bounds,
+        now_utc=bounds.end_utc,
+        include_comparison=False,
+    )
+    assert report["summary"]["archived_count"] > 3_600
+    assert len(report["bins"]) == 120
+    assert all(item["expected_count"] <= 31 * 96 + 4 for item in report["bins"])

@@ -471,18 +471,18 @@ async def ws_exceedances(hass: HomeAssistant, connection: Any, msg: dict[str, An
         return
     try:
         bounds, tariff_block = _period_request(msg)
+        live = runtime.dashboard_current()
+        now_utc = (
+            datetime.fromisoformat(str(live.get("now_utc"))).astimezone(UTC)
+            if live.get("now_utc")
+            else datetime.now(UTC)
+        )
         report = await hass.async_add_executor_job(
             lambda: exceedance_report(
                 runtime.archive,
                 runtime.namespace,
                 bounds,
-                now_utc=(
-                    datetime.fromisoformat(
-                        str(runtime.dashboard_current().get("now_utc"))
-                    ).astimezone(UTC)
-                    if runtime.dashboard_current().get("now_utc")
-                    else datetime.now(UTC)
-                ),
+                now_utc=now_utc,
                 tariff_block=tariff_block,
                 sort_by=msg.get("sort_by", "date"),
                 direction=msg.get("direction", "desc"),

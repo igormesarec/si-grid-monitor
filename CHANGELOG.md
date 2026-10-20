@@ -6,6 +6,11 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [0.6.0] - 2026-10-19
 
+- Ordered every PERIOD chart bin by its canonical expected UTC start, with a
+  normalized archived UTC fallback for exceptional archive-only bins; mixed
+  missing/measured data and both rollback folds now remain chronological.
+- Captured the Exceedances live timestamp once on Home Assistant's event-loop
+  thread before dispatching the immutable archive query to the executor.
 - Hardened previous-period comparisons so both periods require complete valid
   coverage and equal quarter counts; partial and DST-length-mismatched periods
   are explicitly non-comparable without extrapolation.

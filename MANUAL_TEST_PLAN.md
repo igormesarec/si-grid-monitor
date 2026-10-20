@@ -49,6 +49,10 @@ or Android WebView so the `0.6.0` dashboard assets replace V0.4.2.
     the displayed resolution. On the October rollback, the repeated 02:00 hours
     must open distinct UTC intervals. A missing bin must say no measured value is
     available, while a valid 0.00 kWh bin is identified as measured zero.
+13. On a PERIOD chart containing alternating missing and measured bins, verify
+    left-to-right order remains chronological across local midnight. On the
+    October rollback, repeat with either or both 02:00 folds measured and confirm
+    CEST precedes CET without chart reordering.
 
 These steps require a real Home Assistant/browser installation and are not
 claimed complete by repository automation.

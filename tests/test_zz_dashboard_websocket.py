@@ -73,6 +73,18 @@ class _Hass:
         return function(*args)
 
 
+class _SnapshotOrderingHass(_Hass):
+    def __init__(self, runtime: Any, calls: dict[str, int]) -> None:
+        super().__init__(runtime)
+        self.calls = calls
+        self.executor_invocations = 0
+
+    async def async_add_executor_job(self, function: Any, *args: Any) -> Any:
+        self.executor_invocations += 1
+        assert self.calls["dashboard_current"] == 1
+        return function(*args)
+
+
 class _Connection:
     def __init__(self) -> None:
         self.result: Any = None
@@ -303,6 +315,38 @@ def test_history_commands_use_real_sqlite_rows_and_preserve_archive(tmp_path: Pa
     after = [dict(row) for row in archive.list_quarters("meter-a", starts[0], starts[8])]
     assert after == before
     assert archive.schema_version == 5
+    archive.close()
+
+
+def test_exceedances_snapshots_live_time_once_before_executor(tmp_path: Path) -> None:
+    archive = QuarterArchive(tmp_path / "exceedance-snapshot.db")
+    archive.open()
+    runtime = _runtime(archive)
+    calls = {"dashboard_current": 0}
+
+    def dashboard_current() -> dict[str, object]:
+        calls["dashboard_current"] += 1
+        return {"available": False, "now_utc": "2026-01-02T12:00:00+00:00"}
+
+    runtime.dashboard_current = dashboard_current
+    hass = _SnapshotOrderingHass(runtime, calls)
+    connection = _Connection()
+    _run(
+        dashboard.ws_exceedances(
+            hass,
+            connection,
+            {
+                "id": 43,
+                "entry_id": "entry-a",
+                "period_type": "day",
+                "anchor": "2026-01-02",
+            },
+        )
+    )
+    assert connection.error is None
+    assert connection.result["period"]["completed_end_utc"] == "2026-01-02T12:00:00+00:00"
+    assert calls["dashboard_current"] == 1
+    assert hass.executor_invocations == 1
     archive.close()
 
 
