@@ -5,8 +5,9 @@ from __future__ import annotations
 import json
 import sqlite3
 import threading
+import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -21,7 +22,7 @@ from .engine import EPSILON, LJUBLJANA, CompletedQuarter, DataQuality
 from .tariffs.calendar import SlovenianTariffCalendar
 from .tariffs.models import RuleStatus, TariffClassification
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 _QUALITY_RANK = {
     DataQuality.UNAVAILABLE.value: 0,
     DataQuality.INCOMPLETE.value: 1,
@@ -744,6 +745,305 @@ class QuarterArchive:
                 ).fetchall()
             )
 
+    def query_history(
+        self,
+        namespace: str,
+        start_utc: datetime,
+        end_utc: datetime,
+        *,
+        tariff_block: int | None = None,
+        qualities: tuple[str, ...] = (),
+        confirmed_exceeded: bool | None = None,
+        source_epoch: int | None = None,
+        page: int = 1,
+        page_size: int = 50,
+        sort_by: str = "start_utc",
+        direction: str = "desc",
+    ) -> tuple[list[sqlite3.Row], int]:
+        """Return one bounded archive page without loading the archive into memory."""
+
+        page = max(1, int(page))
+        page_size = max(1, min(200, int(page_size)))
+        sort_columns = {
+            "start_utc": "start_utc",
+            "import_kwh": "import_kwh",
+            "import_demand_kw": "import_demand_kw",
+            "utilization_pct": "utilization_pct",
+            "quality": "quality",
+        }
+        order_column = sort_columns.get(sort_by, "start_utc")
+        order_direction = "ASC" if direction.lower() == "asc" else "DESC"
+        clauses = ["namespace=?", "start_utc>=?", "start_utc<?", "simulation=0"]
+        parameters: list[object] = [
+            namespace,
+            _utc_iso(start_utc),
+            _utc_iso(end_utc),
+        ]
+        if tariff_block is not None:
+            clauses.append("tariff_block=?")
+            parameters.append(int(tariff_block))
+        if qualities:
+            placeholders = ",".join("?" for _ in qualities)
+            clauses.append(f"quality IN ({placeholders})")
+            parameters.extend(qualities)
+        if confirmed_exceeded is not None:
+            clauses.append("confirmed_exceeded=?")
+            parameters.append(int(confirmed_exceeded))
+        if source_epoch is not None:
+            clauses.append("source_epoch=?")
+            parameters.append(int(source_epoch))
+        where = " AND ".join(clauses)
+        with self._lock:
+            total = int(
+                self._db.execute(
+                    f"SELECT COUNT(*) FROM quarters WHERE {where}", parameters
+                ).fetchone()[0]
+            )
+            rows = list(
+                self._db.execute(
+                    f"""SELECT * FROM quarters WHERE {where}
+                        ORDER BY {order_column} {order_direction}, start_utc {order_direction}
+                        LIMIT ? OFFSET ?""",
+                    (*parameters, page_size, (page - 1) * page_size),
+                ).fetchall()
+            )
+        return rows, total
+
+    def history_facets(
+        self, namespace: str, start_utc: datetime, end_utc: datetime
+    ) -> dict[str, object]:
+        """Return bounded archive metadata and diagnostic distributions."""
+
+        parameters = (namespace, _utc_iso(start_utc), _utc_iso(end_utc))
+        where = "namespace=? AND start_utc>=? AND start_utc<? AND simulation=0"
+        with self._lock:
+            bounds = self._db.execute(
+                f"""SELECT COUNT(*) AS total, MIN(start_utc) AS oldest,
+                           MAX(start_utc) AS newest,
+                           SUM(CASE WHEN quality IN ('measured_aligned','counter_derived',
+                               'reconstructed') AND configuration_status IN
+                               ('known','target_unknown','target_mixed')
+                               THEN 1 ELSE 0 END) AS valid_count,
+                           SUM(CASE WHEN quality IN ('incomplete','unavailable')
+                               THEN 1 ELSE 0 END) AS incomplete_count,
+                           SUM(CASE WHEN quality IN ('measured_aligned','counter_derived',
+                               'reconstructed') AND configuration_status IN
+                               ('known','target_unknown','target_mixed')
+                               THEN import_kwh ELSE 0 END) AS import_kwh,
+                           SUM(CASE WHEN quality IN ('measured_aligned','counter_derived',
+                               'reconstructed') AND configuration_status IN
+                               ('known','target_unknown','target_mixed')
+                               THEN export_kwh ELSE 0 END) AS export_kwh,
+                           SUM(CASE WHEN NOT (quality IN ('measured_aligned','counter_derived',
+                               'reconstructed') AND configuration_status IN
+                               ('known','target_unknown','target_mixed'))
+                               THEN import_kwh ELSE 0 END) AS partial_import_kwh,
+                           SUM(CASE WHEN NOT (quality IN ('measured_aligned','counter_derived',
+                               'reconstructed') AND configuration_status IN
+                               ('known','target_unknown','target_mixed'))
+                               THEN export_kwh ELSE 0 END) AS partial_export_kwh
+                    FROM quarters WHERE {where}""",
+                parameters,
+            ).fetchone()
+            quality_rows = self._db.execute(
+                f"SELECT quality, COUNT(*) AS count FROM quarters WHERE {where} GROUP BY quality",
+                parameters,
+            ).fetchall()
+            provenance_rows = self._db.execute(
+                f"""SELECT provenance, COUNT(*) AS count FROM quarters
+                    WHERE {where} GROUP BY provenance ORDER BY count DESC LIMIT 50""",
+                parameters,
+            ).fetchall()
+            source_rows = self._db.execute(
+                f"""SELECT source_epoch, source_id, COUNT(*) AS count FROM quarters
+                    WHERE {where} GROUP BY source_epoch,source_id ORDER BY source_epoch""",
+                parameters,
+            ).fetchall()
+            configuration_rows = self._db.execute(
+                f"""SELECT configuration_status, COUNT(*) AS count FROM quarters
+                    WHERE {where} GROUP BY configuration_status""",
+                parameters,
+            ).fetchall()
+            contractual_rows = self._db.execute(
+                f"""SELECT contractual_status, COUNT(*) AS count FROM quarters
+                    WHERE {where} GROUP BY contractual_status""",
+                parameters,
+            ).fetchall()
+        return {
+            "total": int(bounds["total"] or 0),
+            "oldest": bounds["oldest"],
+            "newest": bounds["newest"],
+            "valid_count": int(bounds["valid_count"] or 0),
+            "incomplete_count": int(bounds["incomplete_count"] or 0),
+            "import_kwh": float(bounds["import_kwh"] or 0.0),
+            "export_kwh": float(bounds["export_kwh"] or 0.0),
+            "partial_import_kwh": float(bounds["partial_import_kwh"] or 0.0),
+            "partial_export_kwh": float(bounds["partial_export_kwh"] or 0.0),
+            "quality_distribution": {
+                str(row["quality"]): int(row["count"]) for row in quality_rows
+            },
+            "provenance_distribution": {
+                str(row["provenance"]): int(row["count"]) for row in provenance_rows
+            },
+            "source_epochs": [
+                {
+                    "source_epoch": row["source_epoch"],
+                    "source_id": row["source_id"],
+                    "count": int(row["count"]),
+                }
+                for row in source_rows
+            ],
+            "configuration_distribution": {
+                str(row["configuration_status"]): int(row["count"])
+                for row in configuration_rows
+            },
+            "contractual_distribution": {
+                str(row["contractual_status"]): int(row["count"])
+                for row in contractual_rows
+            },
+        }
+
+    def archive_storage_status(self) -> dict[str, object]:
+        """Return non-blocking-friendly storage metadata for an executor caller."""
+
+        with self._lock:
+            self._db.execute("SELECT 1").fetchone()
+        return {
+            "schema_version": self.schema_version,
+            "path": self.path.name,
+            "size_bytes": self.path.stat().st_size if self.path.exists() else 0,
+            "retention": "forever",
+            "writable": self.path.exists() and self.path.is_file(),
+        }
+
+    def backup(self, destination: str | Path) -> Path:
+        """Create a transactionally consistent SQLite backup without rewriting history."""
+
+        target = Path(destination)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            backup_db = sqlite3.connect(target)
+            try:
+                self._db.backup(backup_db)
+            finally:
+                backup_db.close()
+        return target
+
+    def begin_reconstruction_job(
+        self,
+        namespace: str,
+        start_utc: datetime,
+        end_utc: datetime,
+        source_id: str,
+        *,
+        mode: str,
+        summary: dict[str, Any],
+    ) -> str:
+        """Persist a reconstruction audit/apply job before any archive mutation."""
+
+        job_id = uuid.uuid4().hex
+        with self._lock, self._db:
+            self._db.execute(
+                """INSERT INTO reconstruction_jobs(
+                     job_id,namespace,start_utc,end_utc,source_id,mode,status,
+                     summary_json,created_utc)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (
+                    job_id,
+                    namespace,
+                    _utc_iso(start_utc),
+                    _utc_iso(end_utc),
+                    source_id,
+                    mode,
+                    "audited" if mode == "audit" else "pending",
+                    json.dumps(summary, sort_keys=True),
+                    _utc_iso(datetime.now(UTC)),
+                ),
+            )
+        return job_id
+
+    def finish_reconstruction_job(
+        self, job_id: str, status: str, summary: dict[str, Any]
+    ) -> None:
+        """Close a job while preserving a restart-visible partial/failure result."""
+
+        with self._lock, self._db:
+            self._db.execute(
+                """UPDATE reconstruction_jobs SET status=?,summary_json=?,completed_utc=?
+                   WHERE job_id=?""",
+                (
+                    status,
+                    json.dumps(summary, sort_keys=True),
+                    _utc_iso(datetime.now(UTC)),
+                    job_id,
+                ),
+            )
+
+    def register_backup(
+        self, namespace: str, job_id: str, backup_path: Path
+    ) -> str:
+        """Record backup metadata without exposing the host path to the frontend."""
+
+        backup_id = uuid.uuid4().hex
+        with self._lock, self._db:
+            self._db.execute(
+                """INSERT INTO archive_backups(
+                     backup_id,namespace,job_id,filename,size_bytes,created_utc)
+                   VALUES(?,?,?,?,?,?)""",
+                (
+                    backup_id,
+                    namespace,
+                    job_id,
+                    backup_path.name,
+                    backup_path.stat().st_size,
+                    _utc_iso(datetime.now(UTC)),
+                ),
+            )
+        return backup_id
+
+    def apply_reconstructed_record(
+        self, job_id: str, record: ArchiveRecord, *, reason: str
+    ) -> bool:
+        """Apply one quality-ranked improvement and preserve the replaced row."""
+
+        with self._lock:
+            existing = self._db.execute(
+                "SELECT * FROM quarters WHERE namespace=? AND start_utc=?",
+                (record.namespace, _utc_iso(record.start_utc)),
+            ).fetchone()
+            original = (
+                None
+                if existing is None
+                else {
+                    key: existing[key]
+                    for key in existing.keys()  # noqa: SIM118 - sqlite Row values differ
+                }
+            )
+            changed = self.upsert_quarter(record)
+            if not changed and existing is not None:
+                refreshed = self._db.execute(
+                    "SELECT * FROM quarters WHERE namespace=? AND start_utc=?",
+                    (record.namespace, _utc_iso(record.start_utc)),
+                ).fetchone()
+                changed = dict(refreshed) != dict(existing)
+            if changed:
+                with self._db:
+                    self._db.execute(
+                        """INSERT INTO quarter_revisions(
+                             namespace,start_utc,job_id,original_json,replacement_json,
+                             reason,created_utc) VALUES(?,?,?,?,?,?,?)""",
+                        (
+                            record.namespace,
+                            _utc_iso(record.start_utc),
+                            job_id,
+                            json.dumps(original, sort_keys=True),
+                            json.dumps(asdict(record), sort_keys=True, default=str),
+                            reason,
+                            _utc_iso(datetime.now(UTC)),
+                        ),
+                    )
+            return changed
+
     def aggregate_period(
         self,
         namespace: str,
@@ -1185,7 +1485,7 @@ class QuarterArchive:
                     PRAGMA user_version=5;
                     """
                 )
-            return
+            version = 5
         if version == 1:
             with self._db:
                 self._db.executescript(
@@ -1293,6 +1593,37 @@ class QuarterArchive:
                     ALTER TABLE quarters ADD COLUMN target_provenance TEXT;
                     ALTER TABLE quarters ADD COLUMN target_recorded_on TEXT;
                     PRAGMA user_version=5;
+                    """
+                )
+            version = 5
+        if version == 5:
+            with self._db:
+                self._db.executescript(
+                    """
+                    CREATE TABLE reconstruction_jobs(
+                      job_id TEXT PRIMARY KEY, namespace TEXT NOT NULL,
+                      start_utc TEXT NOT NULL, end_utc TEXT NOT NULL,
+                      source_id TEXT NOT NULL, mode TEXT NOT NULL,
+                      status TEXT NOT NULL, summary_json TEXT NOT NULL,
+                      created_utc TEXT NOT NULL, completed_utc TEXT);
+                    CREATE TABLE quarter_revisions(
+                      revision_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      namespace TEXT NOT NULL, start_utc TEXT NOT NULL,
+                      job_id TEXT NOT NULL, original_json TEXT NOT NULL,
+                      replacement_json TEXT NOT NULL, reason TEXT NOT NULL,
+                      created_utc TEXT NOT NULL,
+                      FOREIGN KEY(job_id) REFERENCES reconstruction_jobs(job_id));
+                    CREATE TABLE archive_backups(
+                      backup_id TEXT PRIMARY KEY, namespace TEXT NOT NULL,
+                      job_id TEXT, filename TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+                      created_utc TEXT NOT NULL);
+                    CREATE INDEX idx_quarters_namespace_quality_start
+                      ON quarters(namespace,quality,start_utc);
+                    CREATE INDEX idx_quarters_namespace_source_epoch_start
+                      ON quarters(namespace,source_epoch,start_utc);
+                    CREATE INDEX idx_quarter_revisions_namespace_start
+                      ON quarter_revisions(namespace,start_utc);
+                    PRAGMA user_version=6;
                     """
                 )
 

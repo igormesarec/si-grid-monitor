@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -71,6 +72,7 @@ from .engine import (
     PowerSample,
     quarter_bounds,
 )
+from .reconstruction import audit_summary, plan_reconstruction
 from .sustained import SustainedForecast, calculate_sustained_forecast
 from .tariffs import SlovenianTariffCalendar, TariffClassification
 from .tariffs.models import RuleStatus
@@ -131,6 +133,7 @@ class GridMonitorRuntime:
         self._completed_store_task: asyncio.Task[None] | None = None
         self._archive_tasks = ArchiveTaskQueue()
         self._archive_operation_lock = asyncio.Lock()
+        self._reconstruction_plans: dict[str, dict[str, object]] = {}
 
     @property
     def settings(self) -> dict[str, float | int | bool | str]:
@@ -891,6 +894,207 @@ class GridMonitorRuntime:
                 )
         except Exception:  # recorder availability/API failures must not stop live data
             _LOGGER.exception("SI Grid Monitor recorder backfill did not complete")
+
+    async def async_audit_recorder_history(
+        self, start_utc: datetime, end_utc: datetime
+    ) -> dict[str, object]:
+        """Dry-run bounded detailed-state reconstruction for known source epochs."""
+
+        from homeassistant.components.recorder.history import get_significant_states
+        from homeassistant.helpers.recorder import get_instance
+
+        start = start_utc.astimezone(UTC)
+        end = min(end_utc.astimezone(UTC), dt_util.utcnow())
+        if end <= start:
+            raise ValueError("Recorder audit range is empty")
+        epochs = await self.hass.async_add_executor_job(
+            self.archive.list_configuration_epochs, self.namespace
+        )
+        existing = await self.hass.async_add_executor_job(
+            self.archive.list_quarters, self.namespace, start, end
+        )
+        recorder = get_instance(self.hass)
+        candidates: dict[str, object] = {}
+        queried_chunks = 0
+        known_segments = 0
+        for index, epoch in enumerate(epochs):
+            epoch_end = epochs[index + 1].effective_utc if index + 1 < len(epochs) else end
+            segment_start = max(start, epoch.effective_utc)
+            segment_end = min(end, epoch_end)
+            if segment_end <= segment_start:
+                continue
+            known_segments += 1
+            cursor = segment_start
+            while cursor < segment_end:
+                desired_end = cursor + timedelta(days=7)
+                aligned_end = quarter_bounds(desired_end).start_utc
+                chunk_end = min(segment_end, aligned_end)
+                if chunk_end <= cursor:
+                    chunk_end = segment_end
+                history = await recorder.async_add_executor_job(
+                    partial(
+                        get_significant_states,
+                        self.hass,
+                        cursor,
+                        chunk_end,
+                        entity_ids=[epoch.source_id],
+                        include_start_time_state=True,
+                        significant_changes_only=False,
+                        minimal_response=False,
+                        no_attributes=False,
+                    )
+                )
+                queried_chunks += 1
+                readings = []
+                for state in history.get(epoch.source_id, []):
+                    unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
+                    if not isinstance(unit, str) or state.state in {
+                        "unknown",
+                        "unavailable",
+                        "none",
+                        "",
+                    }:
+                        continue
+                    readings.append(
+                        HistoricalPowerReading(
+                            timestamp=state.last_reported or state.last_updated,
+                            value=state.state,
+                            unit=unit,
+                        )
+                    )
+                samples = normalize_historical_readings(
+                    readings, positive_means_import=epoch.positive_means_import
+                )
+                quarters = reconstruct_quarters(
+                    samples,
+                    end_utc=chunk_end,
+                    source_id=(
+                        f"{epoch.source_id}|positive_means_import="
+                        f"{epoch.positive_means_import}"
+                    ),
+                    stale_after_seconds=DEFAULT_STALE_AFTER_SECONDS,
+                )
+                configuration = _resolution_for_epoch(epoch)
+                for quarter in quarters:
+                    if quarter.start_utc < cursor or quarter.end_utc > chunk_end:
+                        continue
+                    record = archive_record_from_quarter(
+                        namespace=self.namespace,
+                        quarter=quarter,
+                        configuration=configuration,
+                        provenance="user_confirmed_recorder_reconstruction",
+                        tariff=tariff_for_configuration(quarter.start_utc, configuration),
+                    )
+                    candidates[quarter.start_utc.isoformat()] = record
+                cursor = chunk_end
+        records = tuple(candidates.values())
+        decisions = plan_reconstruction(existing, records)
+        summary = audit_summary(decisions)
+        token = uuid.uuid4().hex
+        self._reconstruction_plans = {token: {
+            "start_utc": start,
+            "end_utc": end,
+            "records": records,
+            "decisions": decisions,
+            "source_id": self.power_entity,
+        }}
+        return {
+            "audit_token": token,
+            "range": {"start_utc": start.isoformat(), "end_utc": end.isoformat()},
+            "summary": summary,
+            "candidates": [
+                {
+                    "start_utc": item.start_utc,
+                    "action": item.action,
+                    "reason": item.reason,
+                    "existing_quality": item.existing_quality,
+                    "proposed_quality": item.proposed_quality,
+                    "existing_coverage_seconds": item.existing_coverage_seconds,
+                    "proposed_coverage_seconds": item.proposed_coverage_seconds,
+                    "import_difference_kwh": item.import_difference_kwh,
+                    "contractual_status": item.contractual_status,
+                }
+                for item in decisions
+            ],
+            "diagnostics": {
+                "recorder_query_chunks": queried_chunks,
+                "known_configuration_segments": known_segments,
+                "unknown_configuration_before": (
+                    epochs[0].effective_utc.isoformat()
+                    if epochs and start < epochs[0].effective_utc
+                    else None
+                ),
+                "long_term_statistics_used": False,
+            },
+        }
+
+    async def async_apply_recorder_reconstruction(
+        self, audit_token: str
+    ) -> dict[str, object]:
+        """Apply one in-memory dry run after a consistent SQLite backup."""
+
+        plan = self._reconstruction_plans.pop(audit_token, None)
+        if plan is None:
+            raise ValueError("audit token is missing, expired, or already used")
+        decisions = plan["decisions"]
+        records = plan["records"]
+        selected = {
+            item.start_utc: item for item in decisions if item.action in {"insert", "improve"}
+        }
+        summary = audit_summary(decisions)
+        job_id = await self.hass.async_add_executor_job(
+            lambda: self.archive.begin_reconstruction_job(
+                self.namespace,
+                plan["start_utc"],
+                plan["end_utc"],
+                str(plan["source_id"]),
+                mode="confirmed_reconstruction",
+                summary=summary,
+            )
+        )
+        backup_path = self.archive.path.with_name(
+            f"{self.archive.path.stem}.before-reconstruction-{job_id[:12]}.db"
+        )
+        applied = 0
+        try:
+            async with self._archive_operation_lock:
+                backup = await self.hass.async_add_executor_job(self.archive.backup, backup_path)
+                backup_id = await self.hass.async_add_executor_job(
+                    self.archive.register_backup, self.namespace, job_id, backup
+                )
+                for record in records:
+                    decision = selected.get(record.start_utc.isoformat())
+                    if decision is None:
+                        continue
+                    changed = await self.hass.async_add_executor_job(
+                        lambda record=record, reason=decision.reason: (
+                            self.archive.apply_reconstructed_record(
+                                job_id, record, reason=reason
+                            )
+                        )
+                    )
+                    applied += int(changed)
+            result = {**summary, "applied_count": applied, "backup_id": backup_id}
+            await self.hass.async_add_executor_job(
+                self.archive.finish_reconstruction_job, job_id, "completed", result
+            )
+            return {"job_id": job_id, **result}
+        except asyncio.CancelledError:
+            await self.hass.async_add_executor_job(
+                self.archive.finish_reconstruction_job,
+                job_id,
+                "cancelled_partial",
+                {**summary, "applied_count": applied},
+            )
+            raise
+        except Exception:
+            await self.hass.async_add_executor_job(
+                self.archive.finish_reconstruction_job,
+                job_id,
+                "failed_or_partial",
+                {**summary, "applied_count": applied},
+            )
+            raise
 
     @callback
     def _checkpoint_if_due(self, now: datetime) -> None:
