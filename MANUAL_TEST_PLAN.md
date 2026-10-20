@@ -1,4 +1,38 @@
-# SI Grid Monitor V0.6.0 - Real Home Assistant Test Plan
+# SI Grid Monitor V0.8.0 - Real Home Assistant Test Plan
+
+## V0.8 HISTORY, reconstruction and platform acceptance
+
+1. Back up Home Assistant. Record the pre-update schema-5 row count, database
+   size, oldest/newest quarter, config-entry ID and entity unique IDs.
+2. Update through HACS, restart, and hard-refresh desktop and Android WebViews.
+   Confirm versioned `0.8.0` dashboard modules load and no entry reconfiguration
+   is requested. Verify schema 6 and the exact same historical quarter count.
+3. Open HISTORY and test day/week/month/year/custom ranges, B1–B5, quality and
+   exceedance filters, sorting and pagination. A valid measured zero must remain
+   distinct from a missing quarter. Follow a row into exact-quarter details.
+4. Inspect 29 March and 25 October 2026. Confirm 92/100 quarters and distinguish
+   both repeated 02:00 hours by UTC identity/offset/fold.
+5. On a copy of the production system, choose a small range with known detailed
+   Recorder states and run Audit only. Confirm no archive row or row count changes.
+   Verify dates before the first known source/sign epoch are reported uncertain.
+6. Review candidates, deliberately confirm reconstruction, and verify a backup
+   metadata entry exists before changed rows. Re-run the audit: equal/stronger
+   rows must be skipped. Interrupt one test job and verify restart leaves a valid
+   database, preserved backup and retryable audit.
+7. Simulate Recorder unavailable, SQLite locked/read-only and full storage on a
+   disposable instance. Live monitoring must continue where safe; errors must be
+   explicit and no trusted row may be downgraded.
+8. Change Home Assistant between English and Slovenian while HISTORY has filters
+   and a selected meter. Text should change without losing selection or showing
+   data from another meter. Review every tab, warning, error, legend and control.
+9. Verify Tariff Calendar reports 2026/2027 official and 2028–2030 provisional.
+   With provisional policy disabled, future contractual advice stays unavailable;
+   enabling it must still label results provisional, never confirmed.
+10. Build the Pages preview artifact and inspect mobile/desktop navigation and
+    links. Do not enable repository Pages deployment without owner approval.
+
+The Recorder audit uses detailed timestamped states only. It must never claim
+that long-term hourly statistics can reconstruct import/export quarters.
 
 Use a disposable or backed-up Home Assistant instance. Never infer physical
 connection capacity from CAN ADD values.

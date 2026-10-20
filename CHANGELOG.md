@@ -4,6 +4,24 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-20
+
+- Added the HISTORY archive explorer with canonical UTC quarter identities,
+  server-side filters/sorting/pagination, quality/provenance distributions,
+  exact-quarter drill-down and bounded responses suitable for dense archives.
+- Added additive SQLite schema 6 tables for reconstruction jobs, immutable
+  before/after revision records and backup metadata; existing schema-5 quarters
+  migrate in place without target, tariff or measurement recalculation.
+- Added administrator-only, user-initiated detailed-Recorder audit and confirmed
+  reconstruction. Audits are dry-run, chunked, epoch-aware and never use hourly
+  long-term statistics; applying requires confirmation and creates a SQLite backup.
+- Added offline tariff lifecycle metadata. 2026/2027 remain official; 2028–2030
+  remain explicitly provisional and require opt-in.
+- Added a shared English/Slovenian dashboard localization layer with English
+  fallback and runtime-language refresh, plus updated HA translations.
+- Added responsive GitHub Pages source and a build-only preview workflow. Pages
+  deployment and repository settings remain owner-controlled.
+
 ## [0.6.0] - 2026-10-19
 
 - Ordered every PERIOD chart bin by its canonical expected UTC start, with a
