@@ -5,18 +5,18 @@
       "already_configured": "Ta vir je že nastavljen."
     },
     "error": {
-      "mode_not_available_v0_4": "Ta način vira v V0.4 še ni izveden. Izberite en podpisan senzor trenutne moči omrežja.",
+      "mode_not_available_v0_4": "Ta način vira v V0.8 še ni izveden. Izberite en podpisan senzor trenutne moči omrežja.",
       "invalid_contracted_power_periods": "Obdobja dogovorjene moči niso veljavna, se prekrivajo ali imajo končni datum pred začetnim."
     },
     "step": {
       "user": {
         "title": "Vir meritev",
-        "description": "V0.4 v celoti podpira podpisan senzor moči v W ali kW. Drugi načini so še nedostopni.",
+        "description": "V0.8 v celoti podpira podpisan senzor moči v W ali kW. Drugi načini so še nedostopni.",
         "data": {
           "source_mode": "Način vira"
         },
         "data_description": {
-          "source_mode": "Izberite vrsto vira. V0.4 deluje le en senzor podpisane moči (W ali kW); drugi načini še niso na voljo."
+          "source_mode": "Izberite vrsto vira. V0.8 deluje le en senzor podpisane moči (W ali kW); drugi načini še niso na voljo."
         }
       },
       "meter": {
@@ -242,7 +242,7 @@
   "selector": {
     "source_mode": {
       "options": {
-        "signed_power": "En podpisan senzor trenutne moči (V0.4)",
+        "signed_power": "En podpisan senzor trenutne moči (V0.8)",
         "separate_power": "Ločena senzorja uvoza/izvoza (načrtovano)",
         "import_only": "Senzor samo uvozne moči (načrtovano)",
         "cumulative_energy": "Kumulativni števci energije (načrtovano)",

@@ -88,8 +88,8 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             options[CONF_CONTRACTED_POWER_PERIODS] = "[]"
         hass.config_entries.async_update_entry(entry, options=options, version=3, minor_version=1)
     if entry.version < 4:
-        # V0.4 keeps the schema-5 archive and authoritative serialized schedule
-        # unchanged; only the UI used to manage that schedule changes.
+        # Entry identity and the authoritative serialized schedule stay unchanged.
+        # Archive migration is independently additive in QuarterArchive.
         hass.config_entries.async_update_entry(entry, version=4, minor_version=0)
     return True
 

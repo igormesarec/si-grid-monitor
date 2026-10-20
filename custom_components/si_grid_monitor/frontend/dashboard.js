@@ -26,7 +26,8 @@ import {
   selectTimelineHour,
   todayChartModel,
   todayQuarterAction,
-} from "./dashboard-model.mjs?v=0.6.0";
+} from "./dashboard-model.mjs?v=0.8.0";
+import {dashboardLanguage, localizeDashboard} from "./dashboard-i18n.mjs?v=0.8.0";
 
 const fmt = (value, digits = 2) => value == null ? "—" : Number(value).toFixed(digits);
 const fmtEnergyReference = value => value == null ? "—" : Number(value).toFixed(3);
@@ -55,8 +56,10 @@ export class SIGridMonitorPanel extends HTMLElement {
   }
 
   set hass(value) {
+    const previousLanguage = dashboardLanguage(this._hass);
     this._hass = value;
     if (!this._loaded) this._load();
+    else if (previousLanguage !== dashboardLanguage(value)) this._render();
   }
 
   set panel(value) { this._panel = value; }
@@ -82,11 +85,31 @@ export class SIGridMonitorPanel extends HTMLElement {
     this._day = null;
     this._dayError = null;
     this._calendar = null;
+    this._tariffStatus = null;
     this._calendarError = null;
     this._transitions = null;
     this._period = null;
     this._blocks = null;
     this._exceedances = null;
+    this._historyPage = null;
+    this._historyPageError = null;
+    this._historyPageLoading = false;
+    this._historyAudit = null;
+    this._historyAuditError = null;
+    this._historyAuditLoading = false;
+    this._historyPageNumber ??= 1;
+    this._historyPageSize ??= 50;
+    this._historyQuality ??= "all";
+    this._historyBlock ??= "all";
+    this._historyConfirmed ??= "all";
+    this._historySort ??= "start_utc";
+    this._historyDirection ??= "desc";
+    if (!this._historyStartDate) {
+      const start = new Date();
+      start.setDate(start.getDate() - 30);
+      this._historyStartDate = localDate(start);
+    }
+    this._historyEndDate ??= this._selectedDate;
     this._periodError = null;
     this._periodLoading = false;
     this._periodType ??= "day";
@@ -266,10 +289,31 @@ export class SIGridMonitorPanel extends HTMLElement {
         this._exceedances = exceedances;
         this._periodError = null;
         this._periodLoading = false;
+      } else if (this._tab === "history") {
+        this._historyPageLoading = true;
+        const history = await this._call("history", {
+          start_date: this._historyStartDate,
+          end_date: this._historyEndDate,
+          ...(this._historyBlock === "all" ? {} : {tariff_block: Number(this._historyBlock)}),
+          ...(this._historyQuality === "all" ? {} : {qualities: [this._historyQuality]}),
+          ...(this._historyConfirmed === "all" ? {} : {confirmed_exceeded: this._historyConfirmed === "yes"}),
+          page: this._historyPageNumber,
+          page_size: this._historyPageSize,
+          sort_by: this._historySort,
+          direction: this._historyDirection,
+        }, entryId);
+        if (!this._gate.accepts(token)) return;
+        this._historyPage = history;
+        this._historyPageError = null;
+        this._historyPageLoading = false;
       } else {
-        const calendar = await this._call("calendar", {date: this._selectedDate}, entryId);
+        const [calendar, tariffStatus] = await Promise.all([
+          this._call("calendar", {date: this._selectedDate}, entryId),
+          this._call("tariff_status", {}, entryId),
+        ]);
         if (!this._gate.accepts(token)) return;
         this._calendar = calendar;
+        this._tariffStatus = tariffStatus;
         this._calendarError = null;
       }
       this._error = null;
@@ -284,6 +328,10 @@ export class SIGridMonitorPanel extends HTMLElement {
           this._exceedances = null;
           this._periodLoading = false;
           this._periodError = error?.message || "Could not load the selected period.";
+        } else if (this._tab === "history") {
+          this._historyPage = null;
+          this._historyPageLoading = false;
+          this._historyPageError = error?.message || "Could not load the HISTORY archive.";
         } else if (this._tab === "calendar") {
           this._calendar = null;
           this._calendarError = error?.message || "Could not load the tariff calendar.";
@@ -873,6 +921,38 @@ export class SIGridMonitorPanel extends HTMLElement {
     return `<section class="card">${this._periodControls()}<div class="herohead"><div><p class="eyebrow">CONFIRMED CONTRACTUAL EXCEEDANCES</p><h2>${esc(data.period.label)}</h2></div><strong class="count">${summary.exceedance_count}</strong></div><div class="grid">${this._metric("Exceeded quarters", summary.exceedance_count)}${this._metric("Exceeded duration", summary.exceeded_duration_minutes, "minutes")}${this._metric("Maximum import demand", fmt(summary.maximum_import_demand_kw), "kW")}${this._metric("Maximum excess", fmt(summary.maximum_excess_kw), "kW")}${this._metric("Maximum excess percentage", fmt(summary.maximum_excess_percentage), "%")}${this._metric("Average excess", fmt(summary.average_excess_kw), "kW")}${this._metric("Confirmed rate", fmt(summary.confirmed_exceedance_rate_pct), "%")}${this._metric("Eligible quarters", summary.contractual_eligible_count)}${this._metric("Incomplete / unconfirmed", summary.incomplete_or_unconfirmed_count)}${this._metric("Most affected block", summary.most_affected_block ? `B${summary.most_affected_block}` : "—")}${this._metric("Greatest exceedance", greatest?.start_utc ? localQuarterLabel(greatest.start_utc) : "—")}</div><div class="exceedance-controls"><label>Sort <select data-exceedance-sort>${[["date", "Date"], ["demand", "Demand"], ["excess_kw", "Excess kW"], ["excess_percentage", "Excess %"]].map(([value, label]) => `<option value="${value}" ${value === this._exceedanceSort ? "selected" : ""}>${label}</option>`).join("")}</select></label><label>Order <select data-exceedance-direction><option value="desc" ${this._exceedanceDirection === "desc" ? "selected" : ""}>Descending</option><option value="asc" ${this._exceedanceDirection === "asc" ? "selected" : ""}>Ascending</option></select></label></div>${zeroState}${table}<div class="pagination"><button data-exceedance-page="${data.pagination.page - 1}" ${data.pagination.page <= 1 ? "disabled" : ""}>Previous</button><span>Page ${data.pagination.page} of ${Math.max(1, data.pagination.pages)} · ${data.pagination.total} quarters</span><button data-exceedance-page="${data.pagination.page + 1}" ${data.pagination.page >= data.pagination.pages ? "disabled" : ""}>Next</button></div><p class="chart-key">Each row is one confirmed 15-minute interval. Consecutive intervals are never merged. Equivalent excess energy is analytical only and is not an official network fee.</p></section>`;
   }
 
+  _historyView() {
+    if (this._historyPageError) return `<section class="card error"><h2>HISTORY unavailable</h2><p>${esc(this._historyPageError)}</p><button data-history-retry>Retry</button></section>`;
+    const data = this._historyPage;
+    const controls = `<section class="card"><div class="history-controls"><label>From<input data-history-start type="date" value="${esc(this._historyStartDate)}"></label><label>Through<input data-history-end type="date" value="${esc(this._historyEndDate)}"></label><label>Tariff block<select data-history-block><option value="all">All</option>${[1,2,3,4,5].map(block => `<option value="${block}" ${this._historyBlock === String(block) ? "selected" : ""}>B${block}</option>`).join("")}</select></label><label>Data quality<select data-history-quality>${[["all","All"],["measured_aligned","Measured aligned"],["counter_derived","Counter derived"],["reconstructed","Reconstructed"],["incomplete","Incomplete"],["unavailable","Unavailable"]].map(([value,label]) => `<option value="${value}" ${this._historyQuality === value ? "selected" : ""}>${label}</option>`).join("")}</select></label><label>Confirmed exceedance<select data-history-confirmed>${[["all","All"],["yes","Yes"],["no","No / unconfirmed"]].map(([value,label]) => `<option value="${value}" ${this._historyConfirmed === value ? "selected" : ""}>${label}</option>`).join("")}</select></label><button data-history-apply>Apply filters</button></div></section>`;
+    if (!data) return `${controls}<section class="card">${this._historyPageLoading ? "Loading HISTORY…" : "Select a range to inspect the archive."}</section>`;
+    const summary = data.summary || {};
+    const storage = data.storage || {};
+    const missing = summary.missing_count == null ? "Not classifiable with active filters" : summary.missing_count;
+    const quality = Object.entries(summary.quality_distribution || {}).map(([name,count]) => `${esc(name)}: ${count}`).join(" · ") || "No archived rows";
+    const provenance = Object.entries(summary.provenance_distribution || {}).map(([name,count]) => `${esc(name)}: ${count}`).join(" · ") || "No archived rows";
+    const audit = `<section class="selected-quarter"><h3>Home Assistant Recorder audit</h3><p>Audit only reads detailed timestamped states. It never uses hourly long-term statistics or changes archive quarters.</p><button data-recorder-audit ${this._historyAuditLoading ? "disabled" : ""}>${this._historyAuditLoading ? "Auditing…" : "Audit selected range"}</button>${this._historyAuditError ? `<p class="error">${esc(this._historyAuditError)}</p>` : ""}${this._historyAudit ? `<div class="grid">${this._metric("Candidates", this._historyAudit.summary.candidate_count)}${this._metric("Missing inserts", this._historyAudit.summary.insert_count)}${this._metric("Quality improvements", this._historyAudit.summary.improve_count)}${this._metric("Protected / skipped", this._historyAudit.summary.skip_count)}${this._metric("Contractually unconfirmed", this._historyAudit.summary.contractually_unconfirmed_count)}</div><p class="safety">Review the dry run. Applying creates a consistent SQLite backup and revision trail first. This action cannot be undone from the dashboard.</p><label class="row"><input data-recorder-confirm type="checkbox"> I reviewed the dry run and authorize reconstruction</label><button data-recorder-apply>Apply eligible improvements</button>` : ""}</section>`;
+    const table = data.items?.length ? `<table class="history-table"><thead><tr><th>Local quarter</th><th>UTC identity</th><th>Block</th><th>Import / export</th><th>Signed / import demand</th><th>Target / utilization</th><th>Exceedance</th><th>Quality / coverage</th><th>Source / epoch</th><th>Tariff rule</th></tr></thead><tbody>${data.items.map(row => `<tr data-history-quarter="${esc(row.start_utc)}" tabindex="0"><td>${esc(localQuarterLabel(row.start_utc))}–${esc(localTime(row.end_utc))}</td><td><code>${esc(row.start_utc)}</code></td><td>${row.tariff_block ? `B${row.tariff_block}` : "Unknown"}</td><td>${fmt(row.import_kwh,3)} / ${fmt(row.export_kwh,3)} kWh</td><td>${fmt(row.signed_average_kw)} / ${fmt(row.import_demand_kw)} kW</td><td>${fmt(row.contractual_target_kw)} kW / ${fmt(row.utilization_pct)}%</td><td>${row.confirmed_exceeded ? `Yes · ${fmt(row.excess_kw)} kW` : row.contractual_eligible ? "No" : "Unconfirmed"}</td><td>${esc(row.quality)} · ${fmt(row.coverage_pct)}%</td><td>${esc(row.source_id || "Unknown")} / ${row.source_epoch ?? "—"}</td><td>${esc(row.tariff_rule_version || "Unknown")} · ${esc(row.tariff_rule_status || "Unknown")}</td></tr>`).join("")}</tbody></table>` : `<p class="empty">No archived quarters match these filters. Missing measurements are not displayed as zero energy.</p>`;
+    return `${controls}<section class="card"><div class="herohead"><div><p class="eyebrow">PERMANENT 15-MINUTE ARCHIVE</p><h2>HISTORY</h2></div><strong class="count">${summary.total ?? 0}</strong></div><div class="grid">${this._metric("Oldest archived quarter", summary.oldest ? localQuarterLabel(summary.oldest) : "—")}${this._metric("Newest archived quarter", summary.newest ? localQuarterLabel(summary.newest) : "—")}${this._metric("Valid completed quarters", summary.valid_count ?? 0)}${this._metric("Incomplete / unavailable", summary.incomplete_count ?? 0)}${this._metric("Missing expected intervals", missing)}${this._metric("Valid imported energy", fmt(summary.import_kwh,3), "kWh")}${this._metric("Valid exported energy", fmt(summary.export_kwh,3), "kWh")}${this._metric("Partial observed import", fmt(summary.partial_import_kwh,3), "kWh")}${this._metric("Archive schema", storage.schema_version)}${this._metric("Database size", storage.size_bytes == null ? "—" : fmt(storage.size_bytes / 1048576,2), "MiB")}${this._metric("Retention", storage.retention || "Unknown")}</div><p class="chart-key">Quality: ${quality}</p><p class="chart-key">Provenance: ${provenance}</p>${table}<div class="pagination"><button data-history-page="${data.pagination.page - 1}" ${data.pagination.page <= 1 ? "disabled" : ""}>Previous</button><span>Page ${data.pagination.page} of ${Math.max(1,data.pagination.pages)} · ${data.pagination.total} matching quarters</span><button data-history-page="${data.pagination.page + 1}" ${data.pagination.page >= data.pagination.pages ? "disabled" : ""}>Next</button></div><p class="safety">Quarter rows are immutable summaries. SI Grid Monitor does not fabricate a historical power curve when detailed samples are not archived.</p></section>`;
+  }
+
+  _historyAuditPanel() {
+    const audit = this._historyAudit;
+    const candidates = audit?.candidates?.length
+      ? `<table><thead><tr><th>Quarter (UTC)</th><th>Decision</th><th>Existing → proposed quality</th><th>Coverage</th><th>Import difference</th><th>Contractual status</th></tr></thead><tbody>${audit.candidates.map(item => `<tr><td><code>${esc(item.start_utc)}</code></td><td>${esc(item.action)}</td><td>${esc(item.existing_quality || "missing")} → ${esc(item.proposed_quality)}</td><td>${fmt(item.existing_coverage_seconds,0)} → ${fmt(item.proposed_coverage_seconds,0)} s</td><td>${fmt(item.import_difference_kwh,4)} kWh</td><td>${esc(item.contractual_status)}</td></tr>`).join("")}</tbody></table>`
+      : "";
+    const result = audit
+      ? `<div class="grid">${this._metric("Candidates", audit.summary.candidate_count)}${this._metric("Missing inserts", audit.summary.insert_count)}${this._metric("Quality improvements", audit.summary.improve_count)}${this._metric("Protected / skipped", audit.summary.skip_count)}${this._metric("Contractually unconfirmed", audit.summary.contractually_unconfirmed_count)}</div>${candidates}${audit.candidates_truncated ? '<p class="notice">Candidate preview is limited to 1,000 rows. Narrow the date range before applying.</p>' : ""}<p class="safety">Review the dry run. Applying creates a consistent SQLite backup and revision trail first. This action cannot be undone from the dashboard.</p><label class="row"><input data-recorder-confirm type="checkbox"> I reviewed the dry run and authorize reconstruction</label><button data-recorder-apply>Apply eligible improvements</button>`
+      : "";
+    return `<section class="selected-quarter" data-history-audit-panel><h3>Home Assistant Recorder audit</h3><p>Audit only reads detailed timestamped states. It never uses hourly long-term statistics or changes archive quarters.</p><button data-recorder-audit ${this._historyAuditLoading ? "disabled" : ""}>${this._historyAuditLoading ? "Auditing…" : "Audit selected range"}</button>${this._historyAuditError ? `<p class="error">${esc(this._historyAuditError)}</p>` : ""}${result}</section>`;
+  }
+
+  _tariffStatusView() {
+    const status = this._tariffStatus;
+    if (!status) return "";
+    return `<section class="card"><h2>Tariff-rule status</h2><div class="grid">${this._metric("Installed integration", status.integration_version)}${this._metric("Applied rule", status.current_rule_version || "Unavailable")}${this._metric("Rule status", status.current_status)}${this._metric("Official coverage ends", status.official_coverage_end || "Unknown")}${this._metric("Update", status.update_recommended ? "Recommended" : "Not currently required")}</div><table><thead><tr><th>Year</th><th>Version</th><th>Status</th><th>Enabled by policy</th><th>Source</th></tr></thead><tbody>${(status.years || []).map(rule => `<tr><td>${rule.year}</td><td>${esc(rule.version)}</td><td>${esc(rule.status)}</td><td>${rule.enabled ? "Yes" : "No"}</td><td><a href="${esc(rule.source_url)}" target="_blank" rel="noreferrer">URO</a></td></tr>`).join("")}</tbody></table><p class="safety">Rule metadata is bundled and works offline. Downloaded or unreviewed rules never become effective automatically.</p></section>`;
+  }
+
   _calendarView() {
     if (this._calendarError) return `<section class="card error"><h2>Tariff calendar unavailable</h2><p>${esc(this._calendarError)}</p><button data-retry-calendar>Retry</button></section>`;
     const calendar = this._calendar;
@@ -1102,6 +1182,96 @@ export class SIGridMonitorPanel extends HTMLElement {
         }
       });
     });
+    root.querySelector("[data-history-apply]")?.addEventListener("click", () => {
+      this._historyStartDate = root.querySelector("[data-history-start]")?.value || this._historyStartDate;
+      this._historyEndDate = root.querySelector("[data-history-end]")?.value || this._historyEndDate;
+      this._historyBlock = root.querySelector("[data-history-block]")?.value || "all";
+      this._historyQuality = root.querySelector("[data-history-quality]")?.value || "all";
+      this._historyConfirmed = root.querySelector("[data-history-confirmed]")?.value || "all";
+      this._historyPageNumber = 1;
+      this._historyPage = null;
+      this._historyAudit = null;
+      this._historyAuditError = null;
+      this._loadTab();
+    });
+    root.querySelector("[data-open-history]")?.addEventListener("click", () => {
+      const period = (this._period || this._blocks || this._exceedances)?.period;
+      this._historyStartDate = period?.start_local?.slice(0, 10) || this._selectedDate;
+      this._historyEndDate = period?.end_utc
+        ? localDate(new Date(new Date(period.end_utc).getTime() - 1))
+        : this._selectedDate;
+      this._historyPageNumber = 1;
+      this._historyPage = null;
+      this._tab = "history";
+      this._render();
+      this._loadTab();
+    });
+    root.querySelector("[data-history-retry]")?.addEventListener("click", () => this._loadTab());
+    root.querySelector("[data-recorder-audit]")?.addEventListener("click", async () => {
+      this._historyAuditLoading = true;
+      this._historyAuditError = null;
+      this._render();
+      try {
+        this._historyAudit = await this._call("recorder_audit", {
+          start_date: this._historyStartDate,
+          end_date: this._historyEndDate,
+        });
+      } catch (error) {
+        this._historyAudit = null;
+        this._historyAuditError = error?.message || String(error);
+      } finally {
+        this._historyAuditLoading = false;
+        this._render();
+      }
+    });
+    if (this._historyAudit?.candidates_truncated) {
+      root.querySelector("[data-recorder-apply]")?.setAttribute("disabled", "");
+    }
+    root.querySelector("[data-recorder-apply]")?.addEventListener("click", async () => {
+      if (!root.querySelector("[data-recorder-confirm]")?.checked
+          || !this._historyAudit || this._historyAudit.candidates_truncated) return;
+      this._historyAuditLoading = true;
+      this._render();
+      try {
+        await this._call("recorder_reconstruct", {
+          audit_token: this._historyAudit.audit_token,
+          confirm: true,
+        });
+        this._historyAudit = null;
+        this._historyPage = null;
+        await this._loadTab();
+      } catch (error) {
+        this._historyAuditError = error?.message || String(error);
+      } finally {
+        this._historyAuditLoading = false;
+        this._render();
+      }
+    });
+    root.querySelectorAll("[data-history-page]").forEach(element => {
+      element.addEventListener("click", () => {
+        this._historyPageNumber = Number(element.dataset.historyPage);
+        this._historyPage = null;
+        this._loadTab();
+      });
+    });
+    root.querySelectorAll("[data-history-quarter]").forEach(element => {
+      const activate = () => {
+        const start = element.dataset.historyQuarter;
+        this._tab = "today";
+        this._selectedDate = localDate(new Date(start));
+        this._selectedTodayQuarterUtc = start;
+        this._day = null;
+        this._render();
+        this._loadTab();
+      };
+      element.addEventListener("click", activate);
+      element.addEventListener("keydown", event => {
+        if (["Enter", " "].includes(event.key)) {
+          event.preventDefault();
+          activate();
+        }
+      });
+    });
     root.querySelectorAll("[data-chart-mode]").forEach(element => {
       element.addEventListener("click", () => {
         this._periodChartMode = element.dataset.chartMode;
@@ -1203,7 +1373,7 @@ export class SIGridMonitorPanel extends HTMLElement {
     if (nextChartDataKey) this._chartDataKey = nextChartDataKey;
     this._resetChartScrollOnRender = false;
     const active = this._entries.find(entry => entry.entry_id === this._entryId);
-    const tabs = [["overview", "OVERVIEW"], ["today", "TODAY"], ["period", "PERIOD"], ["blocks", "BLOCKS"], ["exceedances", "EXCEEDANCES"], ["calendar", "TARIFF CALENDAR"]];
+    const tabs = [["overview", "OVERVIEW"], ["today", "TODAY"], ["period", "PERIOD"], ["blocks", "BLOCKS"], ["exceedances", "EXCEEDANCES"], ["history", "HISTORY"], ["calendar", "TARIFF CALENDAR"]];
     const content = !this._entries.length
       ? `<section class="card"><h2>No configured meter</h2><p>Complete the SI Grid Monitor integration setup wizard first.</p></section>`
       : this._tab === "overview" ? this._overview()
@@ -1211,8 +1381,20 @@ export class SIGridMonitorPanel extends HTMLElement {
           : this._tab === "period" ? this._periodView()
             : this._tab === "blocks" ? this._blocksView()
               : this._tab === "exceedances" ? this._exceedancesView()
-                : this._calendarView();
+                : this._tab === "history" ? this._historyView()
+                  : `${this._calendarView()}${this._tariffStatusView()}`;
     this.shadowRoot.innerHTML = `<style>${this._styles()}</style><style>${this._legendStyles()}</style><main><header><div class="brand"><span>SI</span><div><h1>SI Grid Monitor</h1><p>Import-only contractual demand intelligence</p></div></div><div class="meter"><small>Active meter</small>${this._entries.length > 1 ? `<select data-entry>${this._entries.map(entry => `<option value="${esc(entry.entry_id)}" ${entry.entry_id === this._entryId ? "selected" : ""}>${esc(entry.title)}</option>`).join("")}</select>` : `<strong>${esc(active?.title || "None")}</strong>`}</div></header><nav>${tabs.map(([id, label]) => `<button data-tab="${id}" class="${this._tab === id ? "active" : ""}">${label}</button>`).join("")}</nav>${this._error ? `<div class="error">Connection error: ${esc(this._error)}. The panel will retry automatically.</div>` : ""}${content}</main>`;
+    if (this._tab === "history" && this._historyPage) {
+      this.shadowRoot.querySelector("main > section.card:last-of-type")?.insertAdjacentHTML(
+        "beforeend", this._historyAuditPanel(),
+      );
+    }
+    if (["today", "period", "blocks", "exceedances"].includes(this._tab)) {
+      this.shadowRoot.querySelector("main > section.card:last-of-type")?.insertAdjacentHTML(
+        "beforeend", '<button data-open-history>Open this range in HISTORY</button>',
+      );
+    }
+    localizeDashboard(this.shadowRoot, dashboardLanguage(this._hass));
     this._bind();
     restoreChartScrollState(
       this.shadowRoot, this._chartScrollPositions, chartView.focused,
