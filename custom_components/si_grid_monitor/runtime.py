@@ -969,8 +969,7 @@ class GridMonitorRuntime:
                     samples,
                     end_utc=chunk_end,
                     source_id=(
-                        f"{epoch.source_id}|positive_means_import="
-                        f"{epoch.positive_means_import}"
+                        f"{epoch.source_id}|positive_means_import={epoch.positive_means_import}"
                     ),
                     stale_after_seconds=DEFAULT_STALE_AFTER_SECONDS,
                 )
@@ -991,13 +990,15 @@ class GridMonitorRuntime:
         decisions = plan_reconstruction(existing, records)
         summary = audit_summary(decisions)
         token = uuid.uuid4().hex
-        self._reconstruction_plans = {token: {
-            "start_utc": start,
-            "end_utc": end,
-            "records": records,
-            "decisions": decisions,
-            "source_id": self.power_entity,
-        }}
+        self._reconstruction_plans = {
+            token: {
+                "start_utc": start,
+                "end_utc": end,
+                "records": records,
+                "decisions": decisions,
+                "source_id": self.power_entity,
+            }
+        }
         return {
             "audit_token": token,
             "range": {"start_utc": start.isoformat(), "end_utc": end.isoformat()},
@@ -1028,9 +1029,7 @@ class GridMonitorRuntime:
             },
         }
 
-    async def async_apply_recorder_reconstruction(
-        self, audit_token: str
-    ) -> dict[str, object]:
+    async def async_apply_recorder_reconstruction(self, audit_token: str) -> dict[str, object]:
         """Apply one in-memory dry run after a consistent SQLite backup."""
 
         plan = self._reconstruction_plans.pop(audit_token, None)
@@ -1068,9 +1067,7 @@ class GridMonitorRuntime:
                         continue
                     changed = await self.hass.async_add_executor_job(
                         lambda record=record, reason=decision.reason: (
-                            self.archive.apply_reconstructed_record(
-                                job_id, record, reason=reason
-                            )
+                            self.archive.apply_reconstructed_record(job_id, record, reason=reason)
                         )
                     )
                     applied += int(changed)

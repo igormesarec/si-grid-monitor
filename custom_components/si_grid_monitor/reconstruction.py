@@ -68,9 +68,7 @@ def plan_reconstruction(
                 ),
                 proposed_coverage_seconds=candidate.coverage_seconds,
                 import_difference_kwh=(
-                    None
-                    if current is None
-                    else candidate.import_kwh - float(current["import_kwh"])
+                    None if current is None else candidate.import_kwh - float(current["import_kwh"])
                 ),
                 contractual_status=candidate.contractual_status,
             )

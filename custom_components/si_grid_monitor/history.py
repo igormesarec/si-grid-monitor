@@ -42,9 +42,7 @@ class HistoryQuery:
             raise ValueError("invalid history page")
 
 
-def history_report(
-    archive: QuarterArchive, namespace: str, query: HistoryQuery
-) -> dict[str, Any]:
+def history_report(archive: QuarterArchive, namespace: str, query: HistoryQuery) -> dict[str, Any]:
     """Build a bounded page plus a range-wide, non-fabricated summary."""
 
     start = query.start_utc.astimezone(UTC)
@@ -82,9 +80,7 @@ def history_report(
         item["measured_valid"] = validity.measured_valid
         item["contractual_eligible"] = validity.contractual_eligible
         item["confirmed_exceeded"] = validity.confirmed_exceeded
-        item["coverage_pct"] = max(
-            0.0, min(100.0, 100.0 * float(item["coverage_seconds"]) / 900.0)
-        )
+        item["coverage_pct"] = max(0.0, min(100.0, 100.0 * float(item["coverage_seconds"]) / 900.0))
         item["detailed_trace_available"] = False
         items.append(item)
     return {

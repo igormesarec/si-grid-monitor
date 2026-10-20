@@ -60,9 +60,12 @@ def test_dry_run_is_idempotent_and_protects_stronger_records() -> None:
         "contractually_confirmed_count": 1,
         "contractually_unconfirmed_count": 0,
     }
-    assert plan_reconstruction([_mapping(candidate), _mapping(missing)], [candidate, missing])[
-        0
-    ].action == "skip"
+    assert (
+        plan_reconstruction([_mapping(candidate), _mapping(missing)], [candidate, missing])[
+            0
+        ].action
+        == "skip"
+    )
 
 
 def test_only_better_incomplete_coverage_can_replace_equal_quality() -> None:
@@ -105,8 +108,12 @@ def test_confirmed_apply_creates_backup_and_revision_without_downgrade(tmp_path)
         import_kwh=0.25,
     )
     job_id = archive.begin_reconstruction_job(
-        "meter-a", start, start + timedelta(minutes=15), "sensor.grid",
-        mode="confirmed_reconstruction", summary={"candidate_count": 1}
+        "meter-a",
+        start,
+        start + timedelta(minutes=15),
+        "sensor.grid",
+        mode="confirmed_reconstruction",
+        summary={"candidate_count": 1},
     )
     backup = archive.backup(tmp_path / "before.db")
     backup_id = archive.register_backup("meter-a", job_id, backup)

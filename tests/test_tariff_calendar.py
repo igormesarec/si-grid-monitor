@@ -424,12 +424,8 @@ def test_sustained_forecast_selects_each_future_quarters_block_target() -> None:
 
 
 def test_rule_status_report_never_promotes_provisional_years() -> None:
-    disabled = SlovenianTariffCalendar(allow_provisional=False).rule_status_report(
-        date(2028, 1, 1)
-    )
-    enabled = SlovenianTariffCalendar(allow_provisional=True).rule_status_report(
-        date(2028, 1, 1)
-    )
+    disabled = SlovenianTariffCalendar(allow_provisional=False).rule_status_report(date(2028, 1, 1))
+    enabled = SlovenianTariffCalendar(allow_provisional=True).rule_status_report(date(2028, 1, 1))
     assert disabled["official_coverage_end"] == date(2027, 12, 31)
     assert disabled["current_status"] == "unverified"
     assert enabled["current_status"] == "provisional"

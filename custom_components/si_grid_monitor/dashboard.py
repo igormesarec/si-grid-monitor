@@ -611,9 +611,7 @@ _RECORDER_AUDIT_SCHEMA = {
     }
 )
 @websocket_api.async_response
-async def ws_recorder_audit(
-    hass: HomeAssistant, connection: Any, msg: dict[str, Any]
-) -> None:
+async def ws_recorder_audit(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
     """Run an admin-only, read-only detailed Recorder audit."""
 
     if not connection.user.is_admin:
@@ -736,13 +734,9 @@ async def ws_calendar(hass: HomeAssistant, connection: Any, msg: dict[str, Any])
     )
 
 
-@websocket_api.websocket_command(
-    {vol.Required("type"): f"{DOMAIN}/tariff_status", **_ENTRY_SCHEMA}
-)
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/tariff_status", **_ENTRY_SCHEMA})
 @websocket_api.async_response
-async def ws_tariff_status(
-    hass: HomeAssistant, connection: Any, msg: dict[str, Any]
-) -> None:
+async def ws_tariff_status(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
     """Expose installed, offline tariff metadata without applying remote rules."""
 
     runtime = _runtime(hass, msg)

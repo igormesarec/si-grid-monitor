@@ -894,12 +894,10 @@ class QuarterArchive:
                 for row in source_rows
             ],
             "configuration_distribution": {
-                str(row["configuration_status"]): int(row["count"])
-                for row in configuration_rows
+                str(row["configuration_status"]): int(row["count"]) for row in configuration_rows
             },
             "contractual_distribution": {
-                str(row["contractual_status"]): int(row["count"])
-                for row in contractual_rows
+                str(row["contractual_status"]): int(row["count"]) for row in contractual_rows
             },
         }
 
@@ -962,9 +960,7 @@ class QuarterArchive:
             )
         return job_id
 
-    def finish_reconstruction_job(
-        self, job_id: str, status: str, summary: dict[str, Any]
-    ) -> None:
+    def finish_reconstruction_job(self, job_id: str, status: str, summary: dict[str, Any]) -> None:
         """Close a job while preserving a restart-visible partial/failure result."""
 
         with self._lock, self._db:
@@ -979,9 +975,7 @@ class QuarterArchive:
                 ),
             )
 
-    def register_backup(
-        self, namespace: str, job_id: str, backup_path: Path
-    ) -> str:
+    def register_backup(self, namespace: str, job_id: str, backup_path: Path) -> str:
         """Record backup metadata without exposing the host path to the frontend."""
 
         backup_id = uuid.uuid4().hex
