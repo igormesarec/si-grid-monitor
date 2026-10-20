@@ -19,6 +19,7 @@ import {
   localQuarterLabel,
   moveTodayQuarter,
   periodChartModel,
+  periodBinDescription,
   periodDrillDown,
   periodRequest,
   quarterEnergyModel,
@@ -79,15 +80,44 @@ test("period navigation and drill-down preserve calendar intent", () => {
   };
   assert.equal(adjacentPeriodAnchor(period, -1).anchor, "2026-09-30T21:59:59.999Z");
   assert.equal(adjacentPeriodAnchor(period, 1).anchor, "2026-10-31T23:00:00.000Z");
-  assert.deepEqual(periodDrillDown("year", {bin_key: "2026-10"}), {
+  assert.deepEqual(periodDrillDown("year", {bin_key: "2026-10"}, "month"), {
     periodType: "month", anchor: "2026-10-01",
   });
-  assert.deepEqual(periodDrillDown("month", {bin_key: "2026-10-19"}), {
+  assert.deepEqual(periodDrillDown("month", {bin_key: "2026-10-19"}, "day"), {
     periodType: "day", anchor: "2026-10-19",
   });
-  assert.deepEqual(periodDrillDown("day", {start_utc: "2026-10-19T08:00:00Z"}), {
+  assert.deepEqual(periodDrillDown("day", {start_utc: "2026-10-19T08:00:00Z"}, "quarter"), {
     quarterStartUtc: "2026-10-19T08:00:00Z",
   });
+});
+
+test("period drill-down follows actual bin resolution and canonical missing intervals", () => {
+  assert.deepEqual(periodDrillDown("custom", {bin_key: "2028-02"}, "month"), {
+    periodType: "month", anchor: "2028-02-01",
+  });
+  assert.deepEqual(periodDrillDown("custom", {bin_key: "2028-02-29"}, "day"), {
+    periodType: "day", anchor: "2028-02-29",
+  });
+  const firstFold = periodDrillDown("week", {
+    bin_key: "2026-10-25T02|7200|0",
+    expected_start_utc: "2026-10-25T00:00:00+00:00",
+  }, "hour");
+  const secondFold = periodDrillDown("week", {
+    bin_key: "2026-10-25T02|3600|1",
+    expected_start_utc: "2026-10-25T01:00:00+00:00",
+  }, "hour");
+  assert.deepEqual(firstFold, {
+    periodType: "hour", anchor: "2026-10-25T00:00:00+00:00",
+  });
+  assert.deepEqual(secondFold, {
+    periodType: "hour", anchor: "2026-10-25T01:00:00+00:00",
+  });
+  assert.notEqual(firstFold.anchor, secondFold.anchor);
+  assert.deepEqual(periodDrillDown("day", {
+    status: "missing",
+    bin_key: "2026-10-19T08:15:00+00:00",
+    expected_start_utc: "2026-10-19T08:15:00+00:00",
+  }, "quarter"), {quarterStartUtc: "2026-10-19T08:15:00+00:00"});
 });
 
 test("period chart preserves maximum demand separately from average", () => {
@@ -103,6 +133,25 @@ test("period chart preserves maximum demand separately from average", () => {
     targets_kw: [3.5, 6.0],
   }], "demand");
   assert.equal(withHistoricalTargets.maximum, 6.0);
+});
+
+test("period bins distinguish missing data, incomplete data, and measured zero", () => {
+  const bins = [
+    {bin_key: "missing", status: "missing", valid_count: 0, expected_count: 1,
+      import_kwh: 0},
+    {bin_key: "incomplete", status: "incomplete", valid_count: 0, expected_count: 1,
+      import_kwh: 0, partial_observed_import_kwh: 0.1},
+    {bin_key: "zero", status: "complete", valid_count: 1, expected_count: 1,
+      import_kwh: 0},
+    {bin_key: "measured", status: "complete", valid_count: 1, expected_count: 1,
+      import_kwh: 0.25},
+  ];
+  const model = periodChartModel(bins, "energy");
+  assert.deepEqual(model.items.map(item => item.hasMeasuredData), [false, false, true, true]);
+  assert.match(periodBinDescription(bins[0]), /missing data is not zero/);
+  assert.match(periodBinDescription(bins[1]), /partial observations are excluded/);
+  assert.match(periodBinDescription(bins[2]), /measured; 0\.00 kWh/);
+  assert.match(periodBinDescription(bins[3]), /measured; 0\.25 kWh/);
 });
 
 class FakeChartScroller {

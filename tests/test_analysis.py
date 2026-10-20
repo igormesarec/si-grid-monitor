@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
+from time import perf_counter
+from types import SimpleNamespace
 
 import pytest
 
@@ -207,11 +209,118 @@ def test_partial_current_period_does_not_claim_a_comparable_previous_period(
     archive.upsert_quarter(record(bounds.start_utc))
     report = period_report(archive, "meter-a", bounds, now_utc=now)
     assert report["period"]["partial"]
-    assert report["comparison"] == {
-        "available": False,
-        "reason": "current_period_incomplete",
-        "period": report["comparison"]["period"],
+    comparison = report["comparison"]
+    assert comparison["available"] is False
+    assert comparison["reason"] == "current_period_incomplete"
+    assert comparison["current_quality"]["coverage_pct"] == pytest.approx(100 / 48)
+    assert comparison["previous_quality"] is None
+
+
+def _fill_period(
+    archive: QuarterArchive,
+    bounds: object,
+    *,
+    quality: str = "reconstructed",
+    limit: int | None = None,
+) -> None:
+    cursor = bounds.start_utc
+    count = 0
+    while cursor < bounds.end_utc and (limit is None or count < limit):
+        archive.upsert_quarter(record(cursor, quality=quality))
+        cursor += timedelta(minutes=15)
+        count += 1
+
+
+def test_previous_period_comparison_requires_complete_equal_coverage(
+    archive: QuarterArchive,
+) -> None:
+    current = resolve_period(PeriodType.DAY, date(2026, 1, 6))
+    previous = previous_period(current)
+    _fill_period(archive, previous)
+    _fill_period(archive, current)
+    report = period_report(archive, "meter-a", current, now_utc=current.end_utc)
+    comparison = report["comparison"]
+    assert comparison["available"] is True
+    assert comparison["reason"] is None
+    assert comparison["current_quality"]["comparable"] is True
+    assert comparison["previous_quality"]["comparable"] is True
+    assert comparison["changes"]["import_kwh"] == pytest.approx(0)
+
+
+@pytest.mark.parametrize(
+    ("valid", "incomplete", "expected_reason"),
+    [
+        (1, 0, "previous_period_incomplete"),
+        (0, 96, "previous_period_incomplete"),
+        (80, 8, "previous_period_incomplete"),
+    ],
+)
+def test_previous_period_limited_incomplete_or_missing_is_not_compared(
+    archive: QuarterArchive,
+    valid: int,
+    incomplete: int,
+    expected_reason: str,
+) -> None:
+    current = resolve_period(PeriodType.DAY, date(2026, 1, 6))
+    previous = previous_period(current)
+    _fill_period(archive, current)
+    _fill_period(archive, previous, limit=valid)
+    cursor = previous.start_utc + timedelta(minutes=15 * valid)
+    for _index in range(incomplete):
+        archive.upsert_quarter(record(cursor, quality="incomplete"))
+        cursor += timedelta(minutes=15)
+    comparison = period_report(archive, "meter-a", current, now_utc=current.end_utc)["comparison"]
+    assert comparison["available"] is False
+    assert comparison["reason"] == expected_reason
+    assert comparison["previous_quality"]["comparable"] is False
+    assert comparison["changes"]["import_kwh"] is None
+
+
+def test_different_calendar_lengths_and_dst_days_are_not_compared(
+    archive: QuarterArchive,
+) -> None:
+    march = resolve_period(PeriodType.MONTH, date(2026, 3, 10))
+    february = previous_period(march)
+    _fill_period(archive, february)
+    _fill_period(archive, march)
+    comparison = period_report(archive, "meter-a", march, now_utc=march.end_utc)["comparison"]
+    assert comparison["reason"] == "period_length_mismatch"
+    assert (
+        comparison["current_quality"]["expected_count"]
+        != comparison["previous_quality"]["expected_count"]
+    )
+
+    after_fallback = resolve_period(PeriodType.DAY, date(2026, 10, 26))
+    fallback = previous_period(after_fallback)
+    _fill_period(archive, fallback)
+    _fill_period(archive, after_fallback)
+    dst_comparison = period_report(
+        archive, "meter-a", after_fallback, now_utc=after_fallback.end_utc
+    )["comparison"]
+    assert dst_comparison["reason"] == "period_length_mismatch"
+    assert dst_comparison["previous_quality"]["expected_count"] == 100
+    assert dst_comparison["current_quality"]["expected_count"] == 96
+
+
+def test_missing_repeated_dst_hour_bins_keep_distinct_expected_utc_bounds(
+    archive: QuarterArchive,
+) -> None:
+    week = resolve_period(PeriodType.WEEK, date(2026, 10, 25))
+    report = period_report(
+        archive,
+        "meter-a",
+        week,
+        now_utc=week.end_utc,
+        include_comparison=False,
+    )
+    repeated = [item for item in report["bins"] if item["bin_key"].startswith("2026-10-25T02|")]
+    assert len(repeated) == 2
+    assert {item["expected_start_utc"] for item in repeated} == {
+        "2026-10-25T00:00:00+00:00",
+        "2026-10-25T01:00:00+00:00",
     }
+    assert all(item["status"] == "missing" for item in repeated)
+    assert all(item["import_kwh"] is None for item in repeated)
 
 
 def test_block_filter_and_namespace_isolation(archive: QuarterArchive) -> None:
@@ -370,6 +479,55 @@ def test_exceedance_tolerance_and_page_validation(archive: QuarterArchive) -> No
         )
 
 
+def test_exceedance_unconfirmed_count_uses_distinct_quarters(
+    archive: QuarterArchive,
+) -> None:
+    bounds = resolve_period(PeriodType.DAY, date(2026, 1, 5))
+    archive.upsert_quarter(
+        record(
+            bounds.start_utc,
+            quality="incomplete",
+            configuration_status="unknown",
+            target_kw=None,
+        )
+    )
+    archive.upsert_quarter(
+        record(
+            bounds.start_utc + timedelta(minutes=15),
+            configuration_status="unknown",
+            target_kw=None,
+        )
+    )
+    archive.upsert_quarter(
+        record(
+            bounds.start_utc + timedelta(minutes=30),
+            configuration_status="target_unknown",
+            target_kw=None,
+            contractual_status="target_unknown",
+        )
+    )
+    archive.upsert_quarter(record(bounds.start_utc + timedelta(minutes=45), simulation=True))
+    archive.upsert_quarter(record(bounds.start_utc + timedelta(minutes=60)))
+    report = exceedance_report(
+        archive,
+        "meter-a",
+        bounds,
+        now_utc=bounds.end_utc,
+    )
+    summary = report["summary"]
+    assert summary["expected_completed_count"] == 96
+    assert summary["contractual_eligible_count"] == 1
+    assert summary["incomplete_or_unconfirmed_count"] == 95
+    assert summary["incomplete_or_unconfirmed_count"] <= summary["expected_completed_count"]
+    assert (
+        summary["incomplete_count"]
+        + summary["unknown_configuration_count"]
+        + summary["valid_without_confirmed_target_count"]
+        + summary["missing_count"]
+        > summary["incomplete_or_unconfirmed_count"]
+    )
+
+
 def test_period_reconciles_with_existing_archive_summary(archive: QuarterArchive) -> None:
     bounds = resolve_period(PeriodType.DAY, date(2026, 1, 5))
     archive.upsert_quarter(record(bounds.start_utc, import_kwh=0.4, export_kwh=0.2))
@@ -414,3 +572,43 @@ def test_ten_year_empty_archive_stays_month_bounded(archive: QuarterArchive) -> 
     assert len(report["bins"]) == 120
     assert report["summary"]["archived_count"] == 0
     assert all(item["status"] == "missing" for item in report["bins"])
+    assert all(item["import_kwh"] is None for item in report["bins"])
+    assert all(item["export_kwh"] is None for item in report["bins"])
+
+
+def test_ten_year_populated_report_is_bounded_and_classifies_at_most_hourly(
+    archive: QuarterArchive,
+) -> None:
+    bounds = resolve_period(
+        PeriodType.CUSTOM,
+        date(2021, 1, 1),
+        custom_start=date(2021, 1, 1),
+        custom_end=date(2030, 12, 31),
+    )
+    cursor = bounds.start_utc
+    while cursor < bounds.end_utc:
+        archive.upsert_quarter(record(cursor))
+        cursor += timedelta(days=3)
+
+    classifier_calls = 0
+
+    def counting_classifier(_timestamp: datetime) -> object:
+        nonlocal classifier_calls
+        classifier_calls += 1
+        return SimpleNamespace(block=1)
+
+    started = perf_counter()
+    report = period_report(
+        archive,
+        "meter-a",
+        bounds,
+        now_utc=bounds.end_utc,
+        tariff_block=1,
+        classifier=counting_classifier,
+        include_comparison=False,
+    )
+    elapsed = perf_counter() - started
+    assert len(report["bins"]) == 120
+    assert report["summary"]["archived_count"] > 1_200
+    assert classifier_calls <= 24 * 3660
+    assert elapsed < 5.0

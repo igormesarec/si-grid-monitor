@@ -628,17 +628,42 @@ export function adjacentPeriodAnchor(period, direction) {
   return {anchor: instant.toISOString()};
 }
 
-export function periodDrillDown(periodType, bin) {
+export function periodDrillDown(periodType, bin, resolution = null) {
   if (!bin) return null;
-  if (periodType === "year" && /^\d{4}-\d{2}$/.test(bin.bin_key || "")) {
+  const actualResolution = resolution || (
+    /^\d{4}-\d{2}$/.test(bin.bin_key || "") ? "month" :
+      /^\d{4}-\d{2}-\d{2}$/.test(bin.bin_key || "") ? "day" :
+        String(bin.bin_key || "").includes("|") ? "hour" : "quarter"
+  );
+  const canonicalStart = bin.expected_start_utc || bin.start_utc;
+  if (actualResolution === "month" && /^\d{4}-\d{2}$/.test(bin.bin_key || "")) {
     return {periodType: "month", anchor: `${bin.bin_key}-01`};
   }
-  if (["month", "week", "custom"].includes(periodType)
-      && /^\d{4}-\d{2}-\d{2}$/.test(bin.bin_key || "")) {
+  if (actualResolution === "day" && /^\d{4}-\d{2}-\d{2}$/.test(bin.bin_key || "")) {
     return {periodType: "day", anchor: bin.bin_key};
   }
-  if (bin.start_utc) return {quarterStartUtc: bin.start_utc};
+  if (actualResolution === "hour" && canonicalStart) {
+    return {periodType: "hour", anchor: canonicalStart};
+  }
+  if (actualResolution === "quarter" && canonicalStart) {
+    return {quarterStartUtc: canonicalStart};
+  }
   return null;
+}
+
+export function periodBinDescription(bin) {
+  const key = String(bin?.bin_key || "Unknown interval");
+  if (bin?.status === "missing" || bin?.status === "unavailable") {
+    return `${key}; ${bin.status}; no measured value is available; missing data is not zero`;
+  }
+  const validCount = Number(bin?.valid_count || 0);
+  const expectedCount = Number(bin?.expected_count || 0);
+  if (bin?.status === "incomplete" && validCount === 0) {
+    return `${key}; incomplete; no valid measured value; partial observations are excluded`;
+  }
+  const importValue = Number(bin?.import_kwh || 0).toFixed(2);
+  const state = bin?.status === "incomplete" ? "incomplete valid coverage" : "measured";
+  return `${key}; ${state}; ${importValue} kWh imported; ${validCount} of ${expectedCount} quarters valid`;
 }
 
 export function periodChartModel(bins, mode, width = 1120, height = 330) {
@@ -646,6 +671,9 @@ export function periodChartModel(bins, mode, width = 1120, height = 330) {
   const plotWidth = width - margin.left - margin.right;
   const plotHeight = height - margin.top - margin.bottom;
   const values = bins.flatMap(bin => {
+    const hasMeasuredData = !["missing", "unavailable"].includes(bin.status)
+      && (bin.status !== "incomplete" || Number(bin.valid_count || 0) > 0);
+    if (!hasMeasuredData) return [];
     if (mode === "energy") return [bin.import_kwh, bin.export_kwh];
     if (mode === "demand") return [
       bin.maximum_import_demand_kw, bin.average_import_demand_kw, ...(bin.targets_kw || []),
@@ -659,10 +687,15 @@ export function periodChartModel(bins, mode, width = 1120, height = 330) {
   const valueToY = value => margin.top + plotHeight * (1 - Math.max(0, Number(value)) / maximum);
   return {
     width, height, margin, maximum, step, valueToY,
-    items: bins.map((bin, index) => ({
-      ...bin,
-      centerX: margin.left + step * (index + 0.5),
-      barWidth: Math.max(2, step * 0.32),
-    })),
+    items: bins.map((bin, index) => {
+      const hasMeasuredData = !["missing", "unavailable"].includes(bin.status)
+        && (bin.status !== "incomplete" || Number(bin.valid_count || 0) > 0);
+      return {
+        ...bin,
+        hasMeasuredData,
+        centerX: margin.left + step * (index + 0.5),
+        barWidth: Math.max(2, step * 0.32),
+      };
+    }),
   };
 }

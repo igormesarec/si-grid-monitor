@@ -306,3 +306,50 @@ test("analysis scrolling survives refresh and resets only for a new selection", 
     power: 12, energy: 34, period: 0, exceedances: 0,
   });
 });
+
+test("PERIOD chart never announces a missing bin as measured zero", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._periodChartMode = "energy";
+  panel._period = {
+    period: {resolution: "quarter"},
+    bins: [
+      {bin_key: START_A, expected_start_utc: START_A, status: "missing",
+        valid_count: 0, expected_count: 1, import_kwh: 0, export_kwh: 0},
+      {bin_key: START_B, expected_start_utc: START_B, status: "complete",
+        valid_count: 1, expected_count: 1, import_kwh: 0, export_kwh: 0},
+    ],
+  };
+  const html = panel._periodChart();
+  assert.match(html, /missing data is not zero/);
+  assert.match(html, /measured; 0\.00 kWh imported/);
+  assert.equal((html.match(/class="import-bar"/g) || []).length, 1);
+});
+
+test("PERIOD panel drills missing quarter and repeated hour by canonical UTC identity", async () => {
+  const panel = new SIGridMonitorPanel();
+  panel._render = () => {};
+  panel._loadTab = async () => {};
+  panel._periodType = "week";
+  panel._period = {
+    period: {resolution: "hour"},
+    bins: [{
+      bin_key: "2026-10-25T02|3600|1",
+      expected_start_utc: "2026-10-25T01:00:00+00:00",
+      status: "missing",
+    }],
+  };
+  await panel._drillPeriod(0);
+  assert.equal(panel._periodType, "hour");
+  assert.equal(panel._periodAnchor, "2026-10-25T01:00:00+00:00");
+
+  panel._periodType = "day";
+  panel._period = {
+    period: {resolution: "quarter"},
+    bins: [{
+      bin_key: START_A, expected_start_utc: START_A, status: "missing",
+    }],
+  };
+  await panel._drillPeriod(0);
+  assert.equal(panel._tab, "today");
+  assert.equal(panel._selectedTodayQuarterUtc, START_A);
+});

@@ -17,6 +17,7 @@ import {
   localQuarterLabel,
   moveTodayQuarter,
   periodChartModel,
+  periodBinDescription,
   periodDrillDown,
   periodRequest,
   quarterEnergyModel,
@@ -770,7 +771,9 @@ export class SIGridMonitorPanel extends HTMLElement {
     const items = model.items.map((item, index) => {
       const x = item.centerX;
       let marks = "";
-      if (mode === "energy") {
+      if (!item.hasMeasuredData) {
+        marks = "";
+      } else if (mode === "energy") {
         const importY = model.valueToY(item.import_kwh);
         const exportY = model.valueToY(item.export_kwh);
         marks = `<rect class="import-bar" x="${x - item.barWidth}" y="${importY}" width="${item.barWidth}" height="${model.valueToY(0) - importY}"/><rect class="export-bar" x="${x}" y="${exportY}" width="${item.barWidth}" height="${model.valueToY(0) - exportY}"/>`;
@@ -787,7 +790,8 @@ export class SIGridMonitorPanel extends HTMLElement {
       }
       const label = bins.length <= 32 || index % Math.ceil(bins.length / 12) === 0
         ? `<text class="time-label" x="${x}" y="${model.height - 18}" text-anchor="middle">${esc(String(item.bin_key).split("|")[0].slice(-8))}</text>` : "";
-      return `<g class="period-bin ${item.status}" tabindex="0" role="button" data-period-bin="${index}" aria-label="${esc(`${item.bin_key}; ${item.status}; ${fmt(item.import_kwh)} kWh import`)}"><rect class="period-hit-area" x="${x - model.step / 2}" y="${model.margin.top}" width="${model.step}" height="${model.height - model.margin.top - model.margin.bottom}"/>${marks}${label}</g>`;
+      const description = periodBinDescription(item);
+      return `<g class="period-bin ${item.status}" tabindex="0" role="button" data-period-bin="${index}" aria-label="${esc(description)}"><title>${esc(description)}</title><rect class="period-hit-area" x="${x - model.step / 2}" y="${model.margin.top}" width="${model.step}" height="${model.height - model.margin.top - model.margin.bottom}"/>${marks}${label}</g>`;
     }).join("");
     return `<div class="chart-scroll" data-chart-scroll="period" tabindex="0"><svg viewBox="0 0 ${model.width} ${model.height}" role="img" aria-label="Historical ${esc(mode)} chart in ${unit}">${grid}${items}<text class="axis-title" x="4" y="14">${esc(unit)}</text></svg></div>`;
   }
@@ -798,9 +802,18 @@ export class SIGridMonitorPanel extends HTMLElement {
     const data = this._period;
     const summary = data.summary;
     const comparison = data.comparison;
+    const comparisonReasons = {
+      current_period_incomplete: "the selected period is partial or lacks complete valid coverage",
+      no_previous_archive: "the previous period has no archived measurements",
+      previous_period_incomplete: "the previous period lacks complete valid coverage",
+      period_length_mismatch: "the periods contain different numbers of quarter-hours",
+    };
+    const quality = value => value
+      ? `${value.valid_count}/${value.expected_count} valid, ${value.incomplete_count} incomplete, ${value.missing_count} missing (${fmt(value.coverage_pct)}% coverage)`
+      : "not evaluated";
     const comparisonHtml = !comparison?.available
-      ? `<p class="notice">Previous-period comparison unavailable: ${esc(comparison?.reason || "no comparable archive")}. Partial periods are not compared as if complete.</p>`
-      : `<div class="grid">${this._metric("Import change", fmt(comparison.changes.import_kwh), "kWh")}${this._metric("Export change", fmt(comparison.changes.export_kwh), "kWh")}${this._metric("Maximum-demand change", fmt(comparison.changes.maximum_import_demand_kw), "kW")}</div>`;
+      ? `<div class="notice"><p>Previous-period comparison unavailable: ${esc(comparisonReasons[comparison?.reason] || comparison?.reason || "no comparable archive")}. Missing energy is not extrapolated or treated as zero.</p><p>Selected: ${esc(quality(comparison?.current_quality))} · Previous: ${esc(quality(comparison?.previous_quality))}</p></div>`
+      : `<div class="grid">${this._metric("Import change", fmt(comparison.changes.import_kwh), "kWh")}${this._metric("Export change", fmt(comparison.changes.export_kwh), "kWh")}${this._metric("Maximum-demand change", fmt(comparison.changes.maximum_import_demand_kw), "kW")}</div><p class="chart-key">Comparable coverage: selected ${esc(quality(comparison.current_quality))}; previous ${esc(quality(comparison.previous_quality))}.</p>`;
     return `<section class="card">${this._periodControls()}<div class="herohead"><div><p class="eyebrow">HISTORICAL PERIOD</p><h2>${esc(data.period.label)}</h2><p>${esc(data.period.resolution)} bins · half-open ${esc(data.period.start_utc)} to ${esc(data.period.end_utc)}</p></div>${data.period.partial ? `<span class="chip b0">PARTIAL</span>` : ""}</div><div class="row chart-modes">${[["energy", "Import / export energy"], ["demand", "Import demand"], ["exceedances", "Exceedances"], ["coverage", "Coverage"]].map(([value, label]) => `<button data-chart-mode="${value}" class="${this._periodChartMode === value ? "active" : ""}">${label}</button>`).join("")}</div>${this._periodChart()}<div class="chart-key">Red: valid imported energy or maximum import demand · Green: valid exported energy · Blue: average demand · Gold: historically stored target · missing bins remain missing, never zero.</div><div class="grid">${this._metric("Valid imported energy", fmt(summary.import_kwh), "kWh")}${this._metric("Valid exported energy", fmt(summary.export_kwh), "kWh")}${this._metric("Signed net energy", fmt(summary.signed_net_kwh), "kWh")}${this._metric("Maximum quarter import demand", fmt(summary.maximum_import_demand_kw), "kW")}${this._metric("Average valid quarter demand", fmt(summary.average_import_demand_kw), "kW")}${this._metric("Minimum signed quarter average", fmt(summary.minimum_signed_average_kw), "kW")}${this._metric("Maximum signed quarter average", fmt(summary.maximum_signed_average_kw), "kW")}${this._metric("Valid completed quarters", summary.valid_count)}${this._metric("Contract eligible", summary.contractual_eligible_count)}${this._metric("Incomplete", summary.incomplete_count)}${this._metric("Missing", summary.missing_count)}${this._metric("Partial observed import", fmt(summary.partial_observed_import_kwh), "kWh")}${this._metric("Partial observed export", fmt(summary.partial_observed_export_kwh), "kWh")}${this._metric("Confirmed exceedances", summary.exceeded_count)}${this._metric("Confirmed exceedance rate", fmt(summary.confirmed_exceedance_pct), "%")}${this._metric("Exceeded duration", summary.exceeded_duration_minutes, "minutes")}${this._metric("Data coverage", fmt(summary.coverage_pct), "%")}</div><p class="chart-key">Valid measurement totals exclude incomplete and simulation rows. Contractual results use only quarters with confirmed original targets and official rule status. Partial observed energy remains separate.</p><h3>Previous equivalent period</h3>${comparisonHtml}</section>`;
   }
 
@@ -914,7 +927,11 @@ export class SIGridMonitorPanel extends HTMLElement {
   }
 
   async _drillPeriod(index) {
-    const action = periodDrillDown(this._periodType, this._period?.bins?.[index]);
+    const action = periodDrillDown(
+      this._periodType,
+      this._period?.bins?.[index],
+      this._period?.period?.resolution,
+    );
     if (!action) return;
     if (action.quarterStartUtc) {
       this._tab = "today";

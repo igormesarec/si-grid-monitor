@@ -209,16 +209,47 @@ def _expected_bins(
     resolution: str,
     tariff_block: int | None,
     classifier: Callable[[datetime], Any] | None,
-) -> Counter[str]:
+) -> tuple[Counter[str], dict[str, tuple[str, str]]]:
     expected: Counter[str] = Counter()
+    intervals: dict[str, tuple[str, str]] = {}
+    classified_hours: dict[datetime, int | None] = {}
     cursor = bounds.start_utc
     while cursor < completed_end:
-        if tariff_block is None or (
-            classifier is not None and getattr(classifier(cursor), "block", None) == tariff_block
-        ):
-            expected[_bin_key(cursor, resolution)] += 1
+        classified_block: int | None = None
+        if tariff_block is not None and classifier is not None:
+            hour = cursor.replace(minute=0, second=0, microsecond=0)
+            if hour not in classified_hours:
+                classified_hours[hour] = getattr(classifier(hour), "block", None)
+            classified_block = classified_hours[hour]
+        if tariff_block is None or classified_block == tariff_block:
+            key = _bin_key(cursor, resolution)
+            expected[key] += 1
+            start = cursor.astimezone(UTC).isoformat()
+            end = (cursor + timedelta(minutes=15)).astimezone(UTC).isoformat()
+            if key in intervals:
+                intervals[key] = (intervals[key][0], end)
+            else:
+                intervals[key] = (start, end)
         cursor += timedelta(minutes=15)
-    return expected
+    return expected, intervals
+
+
+def _comparison_quality(summary: dict[str, Any]) -> dict[str, Any]:
+    """Describe whether a completed period has fully comparable measurements."""
+
+    expected = int(summary["expected_completed_count"])
+    valid = int(summary["valid_count"])
+    missing = int(summary["missing_count"])
+    incomplete = int(summary["incomplete_count"])
+    complete = expected > 0 and valid == expected and missing == 0 and incomplete == 0
+    return {
+        "comparable": complete,
+        "expected_count": expected,
+        "valid_count": valid,
+        "incomplete_count": incomplete,
+        "missing_count": missing,
+        "coverage_pct": summary["coverage_pct"],
+    }
 
 
 def _normalize_summary(row: Any, expected_count: int) -> dict[str, Any]:
@@ -276,7 +307,9 @@ def period_report(
     if completed_end < bounds.start_utc:
         completed_end = bounds.start_utc
     resolution = chart_resolution(bounds)
-    expected = _expected_bins(bounds, completed_end, resolution, tariff_block, classifier)
+    expected, expected_intervals = _expected_bins(
+        bounds, completed_end, resolution, tariff_block, classifier
+    )
     expected_count = sum(expected.values())
     aggregate = archive.aggregate_period(
         namespace, bounds.start_utc, completed_end, tariff_block=tariff_block
@@ -297,6 +330,7 @@ def period_report(
     )
     for key in keys:
         item = stored.get(key, {"bin_key": key})
+        expected_start, expected_end = expected_intervals.get(key, (None, None))
         archived_count = _integer(item.get("archived_count"))
         valid_count = _integer(item.get("valid_count"))
         expected_in_bin = expected.get(key, 0)
@@ -304,6 +338,8 @@ def period_report(
         bins.append(
             {
                 **item,
+                "expected_start_utc": expected_start,
+                "expected_end_utc": expected_end,
                 "archived_count": archived_count,
                 "valid_count": valid_count,
                 "contractual_eligible_count": _integer(item.get("contractual_eligible_count")),
@@ -311,8 +347,8 @@ def period_report(
                 "expected_count": expected_in_bin,
                 "missing_count": max(0, expected_in_bin - archived_count),
                 "coverage_pct": 100.0 * valid_count / expected_in_bin if expected_in_bin else None,
-                "import_kwh": _number(item.get("import_kwh")),
-                "export_kwh": _number(item.get("export_kwh")),
+                "import_kwh": (_number(item.get("import_kwh")) if archived_count else None),
+                "export_kwh": (_number(item.get("export_kwh")) if archived_count else None),
                 "partial_observed_import_kwh": _number(item.get("partial_observed_import_kwh")),
                 "partial_observed_export_kwh": _number(item.get("partial_observed_export_kwh")),
                 "exceeded_count": _integer(item.get("exceeded_count")),
@@ -342,11 +378,14 @@ def period_report(
     }
     if include_comparison:
         prior = previous_period(bounds)
+        current_quality = _comparison_quality(summary)
         if partial:
             result["comparison"] = {
                 "available": False,
                 "reason": "current_period_incomplete",
                 "period": asdict(prior),
+                "current_quality": current_quality,
+                "previous_quality": None,
             }
         else:
             previous = period_report(
@@ -359,15 +398,30 @@ def period_report(
                 include_comparison=False,
             )
             prior_summary = previous["summary"]
+            previous_quality = _comparison_quality(prior_summary)
+            if not current_quality["comparable"]:
+                reason = "current_period_incomplete"
+            elif not prior_summary["archived_count"]:
+                reason = "no_previous_archive"
+            elif not previous_quality["comparable"]:
+                reason = "previous_period_incomplete"
+            elif current_quality["expected_count"] != previous_quality["expected_count"]:
+                reason = "period_length_mismatch"
+            else:
+                reason = None
             result["comparison"] = {
-                "available": bool(prior_summary["archived_count"]),
-                "reason": None if prior_summary["archived_count"] else "no_previous_archive",
+                "available": reason is None,
+                "reason": reason,
                 "period": previous["period"],
                 "summary": prior_summary,
+                "current_quality": current_quality,
+                "previous_quality": previous_quality,
                 "changes": {
                     key: (
                         summary[key] - prior_summary[key]
-                        if summary[key] is not None and prior_summary[key] is not None
+                        if reason is None
+                        and summary[key] is not None
+                        and prior_summary[key] is not None
                         else None
                     )
                     for key in (
@@ -468,7 +522,9 @@ def exceedance_report(
     aggregate = archive.aggregate_period(
         namespace, bounds.start_utc, completed_end, tariff_block=tariff_block
     )
-    expected = _expected_bins(bounds, completed_end, "quarter", tariff_block, classifier)
+    expected, _expected_intervals = _expected_bins(
+        bounds, completed_end, "quarter", tariff_block, classifier
+    )
     period_summary = _normalize_summary(aggregate, sum(expected.values()))
     exceedance = archive.aggregate_exceedances(
         namespace, bounds.start_utc, completed_end, tariff_block=tariff_block
@@ -515,11 +571,22 @@ def exceedance_report(
         "exceeded_duration_minutes": count * 15,
         "confirmed_exceedance_rate_pct": period_summary["confirmed_exceedance_pct"],
         "contractual_eligible_count": period_summary["contractual_eligible_count"],
-        "incomplete_or_unconfirmed_count": (
-            period_summary["incomplete_count"]
-            + period_summary["unknown_configuration_count"]
-            + period_summary["valid_without_confirmed_target_count"]
-            + period_summary["missing_count"]
+        "expected_completed_count": period_summary["expected_completed_count"],
+        "incomplete_count": period_summary["incomplete_count"],
+        "unknown_configuration_count": period_summary["unknown_configuration_count"],
+        "valid_without_confirmed_target_count": period_summary[
+            "valid_without_confirmed_target_count"
+        ],
+        "missing_count": period_summary["missing_count"],
+        "simulation_count": period_summary["simulation_count"],
+        # This is a distinct-quarter count. The diagnostic categories above may
+        # overlap (for example one row can be incomplete and configuration-unknown),
+        # so summing them would double-count. Simulations are not contractual
+        # observations and therefore remain in the unconfirmed complement.
+        "incomplete_or_unconfirmed_count": max(
+            0,
+            period_summary["expected_completed_count"]
+            - period_summary["contractual_eligible_count"],
         ),
         "coverage_pct": period_summary["coverage_pct"],
     }

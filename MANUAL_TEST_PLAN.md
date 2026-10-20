@@ -40,6 +40,15 @@ or Android WebView so the `0.6.0` dashboard assets replace V0.4.2.
 10. Check desktop and Android widths in light/dark themes: horizontally scrollable
     navigation and dense charts/tables must not overflow the whole panel; keyboard
     focus and chart scroll should remain stable over refreshes.
+11. Compare two fully measured equal-length periods and confirm changes are
+    shown with both coverage summaries. Then choose a period whose predecessor
+    has missing/incomplete quarters and confirm comparison is unavailable rather
+    than extrapolated. Repeat across February/March and a 23/25-hour DST day;
+    unequal quarter counts must be explicitly non-comparable.
+12. Activate monthly, daily, hourly and quarter bins. Confirm drill-down follows
+    the displayed resolution. On the October rollback, the repeated 02:00 hours
+    must open distinct UTC intervals. A missing bin must say no measured value is
+    available, while a valid 0.00 kWh bin is identified as measured zero.
 
 These steps require a real Home Assistant/browser installation and are not
 claimed complete by repository automation.

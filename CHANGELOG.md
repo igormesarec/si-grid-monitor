@@ -6,6 +6,16 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [0.6.0] - 2026-10-19
 
+- Hardened previous-period comparisons so both periods require complete valid
+  coverage and equal quarter counts; partial and DST-length-mismatched periods
+  are explicitly non-comparable without extrapolation.
+- Corrected Exceedances incomplete/unconfirmed totals to count distinct quarter
+  slots rather than adding overlapping diagnostic categories.
+- Made PERIOD drill-down follow actual bin resolution and canonical UTC bounds,
+  including missing bins and repeated DST hours, while distinguishing missing
+  data from genuinely measured zero values.
+- Reduced tariff-filter planning to one classification per UTC hour and added a
+  populated ten-year bounded-performance regression.
 - Combined the planned V0.5 and V0.6 milestones into one schema-5-compatible
   release with PERIOD, BLOCKS and EXCEEDANCES dashboard pages.
 - Added authenticated, entry-namespaced SQL aggregation for local-calendar
