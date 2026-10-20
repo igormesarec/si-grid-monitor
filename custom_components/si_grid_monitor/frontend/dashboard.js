@@ -1188,6 +1188,8 @@ export class SIGridMonitorPanel extends HTMLElement {
       this._historyBlock = root.querySelector("[data-history-block]")?.value || "all";
       this._historyQuality = root.querySelector("[data-history-quality]")?.value || "all";
       this._historyConfirmed = root.querySelector("[data-history-confirmed]")?.value || "all";
+      this._historySort = root.querySelector("[data-history-sort]")?.value || "start_utc";
+      this._historyDirection = root.querySelector("[data-history-direction]")?.value || "desc";
       this._historyPageNumber = 1;
       this._historyPage = null;
       this._historyAudit = null;
@@ -1387,6 +1389,12 @@ export class SIGridMonitorPanel extends HTMLElement {
     if (this._tab === "history" && this._historyPage) {
       this.shadowRoot.querySelector("main > section.card:last-of-type")?.insertAdjacentHTML(
         "beforeend", this._historyAuditPanel(),
+      );
+    }
+    if (this._tab === "history") {
+      this.shadowRoot.querySelector(".history-controls")?.insertAdjacentHTML(
+        "beforeend",
+        `<label>Sort by<select data-history-sort>${[["start_utc", "Date"], ["import_kwh", "Imported energy"], ["import_demand_kw", "Import demand"], ["utilization_pct", "Utilization"], ["quality", "Quality"]].map(([value, label]) => `<option value="${value}" ${this._historySort === value ? "selected" : ""}>${label}</option>`).join("")}</select></label><label>Order<select data-history-direction><option value="desc" ${this._historyDirection === "desc" ? "selected" : ""}>Descending</option><option value="asc" ${this._historyDirection === "asc" ? "selected" : ""}>Ascending</option></select></label>`,
       );
     }
     if (["today", "period", "blocks", "exceedances"].includes(this._tab)) {
