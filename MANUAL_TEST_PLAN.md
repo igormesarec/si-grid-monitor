@@ -344,3 +344,37 @@ delete the integration entry or its SQLite file.
 
 Automated model/DOM tests cover state transitions and geometry. Android theme
 rendering and live SolarEdge cadence still require the real-instance checks.
+
+## V0.8 archive-safety and localization acceptance
+
+1. Before upgrading a copy of a schema-5 archive, stop Home Assistant and keep
+   the database plus its `-wal` and `-shm` files together. Start V0.8 and verify
+   schema 6 is reported while quarter rows, source epochs, checkpoints, dated
+   targets, tariff versions and provenance remain unchanged.
+2. To recognize a database touched by the earlier development migration, check
+   `PRAGMA user_version`. Version 5 accompanied by one or more of
+   `reconstruction_jobs`, `quarter_revisions` or `archive_backups` is a partial
+   development migration. Preserve a copy and restart with the corrected build;
+   it completes expected table shapes idempotently. If Home Assistant reports
+   an incompatible partial-V6 table, do not delete `quarters`, `source_epochs`
+   or `checkpoints`; restore the preserved database or request a reviewed repair.
+3. On a disposable archive, interrupt startup during migration (locked/full
+   storage is sufficient) and verify startup fails without changing the schema
+   version or historical rows. Restore storage and verify the next startup
+   completes normally.
+4. Run Recorder AUDIT ONLY, then allow a live quarter update before pressing
+   Apply. Verify the stale candidate is rejected, the newer live evidence stays
+   intact, and no revision row claims a change occurred.
+5. Interrupt reconstruction while a revision is being recorded. Verify that
+   the matching quarter remains at its original quality/coverage and no orphan
+   revision exists. Earlier successfully committed quarters may remain applied;
+   each quarter is intentionally its own atomic unit and the job reports partial
+   failure.
+6. In HISTORY, apply block, quality, exceedance and source-configuration-epoch
+   filters. Verify the header labels totals as the overall selected date range,
+   while the table/pagination count is explicitly the filtered result. Missing
+   intervals must not acquire a block, quality or source epoch.
+7. Switch Home Assistant between English and Slovenian on every dashboard page.
+   Verify navigation, parameterized pagination, Recorder audit/reconstruction
+   messages, warnings, dialogs, accessibility labels and connection errors
+   switch language without changing the active meter, date, quarter or filter.

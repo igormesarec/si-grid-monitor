@@ -1,7 +1,10 @@
 """Controlled reconstruction safety-policy tests."""
 
+import sqlite3
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+
+import pytest
 
 from custom_components.si_grid_monitor.archive import ArchiveRecord, QuarterArchive
 from custom_components.si_grid_monitor.reconstruction import (
@@ -98,6 +101,14 @@ def test_confirmed_apply_creates_backup_and_revision_without_downgrade(tmp_path)
     archive = QuarterArchive(tmp_path / "archive.db")
     archive.open()
     start = datetime(2026, 1, 1, tzinfo=UTC)
+    archive.register_configuration_epoch(
+        namespace="meter-a",
+        source_id="sensor.grid",
+        positive_means_import=True,
+        contractual_target_kw=3.5,
+        safety_margin_kw=0,
+        effective_utc=start - timedelta(days=1),
+    )
     original = _record(start, "incomplete", 300)
     archive.upsert_quarter(original)
     improved = replace(
@@ -135,4 +146,234 @@ def test_confirmed_apply_creates_backup_and_revision_without_downgrade(tmp_path)
     # A weaker retry cannot overwrite the reconstructed record.
     assert not archive.apply_reconstructed_record(
         job_id, replace(original, coverage_seconds=100, gap_seconds=800), reason="retry"
+    )
+
+
+def _job(archive: QuarterArchive, start: datetime) -> str:
+    archive.register_configuration_epoch(
+        namespace="meter-a",
+        source_id="sensor.grid",
+        positive_means_import=True,
+        contractual_target_kw=3.5,
+        safety_margin_kw=0,
+        effective_utc=start - timedelta(days=1),
+    )
+    return archive.begin_reconstruction_job(
+        "meter-a",
+        start,
+        start + timedelta(hours=1),
+        "sensor.grid",
+        mode="confirmed_reconstruction",
+        summary={"candidate_count": 1},
+    )
+
+
+def _decision(archive: QuarterArchive, start: datetime, candidate: ArchiveRecord):
+    rows = archive.list_quarters("meter-a", start, start + timedelta(minutes=15))
+    return plan_reconstruction(rows, [candidate])[0]
+
+
+def test_stale_audit_cannot_overwrite_newer_live_evidence(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "archive.db")
+    archive.open()
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    old = _record(start, "incomplete", 300)
+    archive.upsert_quarter(old)
+    candidate = replace(old, quality="reconstructed", coverage_seconds=900, gap_seconds=0)
+    decision = _decision(archive, start, candidate)
+    archive.upsert_quarter(
+        replace(old, provenance="live_engine", coverage_seconds=700, gap_seconds=200)
+    )
+    assert not archive.apply_reconstructed_record(
+        _job(archive, start),
+        candidate,
+        reason=decision.reason,
+        expected_fingerprint=decision.expected_fingerprint,
+        planned_action=decision.action,
+    )
+    row = archive.list_quarters("meter-a", start, start + timedelta(minutes=15))[0]
+    assert row["provenance"] == "live_engine"
+    assert row["coverage_seconds"] == 700
+
+
+def test_stale_audit_detects_measurement_change_with_same_quality(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "archive.db")
+    archive.open()
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    old = _record(start, "incomplete", 300)
+    archive.upsert_quarter(old)
+    candidate = replace(old, quality="reconstructed", coverage_seconds=900, gap_seconds=0)
+    decision = _decision(archive, start, candidate)
+    archive.upsert_quarter(replace(old, import_kwh=0.27))
+    assert not archive.apply_reconstructed_record(
+        _job(archive, start),
+        candidate,
+        reason=decision.reason,
+        expected_fingerprint=decision.expected_fingerprint,
+        planned_action="improve",
+    )
+    assert archive.list_quarters("meter-a", start, start + timedelta(minutes=15))[0][
+        "import_kwh"
+    ] == pytest.approx(0.27)
+
+
+def test_quality_promotion_between_audit_and_apply_rejects_stale_plan(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "archive.db")
+    archive.open()
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    old = _record(start, "incomplete", 300)
+    archive.upsert_quarter(old)
+    candidate = replace(old, quality="reconstructed", coverage_seconds=900, gap_seconds=0)
+    decision = _decision(archive, start, candidate)
+    archive.upsert_quarter(
+        replace(old, quality="measured_aligned", coverage_seconds=900, gap_seconds=0)
+    )
+    assert not archive.apply_reconstructed_record(
+        _job(archive, start),
+        candidate,
+        reason=decision.reason,
+        expected_fingerprint=decision.expected_fingerprint,
+        planned_action="improve",
+    )
+
+
+def test_configuration_epoch_change_inside_quarter_rejects_apply(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "archive.db")
+    archive.open()
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    old = _record(start, "incomplete", 300)
+    archive.upsert_quarter(old)
+    candidate = replace(old, quality="reconstructed", coverage_seconds=900, gap_seconds=0)
+    decision = _decision(archive, start, candidate)
+    job = _job(archive, start)
+    archive.register_configuration_epoch(
+        namespace="meter-a",
+        source_id="sensor.replacement",
+        positive_means_import=True,
+        contractual_target_kw=4.2,
+        safety_margin_kw=0,
+        effective_utc=start + timedelta(minutes=10),
+    )
+    assert not archive.apply_reconstructed_record(
+        job,
+        candidate,
+        reason=decision.reason,
+        expected_fingerprint=decision.expected_fingerprint,
+        planned_action="improve",
+    )
+    assert (
+        archive.list_quarters("meter-a", start, start + timedelta(minutes=15))[0]["quality"]
+        == "incomplete"
+    )
+
+
+def test_equal_quality_requires_more_coverage_and_never_replaces_live(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "archive.db")
+    archive.open()
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    old = _record(start, "incomplete", 300)
+    archive.upsert_quarter(old)
+    more = replace(old, coverage_seconds=600, gap_seconds=300)
+    decision = _decision(archive, start, more)
+    assert archive.apply_reconstructed_record(
+        _job(archive, start),
+        more,
+        reason=decision.reason,
+        expected_fingerprint=decision.expected_fingerprint,
+        planned_action="improve",
+    )
+    less = replace(old, coverage_seconds=500, gap_seconds=400)
+    assert not archive.apply_reconstructed_record(_job(archive, start), less, reason="less")
+    archive.upsert_quarter(
+        replace(more, provenance="live_engine", coverage_seconds=700, gap_seconds=200)
+    )
+    assert not archive.apply_reconstructed_record(
+        _job(archive, start),
+        replace(more, coverage_seconds=800, gap_seconds=100),
+        reason="equal-quality live evidence",
+    )
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        sqlite3.IntegrityError("revision failed"),
+        sqlite3.OperationalError("database or disk is full"),
+        sqlite3.OperationalError("attempt to write a readonly database"),
+    ],
+)
+def test_quarter_and_revision_roll_back_together_on_failure(
+    tmp_path, monkeypatch, failure: Exception
+) -> None:
+    archive = QuarterArchive(tmp_path / "archive.db")
+    archive.open()
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    old = _record(start, "incomplete", 300)
+    archive.upsert_quarter(old)
+    candidate = replace(old, quality="reconstructed", coverage_seconds=900, gap_seconds=0)
+    decision = _decision(archive, start, candidate)
+
+    def fail_revision(self, point: str) -> None:
+        if point == "before_revision_insert":
+            raise failure
+
+    monkeypatch.setattr(QuarterArchive, "_reconstruction_checkpoint", fail_revision)
+    with pytest.raises(type(failure), match=str(failure)):
+        archive.apply_reconstructed_record(
+            _job(archive, start),
+            candidate,
+            reason=decision.reason,
+            expected_fingerprint=decision.expected_fingerprint,
+            planned_action="improve",
+        )
+    row = archive.list_quarters("meter-a", start, start + timedelta(minutes=15))[0]
+    assert row["quality"] == "incomplete"
+    assert row["coverage_seconds"] == 300
+    with archive._lock:
+        assert archive._db.execute("SELECT COUNT(*) FROM quarter_revisions").fetchone()[0] == 0
+
+
+def test_interrupted_multi_quarter_apply_is_atomic_per_record_and_namespaced(
+    tmp_path, monkeypatch
+) -> None:
+    archive = QuarterArchive(tmp_path / "archive.db")
+    archive.open()
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    first = _record(start, "incomplete", 300)
+    second = _record(start + timedelta(minutes=15), "incomplete", 300)
+    other = replace(_record(start, "measured_aligned", 900), namespace="meter-b")
+    for record in (first, second, other):
+        archive.upsert_quarter(record)
+    first_candidate = replace(first, quality="reconstructed", coverage_seconds=900, gap_seconds=0)
+    second_candidate = replace(second, quality="reconstructed", coverage_seconds=900, gap_seconds=0)
+    first_decision = _decision(archive, start, first_candidate)
+    second_decision = _decision(archive, start + timedelta(minutes=15), second_candidate)
+    job = _job(archive, start)
+    assert archive.apply_reconstructed_record(
+        job,
+        first_candidate,
+        reason=first_decision.reason,
+        expected_fingerprint=first_decision.expected_fingerprint,
+        planned_action="improve",
+    )
+
+    def interrupt(self, point: str) -> None:
+        raise RuntimeError("interrupted")
+
+    monkeypatch.setattr(QuarterArchive, "_reconstruction_checkpoint", interrupt)
+    with pytest.raises(RuntimeError, match="interrupted"):
+        archive.apply_reconstructed_record(
+            job,
+            second_candidate,
+            reason=second_decision.reason,
+            expected_fingerprint=second_decision.expected_fingerprint,
+            planned_action="improve",
+        )
+    assert [
+        row["quality"]
+        for row in archive.list_quarters("meter-a", start, start + timedelta(minutes=30))
+    ] == ["reconstructed", "incomplete"]
+    assert (
+        archive.list_quarters("meter-b", start, start + timedelta(minutes=15))[0]["quality"]
+        == "measured_aligned"
     )

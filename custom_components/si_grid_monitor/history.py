@@ -91,9 +91,13 @@ def history_report(archive: QuarterArchive, namespace: str, query: HistoryQuery)
             "page_size": query.page_size,
             "total": total,
             "pages": math.ceil(total / query.page_size) if total else 0,
+            "scope": "active_filters",
         },
         "summary": {
             **facets,
+            "scope": "selected_range_unfiltered",
+            "matching_filtered_count": total,
+            "filters_active": filters_active,
             "expected_count": expected_count,
             "missing_count": missing_count,
             "missing_count_reason": (

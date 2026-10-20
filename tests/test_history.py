@@ -66,7 +66,15 @@ def test_history_is_paginated_and_keeps_missing_distinct_from_zero(tmp_path) -> 
         HistoryQuery(start, start + timedelta(hours=5), page=2, page_size=5),
     )
     assert len(report["items"]) == 5
-    assert report["pagination"] == {"page": 2, "page_size": 5, "total": 13, "pages": 3}
+    assert report["pagination"] == {
+        "page": 2,
+        "page_size": 5,
+        "total": 13,
+        "pages": 3,
+        "scope": "active_filters",
+    }
+    assert report["summary"]["scope"] == "selected_range_unfiltered"
+    assert report["summary"]["matching_filtered_count"] == 13
     assert report["summary"]["expected_count"] == 20
     assert report["summary"]["missing_count"] == 7
     zero = history_report(
@@ -105,6 +113,9 @@ def test_history_filters_do_not_invent_properties_for_missing_rows(tmp_path) -> 
     assert report["pagination"]["total"] == 1
     assert report["items"][0]["coverage_pct"] == pytest.approx(100 / 3)
     assert report["summary"]["missing_count"] is None
+    assert report["summary"]["filters_active"] is True
+    assert report["summary"]["total"] == 2
+    assert report["summary"]["matching_filtered_count"] == 1
 
 
 def test_repeated_dst_hour_retains_two_utc_identities(tmp_path) -> None:
@@ -171,6 +182,126 @@ def test_real_schema_five_upgrade_preserves_quarter_and_adds_audit_tables(tmp_pa
             ).fetchall()
         }
     assert {"reconstruction_jobs", "quarter_revisions", "archive_backups"} <= names
+
+
+@pytest.mark.parametrize(
+    "failure_point",
+    [
+        "before_first_schema_change",
+        "after_first_table",
+        "after_multiple_tables",
+        "during_index_creation",
+        "before_version_update",
+    ],
+)
+def test_schema_five_migration_rolls_back_every_failure_and_retries(
+    tmp_path, monkeypatch, failure_point: str
+) -> None:
+    path = tmp_path / f"v5-{failure_point}.db"
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    initial = QuarterArchive(path)
+    initial.open()
+    initial.register_configuration_epoch(
+        namespace="meter-a",
+        source_id="sensor.grid",
+        positive_means_import=True,
+        contractual_target_kw=3.5,
+        safety_margin_kw=0.1,
+        effective_utc=start - timedelta(days=1),
+    )
+    initial.save_checkpoint("meter-a", {"quarter_start_utc": start.isoformat()})
+    initial.upsert_quarter(_record(start))
+    initial.close()
+    db = sqlite3.connect(path)
+    db.executescript(
+        """DROP TABLE quarter_revisions;
+        DROP TABLE reconstruction_jobs;
+        DROP TABLE archive_backups;
+        DROP INDEX idx_quarters_namespace_quality_start;
+        DROP INDEX idx_quarters_namespace_source_epoch_start;
+        PRAGMA user_version=5;"""
+    )
+    db.close()
+
+    original_checkpoint = QuarterArchive._migration_checkpoint
+
+    def fail_at(self, point: str) -> None:
+        if point == failure_point:
+            raise sqlite3.OperationalError(f"interrupted at {point}")
+
+    monkeypatch.setattr(QuarterArchive, "_migration_checkpoint", fail_at)
+    with pytest.raises(sqlite3.OperationalError):
+        QuarterArchive(path).open()
+
+    inspected = sqlite3.connect(path)
+    assert inspected.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert inspected.execute("SELECT COUNT(*) FROM quarters").fetchone()[0] == 1
+    assert inspected.execute("SELECT COUNT(*) FROM source_epochs").fetchone()[0] == 1
+    assert inspected.execute("SELECT COUNT(*) FROM checkpoints").fetchone()[0] == 1
+    auxiliary = {
+        row[0]
+        for row in inspected.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name IN "
+            "('reconstruction_jobs','quarter_revisions','archive_backups')"
+        )
+    }
+    assert auxiliary == set()
+    inspected.close()
+
+    monkeypatch.setattr(QuarterArchive, "_migration_checkpoint", original_checkpoint)
+    retry = QuarterArchive(path)
+    retry.open()
+    assert retry.schema_version == 6
+    assert retry.list_quarters("meter-a", start, start + timedelta(minutes=15))[0][
+        "import_kwh"
+    ] == pytest.approx(0.1)
+    preserved = retry.list_quarters("meter-a", start, start + timedelta(minutes=15))[0]
+    assert preserved["tariff_rule_version"] == "si-2026-official"
+    assert preserved["contractual_target_kw"] == pytest.approx(3.5)
+    assert retry.load_checkpoint("meter-a") == {"quarter_start_utc": start.isoformat()}
+
+
+def test_schema_five_recovers_expected_partial_auxiliary_objects(tmp_path) -> None:
+    path = tmp_path / "partial-v6.db"
+    archive = QuarterArchive(path)
+    archive.open()
+    archive.close()
+    db = sqlite3.connect(path)
+    db.executescript(
+        """DROP TABLE quarter_revisions;
+        DROP TABLE archive_backups;
+        DROP INDEX idx_quarters_namespace_quality_start;
+        DROP INDEX idx_quarters_namespace_source_epoch_start;
+        PRAGMA user_version=5;"""
+    )
+    db.close()
+    recovered = QuarterArchive(path)
+    recovered.open()
+    assert recovered.schema_version == 6
+
+
+def test_schema_five_rejects_incompatible_partial_objects_without_touching_history(
+    tmp_path,
+) -> None:
+    path = tmp_path / "incompatible-partial-v6.db"
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    archive = QuarterArchive(path)
+    archive.open()
+    archive.upsert_quarter(_record(start))
+    archive.close()
+    db = sqlite3.connect(path)
+    db.executescript(
+        """DROP TABLE archive_backups;
+        CREATE TABLE archive_backups(backup_id TEXT PRIMARY KEY);
+        PRAGMA user_version=5;"""
+    )
+    db.close()
+    with pytest.raises(RuntimeError, match="incompatible partial V6 table archive_backups"):
+        QuarterArchive(path).open()
+    inspected = sqlite3.connect(path)
+    assert inspected.execute("PRAGMA user_version").fetchone()[0] == 5
+    assert inspected.execute("SELECT import_kwh FROM quarters").fetchone()[0] == pytest.approx(0.1)
+    inspected.close()
 
 
 def test_dense_ten_year_history_uses_bounded_pages_and_indexed_sql(tmp_path) -> None:

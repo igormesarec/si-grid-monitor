@@ -353,3 +353,61 @@ test("PERIOD panel drills missing quarter and repeated hour by canonical UTC ide
   assert.equal(panel._tab, "today");
   assert.equal(panel._selectedTodayQuarterUtc, START_A);
 });
+
+test("HISTORY distinguishes range totals and exposes source epoch filtering", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._hass = {language: "sl-SI"};
+  panel._historyPage = {
+    items: [],
+    pagination: {page: 1, pages: 1, total: 3},
+    summary: {
+      total: 20,
+      matching_filtered_count: 3,
+      source_epochs: [{source_epoch: 4, source_id: "sensor.grid", count: 12}],
+      quality_distribution: {},
+      provenance_distribution: {},
+    },
+    storage: {schema_version: 6, retention: "forever"},
+  };
+  const html = panel._historyView();
+  assert.match(html, /data-history-source-epoch/);
+  assert.match(html, /sensor\.grid · obdobje 4 \(12\)/);
+  assert.match(html, /celotno izbrano časovno obdobje/);
+  assert.match(html, /Stran 1 od 1 · 3 ustreznih četrtin/);
+});
+
+test("HISTORY sends the selected source epoch without leaking another namespace", async () => {
+  const panel = new SIGridMonitorPanel();
+  panel._render = () => {};
+  panel._entryId = "meter-a";
+  panel._gate.switchEntry("meter-a");
+  panel._tab = "history";
+  panel._historySourceEpoch = "4";
+  let captured;
+  panel._call = async (type, request, entryId) => {
+    captured = {type, request, entryId};
+    return {items: [], pagination: {page: 1, pages: 0, total: 0}, summary: {}};
+  };
+  await panel._loadTab();
+  assert.equal(captured.type, "history");
+  assert.equal(captured.entryId, "meter-a");
+  assert.equal(captured.request.source_epoch, 4);
+});
+
+test("Home Assistant language switching preserves meter and HISTORY selection", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._loaded = true;
+  panel._hass = {language: "en"};
+  panel._entryId = "meter-a";
+  panel._tab = "history";
+  panel._historySourceEpoch = "4";
+  panel._historyPageNumber = 3;
+  let renders = 0;
+  panel._render = () => { renders += 1; };
+  panel.hass = {language: "sl-SI"};
+  assert.equal(renders, 1);
+  assert.equal(panel._entryId, "meter-a");
+  assert.equal(panel._tab, "history");
+  assert.equal(panel._historySourceEpoch, "4");
+  assert.equal(panel._historyPageNumber, 3);
+});

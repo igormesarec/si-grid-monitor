@@ -4,6 +4,15 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+- Made the schema-5 to schema-6 archive upgrade explicitly transactional and
+  restart-safe, including validation/recovery of partial development objects.
+- Made each reconstruction update and its revision entry one atomic operation;
+  stale audits now revalidate measurement, source/configuration epoch and target
+  provenance before any write.
+- Clarified HISTORY overall-range versus filtered-result totals, exposed the
+  source-configuration-epoch filter, and added parameterized English/Slovenian
+  translations for dynamic navigation, HISTORY, audit and error messages.
+
 ## [0.8.0] - 2026-10-20
 
 - Added the HISTORY archive explorer with canonical UTC quarter identities,

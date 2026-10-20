@@ -6,7 +6,7 @@ from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from .archive import ArchiveRecord
+from .archive import ArchiveRecord, archive_row_fingerprint
 
 QUALITY_RANK = {
     "unavailable": 0,
@@ -30,6 +30,7 @@ class ReconstructionDecision:
     proposed_coverage_seconds: float
     import_difference_kwh: float | None
     contractual_status: str
+    expected_fingerprint: str
 
 
 def plan_reconstruction(
@@ -48,10 +49,15 @@ def plan_reconstruction(
             old_rank = QUALITY_RANK.get(str(current["quality"]), -1)
             new_rank = QUALITY_RANK.get(candidate.quality, -1)
             old_coverage = float(current["coverage_seconds"])
+            columns = current.keys()
+            trustworthy_live = "provenance" in columns and str(current["provenance"]).startswith(
+                "live"
+            )
             if new_rank > old_rank or (
                 new_rank == old_rank
                 and candidate.quality in {"incomplete", "unavailable"}
                 and candidate.coverage_seconds > old_coverage
+                and not trustworthy_live
             ):
                 action, reason = "improve", "Recorder evidence improves quality or coverage"
             else:
@@ -71,6 +77,7 @@ def plan_reconstruction(
                     None if current is None else candidate.import_kwh - float(current["import_kwh"])
                 ),
                 contractual_status=candidate.contractual_status,
+                expected_fingerprint=archive_row_fingerprint(current),
             )
         )
     return tuple(decisions)

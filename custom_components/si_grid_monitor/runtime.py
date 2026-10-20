@@ -1066,8 +1066,14 @@ class GridMonitorRuntime:
                     if decision is None:
                         continue
                     changed = await self.hass.async_add_executor_job(
-                        lambda record=record, reason=decision.reason: (
-                            self.archive.apply_reconstructed_record(job_id, record, reason=reason)
+                        lambda record=record, decision=decision: (
+                            self.archive.apply_reconstructed_record(
+                                job_id,
+                                record,
+                                reason=decision.reason,
+                                expected_fingerprint=decision.expected_fingerprint,
+                                planned_action=decision.action,
+                            )
                         )
                     )
                     applied += int(changed)
