@@ -16,6 +16,13 @@ from homeassistant.components import frontend, panel_custom, websocket_api
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant, callback
 
+from .analysis import (
+    PeriodType,
+    block_report,
+    exceedance_report,
+    period_report,
+    resolve_period,
+)
 from .const import (
     DOMAIN,
     FRONTEND_URL,
@@ -103,6 +110,9 @@ async def async_setup_dashboard(hass: HomeAssistant) -> None:
             ws_current,
             ws_quarter,
             ws_day,
+            ws_period,
+            ws_blocks,
+            ws_exceedances,
             ws_calendar,
             ws_transitions,
             ws_archive_status,
@@ -289,6 +299,222 @@ async def ws_day(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> N
         msg["id"],
         {"status": "ok", **response},
     )
+
+
+_PERIOD_SCHEMA = {
+    vol.Required("period_type"): str,
+    vol.Required("anchor"): str,
+    vol.Optional("custom_start"): str,
+    vol.Optional("custom_end"): str,
+    vol.Optional("tariff_block"): int,
+}
+
+
+def _period_request(msg: dict[str, Any]) -> tuple[Any, int | None]:
+    """Validate and resolve one dashboard period request."""
+
+    kind = PeriodType(msg["period_type"])
+    anchor_value = msg["anchor"]
+    if "T" in anchor_value:
+        anchor: date | datetime = datetime.fromisoformat(anchor_value)
+        if anchor.tzinfo is None:
+            raise ValueError("hour anchor requires an explicit UTC offset")
+    else:
+        anchor = date.fromisoformat(anchor_value)
+    custom_start = date.fromisoformat(msg["custom_start"]) if msg.get("custom_start") else None
+    custom_end = date.fromisoformat(msg["custom_end"]) if msg.get("custom_end") else None
+    tariff_block = msg.get("tariff_block")
+    if tariff_block is not None and tariff_block not in range(1, 6):
+        raise ValueError("tariff block must be B1 through B5")
+    return (
+        resolve_period(
+            kind,
+            anchor,
+            custom_start=custom_start,
+            custom_end=custom_end,
+        ),
+        tariff_block,
+    )
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/period", **_ENTRY_SCHEMA, **_PERIOD_SCHEMA}
+)
+@websocket_api.async_response
+async def ws_period(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
+    """Return the shared historical period report."""
+
+    runtime = _runtime(hass, msg)
+    if runtime is None:
+        connection.send_error(msg["id"], "entry_not_found", "SI Grid Monitor entry not found")
+        return
+    try:
+        bounds, tariff_block = _period_request(msg)
+    except (KeyError, TypeError, ValueError):
+        connection.send_error(msg["id"], "invalid_period", "Invalid historical period request")
+        return
+    live = runtime.dashboard_current()
+    try:
+        now_utc = (
+            datetime.fromisoformat(str(live.get("now_utc"))).astimezone(UTC)
+            if live.get("now_utc")
+            else datetime.now(UTC)
+        )
+        report = await hass.async_add_executor_job(
+            lambda: period_report(
+                runtime.archive,
+                runtime.namespace,
+                bounds,
+                now_utc=now_utc,
+                tariff_block=tariff_block,
+                classifier=runtime.tariff_calendar.classify,
+            )
+        )
+    except sqlite3.Error:
+        _history_error(
+            connection,
+            msg,
+            operation="period",
+            requested=bounds.label,
+            code="archive_unavailable",
+            message="Historical archive is temporarily unavailable",
+        )
+        return
+    except Exception:
+        _history_error(
+            connection,
+            msg,
+            operation="period",
+            requested=bounds.label,
+            code="period_query_failed",
+            message="Could not load the selected historical period",
+        )
+        return
+    connection.send_result(msg["id"], _json(report))
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/blocks", **_ENTRY_SCHEMA, **_PERIOD_SCHEMA}
+)
+@websocket_api.async_response
+async def ws_blocks(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
+    """Return five-block historical analysis for one period."""
+
+    runtime = _runtime(hass, msg)
+    if runtime is None:
+        connection.send_error(msg["id"], "entry_not_found", "SI Grid Monitor entry not found")
+        return
+    try:
+        bounds, selected_block = _period_request(msg)
+    except (KeyError, TypeError, ValueError):
+        connection.send_error(msg["id"], "invalid_period", "Invalid block-analysis request")
+        return
+    live = runtime.dashboard_current()
+    try:
+        now_utc = (
+            datetime.fromisoformat(str(live.get("now_utc"))).astimezone(UTC)
+            if live.get("now_utc")
+            else datetime.now(UTC)
+        )
+        report = await hass.async_add_executor_job(
+            lambda: block_report(
+                runtime.archive,
+                runtime.namespace,
+                bounds,
+                now_utc=now_utc,
+                classifier=runtime.tariff_calendar.classify,
+                selected_block=selected_block,
+            )
+        )
+    except sqlite3.Error:
+        _history_error(
+            connection,
+            msg,
+            operation="blocks",
+            requested=bounds.label,
+            code="archive_unavailable",
+            message="Historical archive is temporarily unavailable",
+        )
+        return
+    except Exception:
+        _history_error(
+            connection,
+            msg,
+            operation="blocks",
+            requested=bounds.label,
+            code="blocks_query_failed",
+            message="Could not load tariff-block analysis",
+        )
+        return
+    connection.send_result(msg["id"], _json(report))
+
+
+_EXCEEDANCE_SCHEMA = {
+    **_PERIOD_SCHEMA,
+    vol.Optional("sort_by"): str,
+    vol.Optional("direction"): str,
+    vol.Optional("page"): int,
+    vol.Optional("page_size"): int,
+}
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/exceedances", **_ENTRY_SCHEMA, **_EXCEEDANCE_SCHEMA}
+)
+@websocket_api.async_response
+async def ws_exceedances(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
+    """Return a safely filtered and paginated confirmed-exceedance report."""
+
+    runtime = _runtime(hass, msg)
+    if runtime is None:
+        connection.send_error(msg["id"], "entry_not_found", "SI Grid Monitor entry not found")
+        return
+    try:
+        bounds, tariff_block = _period_request(msg)
+        live = runtime.dashboard_current()
+        now_utc = (
+            datetime.fromisoformat(str(live.get("now_utc"))).astimezone(UTC)
+            if live.get("now_utc")
+            else datetime.now(UTC)
+        )
+        report = await hass.async_add_executor_job(
+            lambda: exceedance_report(
+                runtime.archive,
+                runtime.namespace,
+                bounds,
+                now_utc=now_utc,
+                tariff_block=tariff_block,
+                sort_by=msg.get("sort_by", "date"),
+                direction=msg.get("direction", "desc"),
+                page=msg.get("page", 1),
+                page_size=msg.get("page_size", 50),
+                classifier=runtime.tariff_calendar.classify,
+            )
+        )
+    except (KeyError, TypeError, ValueError):
+        connection.send_error(msg["id"], "invalid_query", "Invalid exceedance query")
+        return
+    except sqlite3.Error:
+        _history_error(
+            connection,
+            msg,
+            operation="exceedances",
+            requested=str(msg.get("anchor")),
+            code="archive_unavailable",
+            message="Historical archive is temporarily unavailable",
+        )
+        return
+    except Exception:
+        _history_error(
+            connection,
+            msg,
+            operation="exceedances",
+            requested=str(msg.get("anchor")),
+            code="exceedances_query_failed",
+            message="Could not load exceedance analysis",
+        )
+        return
+    connection.send_result(msg["id"], _json(report))
 
 
 @websocket_api.websocket_command(

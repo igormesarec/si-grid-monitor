@@ -1,7 +1,7 @@
 # SI Grid Monitor
 
 SI Grid Monitor is a HACS-compatible Home Assistant custom integration for
-Slovenian fixed 15-minute grid-demand monitoring. V0.4.2 provides guided setup,
+Slovenian fixed 15-minute grid-demand monitoring. V0.6.0 provides guided setup,
 an automatically registered sidebar dashboard, import-only live calculations,
 sustained-load forecasting, and a permanent
 SQLite quarter archive. It is an early development release, not the complete V1
@@ -17,8 +17,10 @@ V0.4 behavior is documented in
 The user-supplied 2026 contracted-power acceptance case is documented separately
 in [`REAL_WORLD_VALIDATION.md`](REAL_WORLD_VALIDATION.md); its values are test
 fixtures, never installation defaults.
+The combined analysis-release status is tracked in
+[`V0.6_IMPLEMENTATION_STATUS.md`](V0.6_IMPLEMENTATION_STATUS.md).
 
-## V0.4 installation and dashboard
+## V0.6 installation and dashboard
 
 1. Install from HACS and restart Home Assistant.
 2. Add SI Grid Monitor from Settings > Devices & services.
@@ -32,12 +34,18 @@ with separate archive namespaces and is removed only after the final entry unloa
 - **Overview** shows the current quarter, measured trace, import/export, budgets,
   forecasts, advice, prior-quarter summary, and upcoming limits.
 - **Today** shows 92/96/100 real quarters, quality states, totals, and five block rows.
+- **Period** analyzes Hour/Day/Week/Month/Year/Custom ranges with adaptive
+  quarter/hour/day/month bins, coverage, historical targets and drill-down.
+- **Blocks** always compares B1-B5 using stored historical targets, validity and
+  confirmed-contract statistics, with high-demand quarter details.
+- **Exceedances** lists every confirmed exceeded quarter separately with safe
+  filtering, sorting, server-side pagination and analytical excess quantities.
 - **Tariff Calendar** shows backend-classified 2026-2030 hours with DST and rule status.
 
 The countdown is browser-local. Missing historical detail is explicitly labeled;
 the dashboard never fabricates samples from SQLite quarter summaries.
 
-V0.4.2 adds gap-aware cumulative-energy segments, adaptive Overview axes and a
+V0.6.0 retains V0.4.2's gap-aware cumulative-energy segments, adaptive Overview axes and a
 complete Today 15-minute interval selector. After updating through HACS, restart
 Home Assistant and perform a normal browser/app frontend refresh so the new
 versioned JavaScript assets replace any cached V0.4.1 module. Do not remove and
@@ -56,7 +64,7 @@ archive are preserved.
 - **CAN ADD and SUSTAINED CAN ADD are energy-budget estimates. They are not proof that a breaker,
   phase, cable, connection, or inverter can safely carry that power.**
 
-## V0.3 status
+## V0.6 status
 
 | Feature | Planned | Implemented | Tested | HA-verified |
 |---|:---:|:---:|:---:|:---:|
@@ -81,7 +89,7 @@ archive are preserved.
 | Official 2026/2027 tariff/calendar rules | V0.3 | Yes | Yes | No |
 | 2028–2030 explicit provisional/unverified policy | V0.3 | Yes | Yes | No |
 | Five block-specific targets and migration | V0.3 | Yes | Yes | No |
-| Six-tab professional dashboard | V0.4-V0.7 | No | No | No |
+| Six-tab professional dashboard through Exceedances | V0.4-V0.6 | Yes | Yes (automated) | No |
 | GitHub Pages and HACS default listing | V0.8 | No | No | No |
 
 “Pure Python only” means that the adapter and its validation contract exist but
@@ -257,9 +265,9 @@ and the HACS repository validator.
 - The archive is integration-owned, namespaced per config entry, WAL-backed and
   retained forever by default. Removal policy and export tooling are not yet UI
   features; uninstalling the integration does not promise archive deletion.
-- Dashboard tabs, the graphical Overview card, alerts, and public archive
-  query/export services are not implemented. The calendar query API is currently
-  a backend Python interface for later dashboard work.
+- The HISTORY archive explorer and public export services remain planned for
+  V0.7. Historical reports use only existing schema-5 rows and cannot recreate
+  measurements from dates before the archive began.
 - The one-second backend refresh is an initial runtime mechanism; recorder and
   frontend update strategy require HA testing and later optimization.
 - HACS install/update/removal and clean-reinstall behavior require validation in
@@ -276,9 +284,8 @@ and the HACS repository validator.
 - **V0.4:** OVERVIEW and TODAY; the first Overview card is the live graphical
   current quarter with one-second countdown, instant/30-second forecasts, CAN
   ADD/MUST REDUCE, and all five Today block rows even when inactive.
-- **V0.5:** PERIOD and BLOCKS with Hour/Day/Week/Month/Year/Custom selection and
-  quarter-peak-preserving aggregation.
-- **V0.6:** EXCEEDANCES with granular individual-quarter reporting.
+- **V0.6:** combined V0.5/V0.6 release: PERIOD and BLOCKS with shared
+  quarter-peak-preserving aggregation, plus granular paginated EXCEEDANCES.
 - **V0.7:** HISTORY, coverage/quality exploration, pagination, and long-term
   archive query API.
 - **V0.8:** reviewed tariff update notices, complete English/Slovenian

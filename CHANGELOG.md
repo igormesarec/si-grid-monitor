@@ -4,6 +4,36 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-19
+
+- Ordered every PERIOD chart bin by its canonical expected UTC start, with a
+  normalized archived UTC fallback for exceptional archive-only bins; mixed
+  missing/measured data and both rollback folds now remain chronological.
+- Captured the Exceedances live timestamp once on Home Assistant's event-loop
+  thread before dispatching the immutable archive query to the executor.
+- Hardened previous-period comparisons so both periods require complete valid
+  coverage and equal quarter counts; partial and DST-length-mismatched periods
+  are explicitly non-comparable without extrapolation.
+- Corrected Exceedances incomplete/unconfirmed totals to count distinct quarter
+  slots rather than adding overlapping diagnostic categories.
+- Made PERIOD drill-down follow actual bin resolution and canonical UTC bounds,
+  including missing bins and repeated DST hours, while distinguishing missing
+  data from genuinely measured zero values.
+- Reduced tariff-filter planning to one classification per UTC hour and added a
+  populated ten-year bounded-performance regression.
+- Combined the planned V0.5 and V0.6 milestones into one schema-5-compatible
+  release with PERIOD, BLOCKS and EXCEEDANCES dashboard pages.
+- Added authenticated, entry-namespaced SQL aggregation for local-calendar
+  Hour/Day/Week/Month/Year/Custom ranges with DST-correct half-open UTC bounds.
+- Added adaptive historical bins that retain the real maximum 15-minute import
+  demand separately from averages and never turn missing records into zeroes.
+- Added five-block reconciliation using each quarter's immutable target, tariff,
+  quality, simulation and contractual provenance; all B1-B5 rows remain visible.
+- Added confirmed exceedance summaries and one-row-per-quarter server-side
+  sorting, filtering and pagination. Consecutive exceedances are not merged.
+- Preserved SQLite schema 5, existing configuration entries, entity identities,
+  source modes and the V0.4.2 live calculation engine without recalculation.
+
 ## [0.4.2] - 2026-10-19
 
 - Rendered complete cumulative import trajectories when coverage reconciles and

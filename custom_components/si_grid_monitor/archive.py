@@ -744,6 +744,294 @@ class QuarterArchive:
                 ).fetchall()
             )
 
+    def aggregate_period(
+        self,
+        namespace: str,
+        start_utc: datetime,
+        end_utc: datetime,
+        *,
+        tariff_block: int | None = None,
+    ) -> sqlite3.Row:
+        """Aggregate immutable quarters with the shared archive-validity rules.
+
+        This is deliberately SQL-backed so multi-year summaries do not load the
+        complete archive into Home Assistant memory. Missing-quarter counts are
+        added by the calendar-aware analysis layer because absent rows cannot be
+        classified by SQLite alone.
+        """
+
+        measured = """simulation=0
+            AND quality IN ('measured_aligned','counter_derived','reconstructed')
+            AND configuration_status IN ('known','target_unknown','target_mixed')"""
+        eligible = f"""({measured}) AND configuration_status='known'
+            AND contractual_target_kw IS NOT NULL AND contractual_status='confirmed'"""
+        where_block = "" if tariff_block is None else " AND tariff_block=?"
+        params: tuple[Any, ...] = (
+            namespace,
+            _utc_iso(start_utc),
+            _utc_iso(end_utc),
+            *((tariff_block,) if tariff_block is not None else ()),
+        )
+        with self._lock:
+            return self._db.execute(
+                f"""SELECT
+                    SUM(CASE WHEN simulation=0 THEN 1 ELSE 0 END) archived_count,
+                    SUM(CASE WHEN {measured} THEN 1 ELSE 0 END) valid_count,
+                    SUM(CASE WHEN {eligible} THEN 1 ELSE 0 END) contractual_eligible_count,
+                    SUM(CASE WHEN simulation=0 AND quality IN ('incomplete','unavailable')
+                        THEN 1 ELSE 0 END) incomplete_count,
+                    SUM(CASE WHEN simulation=0 AND configuration_status NOT IN
+                        ('known','target_unknown','target_mixed') THEN 1 ELSE 0 END)
+                        unknown_configuration_count,
+                    SUM(CASE WHEN {measured} AND NOT ({eligible}) THEN 1 ELSE 0 END)
+                        valid_without_confirmed_target_count,
+                    SUM(CASE WHEN {eligible} AND confirmed_exceeded=1 THEN 1 ELSE 0 END)
+                        exceeded_count,
+                    SUM(CASE WHEN {measured} AND contractual_status='provisional_estimate'
+                        AND exceeded=1 THEN 1 ELSE 0 END) provisional_exceeded_count,
+                    SUM(CASE WHEN simulation=1 THEN 1 ELSE 0 END) simulation_count,
+                    SUM(CASE WHEN {measured} THEN import_kwh ELSE 0 END) import_kwh,
+                    SUM(CASE WHEN {measured} THEN export_kwh ELSE 0 END) export_kwh,
+                    SUM(CASE WHEN simulation=0 AND NOT ({measured}) THEN import_kwh ELSE 0 END)
+                        partial_observed_import_kwh,
+                    SUM(CASE WHEN simulation=0 AND NOT ({measured}) THEN export_kwh ELSE 0 END)
+                        partial_observed_export_kwh,
+                    MAX(CASE WHEN {measured} THEN import_demand_kw END)
+                        maximum_import_demand_kw,
+                    AVG(CASE WHEN {measured} THEN import_demand_kw END)
+                        average_import_demand_kw,
+                    MIN(CASE WHEN {measured} THEN signed_average_kw END)
+                        minimum_signed_average_kw,
+                    MAX(CASE WHEN {measured} THEN signed_average_kw END)
+                        maximum_signed_average_kw,
+                    MAX(CASE WHEN {eligible} AND confirmed_exceeded=1 THEN excess_kw END)
+                        maximum_excess_kw,
+                    GROUP_CONCAT(DISTINCT CASE WHEN simulation=0
+                        AND contractual_target_kw IS NOT NULL
+                        THEN contractual_target_kw END) targets_kw
+                  FROM quarters WHERE namespace=? AND start_utc>=? AND start_utc<?
+                  {where_block}""",
+                params,
+            ).fetchone()
+
+    def aggregate_period_bins(
+        self,
+        namespace: str,
+        start_utc: datetime,
+        end_utc: datetime,
+        *,
+        resolution: str,
+        tariff_block: int | None = None,
+    ) -> list[sqlite3.Row]:
+        """Return bounded chart bins while preserving the true quarter maximum."""
+
+        group_expression = {
+            "quarter": "start_utc",
+            "hour": ("substr(start_local,1,13) || '|' || utc_offset_seconds || '|' || fold"),
+            "day": "substr(start_local,1,10)",
+            "month": "substr(start_local,1,7)",
+        }.get(resolution)
+        if group_expression is None:
+            raise ValueError("unsupported archive-bin resolution")
+        measured = """simulation=0
+            AND quality IN ('measured_aligned','counter_derived','reconstructed')
+            AND configuration_status IN ('known','target_unknown','target_mixed')"""
+        eligible = f"""({measured}) AND configuration_status='known'
+            AND contractual_target_kw IS NOT NULL AND contractual_status='confirmed'"""
+        where_block = "" if tariff_block is None else " AND tariff_block=?"
+        params: tuple[Any, ...] = (
+            namespace,
+            _utc_iso(start_utc),
+            _utc_iso(end_utc),
+            *((tariff_block,) if tariff_block is not None else ()),
+        )
+        with self._lock:
+            return list(
+                self._db.execute(
+                    f"""SELECT {group_expression} bin_key,MIN(start_utc) start_utc,
+                        MAX(end_utc) end_utc,
+                        SUM(CASE WHEN simulation=0 THEN 1 ELSE 0 END) archived_count,
+                        SUM(CASE WHEN {measured} THEN 1 ELSE 0 END) valid_count,
+                        SUM(CASE WHEN {eligible} THEN 1 ELSE 0 END)
+                            contractual_eligible_count,
+                        SUM(CASE WHEN simulation=0 AND quality IN
+                            ('incomplete','unavailable') THEN 1 ELSE 0 END) incomplete_count,
+                        SUM(CASE WHEN {measured} THEN import_kwh ELSE 0 END) import_kwh,
+                        SUM(CASE WHEN {measured} THEN export_kwh ELSE 0 END) export_kwh,
+                        SUM(CASE WHEN simulation=0 AND NOT ({measured})
+                            THEN import_kwh ELSE 0 END) partial_observed_import_kwh,
+                        SUM(CASE WHEN simulation=0 AND NOT ({measured})
+                            THEN export_kwh ELSE 0 END) partial_observed_export_kwh,
+                        MAX(CASE WHEN {measured} THEN import_demand_kw END)
+                            maximum_import_demand_kw,
+                        AVG(CASE WHEN {measured} THEN import_demand_kw END)
+                            average_import_demand_kw,
+                        MIN(CASE WHEN {measured} THEN signed_average_kw END)
+                            minimum_signed_average_kw,
+                        MAX(CASE WHEN {measured} THEN signed_average_kw END)
+                            maximum_signed_average_kw,
+                        SUM(CASE WHEN {eligible} AND confirmed_exceeded=1 THEN 1 ELSE 0 END)
+                            exceeded_count,
+                        MAX(CASE WHEN {eligible} AND confirmed_exceeded=1 THEN excess_kw END)
+                            maximum_excess_kw,
+                        GROUP_CONCAT(DISTINCT CASE WHEN simulation=0
+                            AND contractual_target_kw IS NOT NULL
+                            THEN contractual_target_kw END) targets_kw
+                      FROM quarters WHERE namespace=? AND start_utc>=? AND start_utc<?
+                      {where_block} GROUP BY {group_expression} ORDER BY MIN(start_utc)""",
+                    params,
+                ).fetchall()
+            )
+
+    def highest_demand_quarters(
+        self,
+        namespace: str,
+        start_utc: datetime,
+        end_utc: datetime,
+        *,
+        tariff_block: int | None = None,
+        limit: int = 10,
+    ) -> list[sqlite3.Row]:
+        """Return a bounded list of genuine measured quarter peaks."""
+
+        if not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
+        where_block = "" if tariff_block is None else " AND tariff_block=?"
+        params: tuple[Any, ...] = (
+            namespace,
+            _utc_iso(start_utc),
+            _utc_iso(end_utc),
+            *((tariff_block,) if tariff_block is not None else ()),
+            limit,
+        )
+        with self._lock:
+            return list(
+                self._db.execute(
+                    f"""SELECT * FROM quarters WHERE namespace=? AND start_utc>=?
+                       AND start_utc<? AND simulation=0
+                       AND quality IN ('measured_aligned','counter_derived','reconstructed')
+                       AND configuration_status IN ('known','target_unknown','target_mixed')
+                       {where_block}
+                       ORDER BY import_demand_kw DESC,start_utc DESC LIMIT ?""",
+                    params,
+                ).fetchall()
+            )
+
+    def aggregate_exceedances(
+        self,
+        namespace: str,
+        start_utc: datetime,
+        end_utc: datetime,
+        *,
+        tariff_block: int | None = None,
+    ) -> dict[str, Any]:
+        """Summarize only confirmed, contract-eligible exceeded quarters."""
+
+        where_block = "" if tariff_block is None else " AND tariff_block=?"
+        params: tuple[Any, ...] = (
+            namespace,
+            _utc_iso(start_utc),
+            _utc_iso(end_utc),
+            *((tariff_block,) if tariff_block is not None else ()),
+        )
+        eligible = """simulation=0 AND configuration_status='known'
+            AND quality IN ('measured_aligned','counter_derived','reconstructed')
+            AND contractual_target_kw IS NOT NULL AND contractual_status='confirmed'"""
+        with self._lock:
+            summary = self._db.execute(
+                f"""SELECT COUNT(*) exceedance_count,
+                    MAX(import_demand_kw) maximum_import_demand_kw,
+                    MAX(excess_kw) maximum_excess_kw,
+                    AVG(excess_kw) average_excess_kw,
+                    MAX(CASE WHEN contractual_target_kw>0
+                        THEN 100.0*excess_kw/contractual_target_kw END)
+                        maximum_excess_percentage
+                  FROM quarters WHERE namespace=? AND start_utc>=? AND start_utc<?
+                    AND {eligible} AND confirmed_exceeded=1 {where_block}""",
+                params,
+            ).fetchone()
+            greatest = self._db.execute(
+                f"""SELECT start_utc,end_utc,tariff_block,excess_kw
+                  FROM quarters WHERE namespace=? AND start_utc>=? AND start_utc<?
+                    AND {eligible} AND confirmed_exceeded=1 {where_block}
+                  ORDER BY excess_kw DESC,start_utc ASC LIMIT 1""",
+                params,
+            ).fetchone()
+            affected = self._db.execute(
+                f"""SELECT tariff_block,COUNT(*) count
+                  FROM quarters WHERE namespace=? AND start_utc>=? AND start_utc<?
+                    AND {eligible} AND confirmed_exceeded=1 {where_block}
+                  GROUP BY tariff_block ORDER BY count DESC,tariff_block ASC LIMIT 1""",
+                params,
+            ).fetchone()
+        return {
+            **{key: summary[key] for key in summary.keys()},  # noqa: SIM118
+            "greatest_exceedance": (
+                None if greatest is None else {key: greatest[key] for key in greatest.keys()}  # noqa: SIM118
+            ),
+            "most_affected_block": None if affected is None else affected["tariff_block"],
+        }
+
+    def list_exceedances(
+        self,
+        namespace: str,
+        start_utc: datetime,
+        end_utc: datetime,
+        *,
+        tariff_block: int | None = None,
+        sort_by: str = "date",
+        direction: str = "desc",
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[int, list[sqlite3.Row]]:
+        """Return one safely sorted page of confirmed exceeded quarters."""
+
+        sort_columns = {
+            "date": "start_utc",
+            "demand": "import_demand_kw",
+            "excess_kw": "excess_kw",
+            "excess_percentage": "(excess_kw/contractual_target_kw)",
+        }
+        if sort_by not in sort_columns:
+            raise ValueError("unsupported exceedance sort field")
+        if direction not in {"asc", "desc"}:
+            raise ValueError("unsupported exceedance sort direction")
+        if not 1 <= limit <= 100 or offset < 0:
+            raise ValueError("invalid exceedance pagination")
+        where_block = "" if tariff_block is None else " AND tariff_block=?"
+        base_params: tuple[Any, ...] = (
+            namespace,
+            _utc_iso(start_utc),
+            _utc_iso(end_utc),
+            *((tariff_block,) if tariff_block is not None else ()),
+        )
+        eligible = """simulation=0 AND configuration_status='known'
+            AND quality IN ('measured_aligned','counter_derived','reconstructed')
+            AND contractual_target_kw IS NOT NULL AND contractual_status='confirmed'
+            AND confirmed_exceeded=1"""
+        with self._lock:
+            total = int(
+                self._db.execute(
+                    f"""SELECT COUNT(*) count FROM quarters WHERE namespace=?
+                       AND start_utc>=? AND start_utc<? AND {eligible} {where_block}""",
+                    base_params,
+                ).fetchone()["count"]
+            )
+            rows = list(
+                self._db.execute(
+                    f"""SELECT *,
+                       CASE WHEN contractual_target_kw>0
+                         THEN 100.0*excess_kw/contractual_target_kw END excess_percentage,
+                       MAX(0,excess_kw)*0.25 excess_energy_kwh
+                       FROM quarters WHERE namespace=? AND start_utc>=? AND start_utc<?
+                       AND {eligible} {where_block}
+                       ORDER BY {sort_columns[sort_by]} {direction.upper()},start_utc DESC
+                       LIMIT ? OFFSET ?""",
+                    (*base_params, limit, offset),
+                ).fetchall()
+            )
+        return total, rows
+
     def latest_quarter_end(self, namespace: str) -> datetime | None:
         """Return the newest archived end on the UTC timeline."""
 

@@ -4,17 +4,24 @@ import test from "node:test";
 import {
   CHART_SERIES,
   RequestGate,
+  adjacentPeriodAnchor,
+  blockChartModel,
   calendarDateLabel,
   chartViewStateForRender,
   dayStatusLabel,
   defaultTodayQuarter,
   energyAxisScale,
+  exceedanceRequest,
   historyErrorMessage,
   ljubljanaDate,
   ljubljanaTimeLabel,
   livePowerChartModel,
   localQuarterLabel,
   moveTodayQuarter,
+  periodChartModel,
+  periodBinDescription,
+  periodDrillDown,
+  periodRequest,
   quarterEnergyModel,
   quarterNavigation,
   restoreChartScrollState,
@@ -23,6 +30,129 @@ import {
   todayChartModel,
   todayQuarterAction,
 } from "../custom_components/si_grid_monitor/frontend/dashboard-model.mjs";
+
+test("shared period selector serializes standard and custom filters", () => {
+  assert.deepEqual(periodRequest({
+    periodType: "month", periodAnchor: "2026-10-19", selectedDate: "2026-10-19",
+    periodBlock: "3",
+  }), {period_type: "month", anchor: "2026-10-19", tariff_block: 3});
+  assert.deepEqual(periodRequest({
+    periodType: "custom", selectedDate: "2026-10-19", customStart: "2026-10-01",
+    customEnd: "2026-10-19", periodBlock: "all",
+  }), {
+    period_type: "custom", anchor: "2026-10-19",
+    custom_start: "2026-10-01", custom_end: "2026-10-19",
+  });
+});
+
+test("exceedance requests preserve shared filters and bounded page state", () => {
+  assert.deepEqual(exceedanceRequest({
+    periodType: "year", periodAnchor: "2026-01-01", selectedDate: "2026-01-01",
+    periodBlock: "4", exceedanceSort: "excess_percentage",
+    exceedanceDirection: "asc", exceedancePage: 3, exceedancePageSize: 25,
+  }), {
+    period_type: "year", anchor: "2026-01-01", tariff_block: 4,
+    sort_by: "excess_percentage", direction: "asc", page: 3, page_size: 25,
+  });
+});
+
+test("block chart always exposes B1 through B5 and independent scales", () => {
+  const model = blockChartModel([
+    {block: 1, active: true, import_kwh: 8, maximum_import_demand_kw: 5.2,
+      average_import_demand_kw: 0.8, exceeded_count: 3},
+    {block: 4, active: true, import_kwh: 2, maximum_import_demand_kw: 4.2,
+      average_import_demand_kw: 1.1, exceeded_count: 1},
+  ]);
+  assert.deepEqual(model.rows.map(row => row.block), [1, 2, 3, 4, 5]);
+  assert.equal(model.energyMaximum, 8);
+  assert.equal(model.demandMaximum, 5.2);
+  assert.equal(model.exceedanceMaximum, 3);
+  assert.equal(model.rows[1].active, false);
+});
+
+test("period navigation and drill-down preserve calendar intent", () => {
+  const period = {
+    period_type: "month",
+    start_utc: "2026-09-30T22:00:00+00:00",
+    end_utc: "2026-10-31T23:00:00+00:00",
+    start_local: "2026-10-01T00:00:00+02:00",
+    end_local: "2026-11-01T00:00:00+01:00",
+  };
+  assert.equal(adjacentPeriodAnchor(period, -1).anchor, "2026-09-30T21:59:59.999Z");
+  assert.equal(adjacentPeriodAnchor(period, 1).anchor, "2026-10-31T23:00:00.000Z");
+  assert.deepEqual(periodDrillDown("year", {bin_key: "2026-10"}, "month"), {
+    periodType: "month", anchor: "2026-10-01",
+  });
+  assert.deepEqual(periodDrillDown("month", {bin_key: "2026-10-19"}, "day"), {
+    periodType: "day", anchor: "2026-10-19",
+  });
+  assert.deepEqual(periodDrillDown("day", {start_utc: "2026-10-19T08:00:00Z"}, "quarter"), {
+    quarterStartUtc: "2026-10-19T08:00:00Z",
+  });
+});
+
+test("period drill-down follows actual bin resolution and canonical missing intervals", () => {
+  assert.deepEqual(periodDrillDown("custom", {bin_key: "2028-02"}, "month"), {
+    periodType: "month", anchor: "2028-02-01",
+  });
+  assert.deepEqual(periodDrillDown("custom", {bin_key: "2028-02-29"}, "day"), {
+    periodType: "day", anchor: "2028-02-29",
+  });
+  const firstFold = periodDrillDown("week", {
+    bin_key: "2026-10-25T02|7200|0",
+    expected_start_utc: "2026-10-25T00:00:00+00:00",
+  }, "hour");
+  const secondFold = periodDrillDown("week", {
+    bin_key: "2026-10-25T02|3600|1",
+    expected_start_utc: "2026-10-25T01:00:00+00:00",
+  }, "hour");
+  assert.deepEqual(firstFold, {
+    periodType: "hour", anchor: "2026-10-25T00:00:00+00:00",
+  });
+  assert.deepEqual(secondFold, {
+    periodType: "hour", anchor: "2026-10-25T01:00:00+00:00",
+  });
+  assert.notEqual(firstFold.anchor, secondFold.anchor);
+  assert.deepEqual(periodDrillDown("day", {
+    status: "missing",
+    bin_key: "2026-10-19T08:15:00+00:00",
+    expected_start_utc: "2026-10-19T08:15:00+00:00",
+  }, "quarter"), {quarterStartUtc: "2026-10-19T08:15:00+00:00"});
+});
+
+test("period chart preserves maximum demand separately from average", () => {
+  const model = periodChartModel([{
+    bin_key: "2026-10-19",
+    maximum_import_demand_kw: 5.2,
+    average_import_demand_kw: 0.8,
+  }], "demand");
+  assert.equal(model.maximum, 5.2);
+  assert.ok(model.valueToY(5.2) < model.valueToY(0.8));
+  const withHistoricalTargets = periodChartModel([{
+    maximum_import_demand_kw: 5.2, average_import_demand_kw: 0.8,
+    targets_kw: [3.5, 6.0],
+  }], "demand");
+  assert.equal(withHistoricalTargets.maximum, 6.0);
+});
+
+test("period bins distinguish missing data, incomplete data, and measured zero", () => {
+  const bins = [
+    {bin_key: "missing", status: "missing", valid_count: 0, expected_count: 1,
+      import_kwh: 0},
+    {bin_key: "incomplete", status: "incomplete", valid_count: 0, expected_count: 1,
+      import_kwh: 0, partial_observed_import_kwh: 0.1},
+    {bin_key: "zero", status: "complete", valid_count: 1, expected_count: 1,
+      import_kwh: 0},
+    {bin_key: "measured", status: "complete", valid_count: 1, expected_count: 1,
+      import_kwh: 0.25},
+  ];
+  const model = periodChartModel(bins, "energy");
+  assert.deepEqual(model.items.map(item => item.hasMeasuredData), [false, false, true, true]);
+  assert.match(periodBinDescription(bins[0]), /missing data is not zero/);
+  assert.match(periodBinDescription(bins[1]), /partial observations are excluded/);
+  assert.match(periodBinDescription(bins[2]), /measured; 0\.00 kWh/);
+  assert.match(periodBinDescription(bins[3]), /measured; 0\.25 kWh/);
+});
 
 class FakeChartScroller {
   constructor(root, key, scrollLeft = 0) {
