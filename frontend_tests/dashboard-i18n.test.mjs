@@ -32,6 +32,23 @@ test("language switching translates dynamic audit and all navigation keys", () =
   }
   assert.match(translateDashboard("audit.preview_limited", "sl"), /1\.000/);
   assert.match(translateDashboard("audit.preview_limited", "en"), /1,000/);
+  assert.equal(
+    translateDashboard("history.quarter_report", "sl", {block: "B2"}),
+    "Kronološko poročilo četrtin B2",
+  );
+  assert.match(translateDashboard("period.maximum_demand", "sl"), /Največja/);
+  assert.match(translateDashboard("blocks.average_legend", "sl"), /Povprečna/);
+});
+
+test("HISTORY filter states retain distinct null semantics in both languages", () => {
+  for (const key of ["confirmed_yes", "confirmed_no", "unconfirmed", "all"]) {
+    assert.notEqual(translateDashboard(`history.${key}`, "en"), `history.${key}`);
+    assert.notEqual(translateDashboard(`history.${key}`, "sl"), `history.${key}`);
+  }
+  assert.notEqual(
+    translateDashboard("history.confirmed_no", "sl"),
+    translateDashboard("history.unconfirmed", "sl"),
+  );
 });
 
 test("Slovenian dictionary covers every navigation and safety workflow", () => {

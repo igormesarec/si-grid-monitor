@@ -22,7 +22,7 @@ class HistoryQuery:
     end_utc: datetime
     tariff_block: int | None = None
     qualities: tuple[str, ...] = ()
-    confirmed_exceeded: bool | None = None
+    exceedance_status: str = "all"
     source_epoch: int | None = None
     page: int = 1
     page_size: int = 50
@@ -38,6 +38,13 @@ class HistoryQuery:
             raise ValueError("tariff block must be B1 through B5")
         if not set(self.qualities).issubset(SUPPORTED_QUALITIES):
             raise ValueError("unsupported quality filter")
+        if self.exceedance_status not in {
+            "all",
+            "confirmed_yes",
+            "confirmed_no",
+            "unconfirmed",
+        }:
+            raise ValueError("unsupported exceedance-status filter")
         if self.page < 1 or not 1 <= self.page_size <= 200:
             raise ValueError("invalid history page")
 
@@ -53,7 +60,7 @@ def history_report(archive: QuarterArchive, namespace: str, query: HistoryQuery)
         end,
         tariff_block=query.tariff_block,
         qualities=query.qualities,
-        confirmed_exceeded=query.confirmed_exceeded,
+        exceedance_status=query.exceedance_status,
         source_epoch=query.source_epoch,
         page=query.page,
         page_size=query.page_size,
@@ -68,7 +75,7 @@ def history_report(archive: QuarterArchive, namespace: str, query: HistoryQuery)
         (
             query.tariff_block is not None,
             bool(query.qualities),
-            query.confirmed_exceeded is not None,
+            query.exceedance_status != "all",
             query.source_epoch is not None,
         )
     )
@@ -77,11 +84,15 @@ def history_report(archive: QuarterArchive, namespace: str, query: HistoryQuery)
     for row in rows:
         item = {key: row[key] for key in row.keys()}  # noqa: SIM118 - sqlite Row values differ
         validity = archive_row_validity(item)
+        stored_confirmed = item["confirmed_exceeded"]
         item["measured_valid"] = validity.measured_valid
         item["contractual_eligible"] = validity.contractual_eligible
-        item["confirmed_exceeded"] = validity.confirmed_exceeded
+        item["confirmed_exceeded"] = None if stored_confirmed is None else bool(stored_confirmed)
+        item["validated_confirmed_exceeded"] = validity.confirmed_exceeded
         item["coverage_pct"] = max(0.0, min(100.0, 100.0 * float(item["coverage_seconds"]) / 900.0))
         item["detailed_trace_available"] = False
+        item["measured_peak_kw"] = None
+        item["measured_peak_evidence"] = "not_archived"
         items.append(item)
     return {
         "range": {"start_utc": start, "end_utc": end},

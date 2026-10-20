@@ -793,7 +793,7 @@ class QuarterArchive:
         *,
         tariff_block: int | None = None,
         qualities: tuple[str, ...] = (),
-        confirmed_exceeded: bool | None = None,
+        exceedance_status: str = "all",
         source_epoch: int | None = None,
         page: int = 1,
         page_size: int = 50,
@@ -826,9 +826,14 @@ class QuarterArchive:
             placeholders = ",".join("?" for _ in qualities)
             clauses.append(f"quality IN ({placeholders})")
             parameters.extend(qualities)
-        if confirmed_exceeded is not None:
-            clauses.append("confirmed_exceeded=?")
-            parameters.append(int(confirmed_exceeded))
+        if exceedance_status == "confirmed_yes":
+            clauses.append("confirmed_exceeded=1")
+        elif exceedance_status == "confirmed_no":
+            clauses.append("confirmed_exceeded=0")
+        elif exceedance_status == "unconfirmed":
+            clauses.append("confirmed_exceeded IS NULL")
+        elif exceedance_status != "all":
+            raise ValueError("unsupported exceedance-status filter")
         if source_epoch is not None:
             clauses.append("source_epoch=?")
             parameters.append(int(source_epoch))
@@ -1133,15 +1138,18 @@ class QuarterArchive:
                 and record.contractual_status != "confirmed"
                 and record.contractual_target_kw is None
             )
-        epoch = self._db.execute(
-            "SELECT * FROM source_epochs WHERE namespace=? AND epoch=?",
-            (record.namespace, record.source_epoch),
-        ).fetchone()
-        if epoch is None or epoch["source_id"] != record.source_id:
-            return False
         start = _utc_iso(record.start_utc)
         end = _utc_iso(record.end_utc)
-        if str(epoch["effective_utc"]) > start:
+        epoch = self._db.execute(
+            """SELECT * FROM source_epochs WHERE namespace=? AND effective_utc<=?
+               ORDER BY effective_utc DESC,epoch DESC LIMIT 1""",
+            (record.namespace, start),
+        ).fetchone()
+        if (
+            epoch is None
+            or int(epoch["epoch"]) != record.source_epoch
+            or epoch["source_id"] != record.source_id
+        ):
             return False
         if self._db.execute(
             """SELECT 1 FROM source_epochs
@@ -1152,22 +1160,65 @@ class QuarterArchive:
         if record.configuration_status == ConfigurationStatus.KNOWN:
             if not _same_optional_float(epoch["safety_margin_kw"], record.safety_margin_kw):
                 return False
-            if record.contractual_target_kw is None:
-                return False
-            possible_targets = {
-                float(value)
-                for key in (
-                    "contractual_target_kw",
-                    "target_b1_kw",
-                    "target_b2_kw",
-                    "target_b3_kw",
-                    "target_b4_kw",
-                    "target_b5_kw",
+            periods_json = epoch["contracted_power_periods_json"]
+            if periods_json is not None:
+                tariff = SlovenianTariffCalendar(
+                    allow_provisional=epoch["allow_provisional_tariff"] == 1
+                ).classify(record.start_utc)
+                if (
+                    tariff.block != record.tariff_block
+                    or tariff.rule_version != record.tariff_rule_version
+                    or tariff.rule_status.value != record.tariff_rule_status
+                ):
+                    return False
+                schedule = contracted_power_schedule_from_json(str(periods_json))
+                period = schedule.period_for(tariff.local_datetime.date())
+                expected_target = schedule.target_for(tariff)
+                if period is None:
+                    return False
+                expected_metadata = (
+                    period.effective_from.isoformat(),
+                    period.effective_to.isoformat(),
+                    period.provenance,
+                    None if period.recorded_on is None else period.recorded_on.isoformat(),
                 )
-                if (value := epoch[key]) is not None
-            }
-            if record.contractual_target_kw not in possible_targets:
-                return False
+                if not _same_optional_float(expected_target, record.contractual_target_kw):
+                    return False
+                expected_operational = (
+                    None
+                    if expected_target is None or record.safety_margin_kw is None
+                    else max(0.0, expected_target - record.safety_margin_kw)
+                )
+                if not _same_optional_float(expected_operational, record.operational_target_kw):
+                    return False
+                if (
+                    record.target_effective_from,
+                    record.target_effective_to,
+                    record.target_provenance,
+                    record.target_recorded_on,
+                ) != expected_metadata:
+                    return False
+                expected_status = {
+                    RuleStatus.OFFICIAL: "confirmed",
+                    RuleStatus.PROVISIONAL: "provisional_estimate",
+                }.get(tariff.rule_status, "unavailable_rule")
+                if record.contractual_status != expected_status:
+                    return False
+            else:
+                possible_targets = {
+                    float(value)
+                    for key in (
+                        "contractual_target_kw",
+                        "target_b1_kw",
+                        "target_b2_kw",
+                        "target_b3_kw",
+                        "target_b4_kw",
+                        "target_b5_kw",
+                    )
+                    if (value := epoch[key]) is not None
+                }
+                if record.contractual_target_kw not in possible_targets:
+                    return False
         return True
 
     def _reconstruction_checkpoint(self, point: str) -> None:

@@ -325,6 +325,76 @@ test("PERIOD chart never announces a missing bin as measured zero", () => {
   assert.equal((html.match(/class="import-bar"/g) || []).length, 1);
 });
 
+test("PERIOD legends match visible series and single quarters do not duplicate demand", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._periodChartMode = "demand";
+  panel._period = {
+    period: {resolution: "quarter"},
+    bins: [{
+      bin_key: START_A, expected_start_utc: START_A, status: "complete",
+      valid_count: 1, expected_count: 1, maximum_import_demand_kw: 3.2,
+      average_import_demand_kw: 3.2, targets_kw: [3.9],
+    }],
+  };
+  const single = panel._periodChart();
+  assert.equal((single.match(/class="import-bar"/g) || []).length, 1);
+  assert.equal((single.match(/class="average-bar"/g) || []).length, 0);
+  assert.match(single, /Maximum import demand/);
+  assert.doesNotMatch(single, /Average import demand/);
+  assert.match(single, /Historical contracted-power limit/);
+
+  panel._period.bins[0].expected_count = 4;
+  panel._period.bins[0].valid_count = 4;
+  const aggregated = panel._periodChart();
+  assert.equal((aggregated.match(/class="average-bar"/g) || []).length, 1);
+  assert.match(aggregated, /Average import demand/);
+
+  panel._periodChartMode = "energy";
+  const energy = panel._periodChart();
+  assert.match(energy, /Imported energy \(kWh\)/);
+  assert.match(energy, /Exported energy \(kWh\)/);
+  assert.doesNotMatch(energy, /Maximum import demand/);
+});
+
+test("PERIOD renders Ljubljana labels rather than sliced UTC offsets", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._periodChartMode = "energy";
+  panel._period = {
+    period: {resolution: "hour"},
+    bins: [
+      {expected_start_utc: "2026-10-25T00:00:00+00:00", status: "complete",
+        valid_count: 4, expected_count: 4, import_kwh: 1, export_kwh: 0},
+      {expected_start_utc: "2026-10-25T01:00:00+00:00", status: "complete",
+        valid_count: 4, expected_count: 4, import_kwh: 1, export_kwh: 0},
+    ],
+  };
+  const html = panel._periodChart();
+  assert.match(html, /02:00 GMT\+2/);
+  assert.match(html, /02:00 GMT\+1/);
+  assert.doesNotMatch(html, /00\+00:00/);
+});
+
+test("HISTORY block report synchronizes chart and table without inventing peaks", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._historyBlock = "2";
+  const rows = [
+    {start_utc: START_B, end_utc: "2026-10-19T08:30:00+00:00", tariff_block: 2,
+      import_demand_kw: 3.4, contractual_target_kw: 3.9, measured_peak_kw: null,
+      measured_valid: true, confirmed_exceeded: false, import_kwh: .85, export_kwh: 0,
+      quality: "measured_aligned", coverage_pct: 100},
+    {start_utc: START_A, end_utc: START_B, tariff_block: 2,
+      import_demand_kw: 4.1, contractual_target_kw: 3.9, measured_peak_kw: null,
+      measured_valid: true, confirmed_exceeded: true, excess_kw: .2,
+      import_kwh: 1.025, export_kwh: 0, quality: "measured_aligned", coverage_pct: 100},
+  ];
+  const html = panel._historyQuarterReport({items: rows});
+  assert.equal((html.match(/class="history-chart-row"/g) || []).length, 2);
+  assert.equal((html.match(/data-history-quarter=/g) || []).length, 4);
+  assert.equal((html.match(/class="history-peak"/g) || []).length, 0);
+  assert.match(html, /Not archived; not inferred/);
+  assert.ok(html.indexOf(START_B) < html.indexOf(START_A));
+});
+
 test("PERIOD panel drills missing quarter and repeated hour by canonical UTC identity", async () => {
   const panel = new SIGridMonitorPanel();
   panel._render = () => {};

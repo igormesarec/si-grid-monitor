@@ -13,12 +13,14 @@ import {
   energyAxisScale,
   exceedanceRequest,
   historyErrorMessage,
+  historyQuarterChartModel,
   ljubljanaDate,
   ljubljanaTimeLabel,
   livePowerChartModel,
   localQuarterLabel,
   moveTodayQuarter,
   periodChartModel,
+  periodAxisLabels,
   periodBinDescription,
   periodDrillDown,
   periodRequest,
@@ -56,7 +58,7 @@ test("exceedance requests preserve shared filters and bounded page state", () =>
   });
 });
 
-test("block chart always exposes B1 through B5 and independent scales", () => {
+test("block chart always exposes B1 through B5 and readable independent scales", () => {
   const model = blockChartModel([
     {block: 1, active: true, import_kwh: 8, maximum_import_demand_kw: 5.2,
       average_import_demand_kw: 0.8, exceeded_count: 3},
@@ -65,8 +67,10 @@ test("block chart always exposes B1 through B5 and independent scales", () => {
   ]);
   assert.deepEqual(model.rows.map(row => row.block), [1, 2, 3, 4, 5]);
   assert.equal(model.energyMaximum, 8);
-  assert.equal(model.demandMaximum, 5.2);
+  assert.equal(model.demandMaximum, 6);
   assert.equal(model.exceedanceMaximum, 3);
+  assert.deepEqual(model.demandScale.ticks, [0, 1, 2, 3, 4, 5, 6]);
+  assert.equal(model.energyScale.step, 1);
   assert.equal(model.rows[1].active, false);
 });
 
@@ -126,13 +130,54 @@ test("period chart preserves maximum demand separately from average", () => {
     maximum_import_demand_kw: 5.2,
     average_import_demand_kw: 0.8,
   }], "demand");
-  assert.equal(model.maximum, 5.2);
+  assert.equal(model.maximum, 6);
+  assert.deepEqual(model.ticks, [0, 1, 2, 3, 4, 5, 6]);
   assert.ok(model.valueToY(5.2) < model.valueToY(0.8));
   const withHistoricalTargets = periodChartModel([{
     maximum_import_demand_kw: 5.2, average_import_demand_kw: 0.8,
     targets_kw: [3.5, 6.0],
   }], "demand");
   assert.equal(withHistoricalTargets.maximum, 6.0);
+});
+
+test("period chart suppresses duplicate average for one quarter only", () => {
+  const single = periodChartModel([{
+    status: "complete", valid_count: 1, expected_count: 1,
+    maximum_import_demand_kw: 3.2, average_import_demand_kw: 3.2,
+  }], "demand");
+  const aggregated = periodChartModel([{
+    status: "complete", valid_count: 4, expected_count: 4,
+    maximum_import_demand_kw: 3.2, average_import_demand_kw: 1.4,
+  }], "demand");
+  assert.equal(single.items[0].showAverage, false);
+  assert.equal(aggregated.items[0].showAverage, true);
+});
+
+test("period labels use Ljubljana local time and distinguish the repeated DST hour", () => {
+  const labels = periodAxisLabels([
+    {expected_start_utc: "2026-10-25T00:00:00+00:00"},
+    {expected_start_utc: "2026-10-25T01:00:00+00:00"},
+    {expected_start_utc: "2026-10-25T02:00:00+00:00"},
+  ], "hour");
+  assert.match(labels[0], /^02:00 GMT\+2$/);
+  assert.match(labels[1], /^02:00 GMT\+1$/);
+  assert.equal(labels[2], "03:00");
+  assert.deepEqual(periodAxisLabels([
+    {expected_start_utc: "2026-09-30T22:00:00+00:00"},
+  ], "day"), ["01 Oct"]);
+  assert.deepEqual(periodAxisLabels([
+    {expected_start_utc: "2026-12-31T23:00:00+00:00"},
+  ], "month"), ["Jan 2027"]);
+});
+
+test("HISTORY quarter chart uses one-kilowatt grid and never invents a peak", () => {
+  const model = historyQuarterChartModel([{
+    start_utc: "2027-01-01T00:00:00+00:00", import_demand_kw: 3.4,
+    contractual_target_kw: 4.2, measured_peak_kw: null,
+  }]);
+  assert.deepEqual(model.ticks, [0, 1, 2, 3, 4, 5]);
+  assert.equal(model.rows[0].peakPct, null);
+  assert.equal(model.rows[0].targetPct, 84);
 });
 
 test("period bins distinguish missing data, incomplete data, and measured zero", () => {

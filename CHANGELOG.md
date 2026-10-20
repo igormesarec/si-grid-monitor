@@ -12,6 +12,13 @@ All notable changes to SI Grid Monitor will be documented here.
 - Clarified HISTORY overall-range versus filtered-result totals, exposed the
   source-configuration-epoch filter, and added parameterized English/Slovenian
   translations for dynamic navigation, HISTORY, audit and error messages.
+- Revalidated controlled reconstruction against the exact dated contracted-power
+  assignment and tariff block at apply time, rejecting stale audit plans.
+- Split HISTORY exceedance filters into Confirmed Yes, Confirmed No and
+  Unconfirmed while preserving SQLite NULL semantics.
+- Added a bounded newest-first HISTORY block-quarter chart/table without
+  inventing instantaneous peaks, plus consistent BLOCKS/PERIOD reference grids,
+  visual legends and Europe/Ljubljana DST-safe axis labels.
 
 ## [0.8.0] - 2026-10-20
 

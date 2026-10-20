@@ -6,6 +6,7 @@ import json
 import sqlite3
 import sys
 import types
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -489,4 +490,45 @@ def test_history_command_pages_real_rows_and_serializes_storage(tmp_path: Path) 
     assert connection.result["summary"]["missing_count"] == 89
     assert connection.result["storage"]["schema_version"] == 6
     json.dumps(connection.result)
+    archive.close()
+
+
+def test_history_command_preserves_confirmed_false_and_null_filters(tmp_path: Path) -> None:
+    archive = QuarterArchive(tmp_path / "history-status.db")
+    archive.open()
+    starts = quarter_starts_for_local_day(date(2026, 1, 2))
+    yes = replace(_record(starts[0], 300), confirmed_exceeded=True, exceeded=True)
+    no = replace(_record(starts[1], 0), confirmed_exceeded=False, exceeded=False)
+    unknown = replace(
+        _record(starts[2], 0, incomplete=True),
+        confirmed_exceeded=None,
+        exceeded=None,
+    )
+    for record in (yes, no, unknown):
+        archive.upsert_quarter(record)
+    runtime = _runtime(archive)
+    expected = {
+        "confirmed_yes": [True],
+        "confirmed_no": [False],
+        "unconfirmed": [None],
+        "all": [True, False, None],
+    }
+    for status, values in expected.items():
+        connection = _Connection()
+        _run(
+            dashboard.ws_history(
+                _Hass(runtime),
+                connection,
+                {
+                    "id": 71,
+                    "entry_id": "entry-a",
+                    "start_date": "2026-01-02",
+                    "end_date": "2026-01-02",
+                    "exceedance_status": status,
+                    "direction": "asc",
+                },
+            )
+        )
+        assert connection.error is None
+        assert [item["confirmed_exceeded"] for item in connection.result["items"]] == values
     archive.close()

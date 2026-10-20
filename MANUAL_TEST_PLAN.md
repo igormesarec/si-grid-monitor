@@ -378,3 +378,24 @@ rendering and live SolarEdge cadence still require the real-instance checks.
    Verify navigation, parameterized pagination, Recorder audit/reconstruction
    messages, warnings, dialogs, accessibility labels and connection errors
    switch language without changing the active meter, date, quarter or filter.
+8. Create dated contracted-power assignments for 2026 and 2027 with different
+   B1-B5 values. Audit a 2027 Recorder quarter, then change the applicable 2027
+   assignment before Apply. Verify the stale plan is rejected. Repeat without
+   changing the assignment and verify the exact target for that quarter's block
+   and local date is retained; a target from another block or 2026 must not pass.
+9. In HISTORY, verify the four exceedance choices independently: All, Confirmed
+   Yes, Confirmed No and Unconfirmed. Confirmed No must not include SQL NULL
+   rows, and Unconfirmed must not present those rows as known non-exceedances.
+10. Select each of B1-B5 over a populated date range. Verify the chronological
+    chart and detailed table show the same bounded page newest-to-oldest, use
+    original historical targets, and open the exact UTC quarter. The peak-power
+    column must say that no peak is archived unless genuine evidence exists; it
+    must never copy the 15-minute average into the peak column.
+11. On BLOCKS, confirm the demand chart uses 1 kW vertical references at normal
+    household ranges and the energy chart uses readable adaptive kWh references.
+    Verify red maximum and light-blue average legends match their series.
+12. On PERIOD, check Day labels as Ljubljana `HH:mm`, longer views as appropriate
+    local dates, and the 25 October 2026 rollback. The two 02:00 labels must show
+    distinct GMT offsets. Verify energy and demand have separate visual legends,
+    a one-quarter demand bin draws one red bar, and aggregated bins draw red
+    maximum plus light-blue average with the gold historical-limit reference.

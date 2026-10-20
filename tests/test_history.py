@@ -118,6 +118,56 @@ def test_history_filters_do_not_invent_properties_for_missing_rows(tmp_path) -> 
     assert report["summary"]["matching_filtered_count"] == 1
 
 
+@pytest.mark.parametrize(
+    ("status", "expected"),
+    [
+        ("all", {False, True, None}),
+        ("confirmed_yes", {True}),
+        ("confirmed_no", {False}),
+        ("unconfirmed", {None}),
+    ],
+)
+def test_history_exceedance_status_preserves_sql_null_semantics(
+    tmp_path, status: str, expected: set[bool | None]
+) -> None:
+    archive = QuarterArchive(tmp_path / f"{status}.db")
+    archive.open()
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    archive.upsert_quarter(_record(start, confirmed_exceeded=True, exceeded=True, excess_kw=0.2))
+    archive.upsert_quarter(_record(start + timedelta(minutes=15), 1, confirmed_exceeded=False))
+    archive.upsert_quarter(
+        _record(
+            start + timedelta(minutes=30),
+            2,
+            confirmed_exceeded=None,
+            contractual_status="unknown_configuration",
+            configuration_status="target_unknown",
+            contractual_target_kw=None,
+        )
+    )
+    report = history_report(
+        archive,
+        "meter-a",
+        HistoryQuery(
+            start,
+            start + timedelta(minutes=45),
+            exceedance_status=status,
+            direction="asc",
+        ),
+    )
+    assert {item["confirmed_exceeded"] for item in report["items"]} == expected
+    assert report["pagination"]["total"] == len(expected)
+
+
+def test_history_rejects_ambiguous_exceedance_filter() -> None:
+    with pytest.raises(ValueError, match="exceedance-status"):
+        HistoryQuery(
+            datetime(2026, 1, 1, tzinfo=UTC),
+            datetime(2026, 1, 2, tzinfo=UTC),
+            exceedance_status="no_or_unconfirmed",
+        )
+
+
 def test_repeated_dst_hour_retains_two_utc_identities(tmp_path) -> None:
     archive = QuarterArchive(tmp_path / "archive.db")
     archive.open()

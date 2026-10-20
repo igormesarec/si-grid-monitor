@@ -600,12 +600,53 @@ export function blockChartModel(blocks) {
       average_import_demand_kw: null, exceeded_count: 0,
     }
   ));
-  const energyMaximum = Math.max(1, ...rows.map(item => Number(item.import_kwh || 0)));
-  const demandMaximum = Math.max(1, ...rows.flatMap(item => [
+  const energyMaximum = Math.max(1, Math.ceil(Math.max(...rows.map(item => Number(item.import_kwh || 0)))));
+  const demandMaximum = Math.max(1, Math.ceil(Math.max(...rows.flatMap(item => [
     Number(item.maximum_import_demand_kw || 0), Number(item.average_import_demand_kw || 0),
-  ]));
+    ...(item.targets_kw || []).map(Number),
+  ]))));
   const exceedanceMaximum = Math.max(1, ...rows.map(item => Number(item.exceeded_count || 0)));
-  return {rows, energyMaximum, demandMaximum, exceedanceMaximum};
+  const ticks = (maximum, integer = false) => {
+    const step = maximum <= 10 ? 1 : maximum <= 25 ? 2 : Math.ceil(maximum / 5 / 5) * 5;
+    const rounded = Math.ceil(maximum / step) * step;
+    return {
+      maximum: rounded,
+      step,
+      ticks: Array.from({length: Math.floor(rounded / step) + 1}, (_, index) => index * step)
+        .filter(value => !integer || Number.isInteger(value)),
+    };
+  };
+  return {
+    rows,
+    energyMaximum: ticks(energyMaximum).maximum,
+    demandMaximum: ticks(demandMaximum).maximum,
+    exceedanceMaximum,
+    energyScale: ticks(energyMaximum),
+    demandScale: ticks(demandMaximum),
+    exceedanceScale: ticks(Math.ceil(exceedanceMaximum), true),
+  };
+}
+
+export function historyQuarterChartModel(rows) {
+  const values = rows.flatMap(row => [
+    row.import_demand_kw,
+    row.measured_peak_kw,
+    row.contractual_target_kw,
+  ]).filter(value => value != null && Number.isFinite(Number(value))).map(Number);
+  const rawMaximum = Math.max(1, ...values);
+  const step = rawMaximum <= 10 ? 1 : rawMaximum <= 25 ? 2 : Math.ceil(rawMaximum / 5 / 5) * 5;
+  const maximum = Math.ceil(rawMaximum / step) * step;
+  return {
+    maximum,
+    step,
+    ticks: Array.from({length: Math.floor(maximum / step) + 1}, (_, index) => index * step),
+    rows: rows.map(row => ({
+      ...row,
+      demandPct: row.import_demand_kw == null ? null : 100 * Number(row.import_demand_kw) / maximum,
+      peakPct: row.measured_peak_kw == null ? null : 100 * Number(row.measured_peak_kw) / maximum,
+      targetPct: row.contractual_target_kw == null ? null : 100 * Number(row.contractual_target_kw) / maximum,
+    })),
+  };
 }
 
 export function adjacentPeriodAnchor(period, direction) {
@@ -666,6 +707,67 @@ export function periodBinDescription(bin) {
   return `${key}; ${state}; ${importValue} kWh imported; ${validCount} of ${expectedCount} quarters valid`;
 }
 
+function niceStep(rawStep, integerOnly = false) {
+  if (!Number.isFinite(rawStep) || rawStep <= 0) return 1;
+  const exponent = 10 ** Math.floor(Math.log10(rawStep));
+  const fraction = rawStep / exponent;
+  const niceFraction = fraction <= 1 ? 1 : fraction <= 2 ? 2 : fraction <= 5 ? 5 : 10;
+  const step = niceFraction * exponent;
+  return integerOnly ? Math.max(1, Math.ceil(step)) : step;
+}
+
+export function niceAxisScale(values, kind = "energy") {
+  if (kind === "coverage") {
+    return {maximum: 100, step: 25, ticks: [0, 25, 50, 75, 100]};
+  }
+  const finite = values.map(Number).filter(value => Number.isFinite(value) && value >= 0);
+  const rawMaximum = Math.max(0, ...finite);
+  if (kind === "power" && rawMaximum <= 10) {
+    const maximum = Math.max(1, Math.ceil(rawMaximum));
+    return {
+      maximum,
+      step: 1,
+      ticks: Array.from({length: maximum + 1}, (_unused, index) => index),
+    };
+  }
+  const integerOnly = kind === "count";
+  const step = niceStep((rawMaximum || 1) / 4, integerOnly);
+  const maximum = Math.max(step, Math.ceil((rawMaximum || step) / step) * step);
+  const ticks = [];
+  for (let value = 0; value <= maximum + step / 1000; value += step) {
+    ticks.push(Number(value.toPrecision(12)));
+  }
+  return {maximum, step, ticks};
+}
+
+function localParts(instant, options) {
+  return new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Europe/Ljubljana",
+    ...options,
+  }).format(new Date(instant));
+}
+
+export function periodAxisLabels(bins, resolution) {
+  const labels = bins.map(bin => {
+    const instant = bin.expected_start_utc || bin.start_utc;
+    if (!instant) return String(bin.bin_key || "");
+    if (resolution === "month") {
+      return localParts(instant, {month: "short", year: "numeric"});
+    }
+    if (resolution === "day") {
+      return localParts(instant, {day: "2-digit", month: "short"});
+    }
+    return localParts(instant, {hour: "2-digit", minute: "2-digit", hourCycle: "h23"});
+  });
+  const duplicates = new Set(labels.filter((label, index) => labels.indexOf(label) !== index));
+  return labels.map((label, index) => {
+    if (!duplicates.has(label) || !["quarter", "hour"].includes(resolution)) return label;
+    const instant = bins[index].expected_start_utc || bins[index].start_utc;
+    const offset = localParts(instant, {timeZoneName: "shortOffset"}).split(" ").at(-1);
+    return `${label} ${offset}`;
+  });
+}
+
 export function periodChartModel(bins, mode, width = 1120, height = 330) {
   const margin = {top: 24, right: 24, bottom: 54, left: 68};
   const plotWidth = width - margin.left - margin.right;
@@ -681,18 +783,22 @@ export function periodChartModel(bins, mode, width = 1120, height = 330) {
     if (mode === "exceedances") return [bin.exceeded_count];
     return [bin.coverage_pct];
   }).filter(value => Number.isFinite(Number(value))).map(Number);
-  const rawMax = Math.max(0, ...values);
-  const maximum = mode === "coverage" ? 100 : rawMax || 1;
+  const scale = niceAxisScale(
+    values,
+    mode === "demand" ? "power" : mode === "coverage" ? "coverage" : mode === "exceedances" ? "count" : "energy",
+  );
+  const maximum = scale.maximum;
   const step = plotWidth / Math.max(1, bins.length);
   const valueToY = value => margin.top + plotHeight * (1 - Math.max(0, Number(value)) / maximum);
   return {
-    width, height, margin, maximum, step, valueToY,
+    width, height, margin, maximum, ticks: scale.ticks, tickStep: scale.step, step, valueToY,
     items: bins.map((bin, index) => {
       const hasMeasuredData = !["missing", "unavailable"].includes(bin.status)
         && (bin.status !== "incomplete" || Number(bin.valid_count || 0) > 0);
       return {
         ...bin,
         hasMeasuredData,
+        showAverage: mode === "demand" && Number(bin.expected_count || bin.valid_count || 1) > 1,
         centerX: margin.left + step * (index + 0.5),
         barWidth: Math.max(2, step * 0.32),
       };

@@ -2,11 +2,21 @@
 
 import sqlite3
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
-from custom_components.si_grid_monitor.archive import ArchiveRecord, QuarterArchive
+from custom_components.si_grid_monitor.archive import (
+    ArchiveRecord,
+    QuarterArchive,
+    archive_record_from_quarter,
+    tariff_for_configuration,
+)
+from custom_components.si_grid_monitor.contracted_power import (
+    ContractedPowerPeriod,
+    ContractedPowerSchedule,
+)
+from custom_components.si_grid_monitor.engine import CompletedQuarter, DataQuality
 from custom_components.si_grid_monitor.reconstruction import (
     audit_summary,
     plan_reconstruction,
@@ -171,6 +181,139 @@ def _job(archive: QuarterArchive, start: datetime) -> str:
 def _decision(archive: QuarterArchive, start: datetime, candidate: ArchiveRecord):
     rows = archive.list_quarters("meter-a", start, start + timedelta(minutes=15))
     return plan_reconstruction(rows, [candidate])[0]
+
+
+def _targets(value: float | tuple[float, float, float, float, float]) -> tuple[float, ...]:
+    return (value,) * 5 if isinstance(value, (int, float)) else value
+
+
+def _schedule(
+    *,
+    target_2026: float | tuple[float, float, float, float, float] = 3.5,
+    target_2027: float | tuple[float, float, float, float, float] = 4.7,
+) -> ContractedPowerSchedule:
+    return ContractedPowerSchedule(
+        (
+            ContractedPowerPeriod(
+                date(2026, 1, 1), date(2026, 12, 31), _targets(target_2026), "2026 assignment"
+            ),
+            ContractedPowerPeriod(
+                date(2027, 1, 1), date(2027, 12, 31), _targets(target_2027), "2027 assignment"
+            ),
+        )
+    )
+
+
+def _scheduled_record(
+    archive: QuarterArchive, start: datetime, schedule: ContractedPowerSchedule
+) -> ArchiveRecord:
+    epoch = archive.register_configuration_epoch(
+        namespace="meter-a",
+        source_id="sensor.grid",
+        positive_means_import=True,
+        contractual_target_kw=schedule.periods[0].block_targets_kw[0],
+        safety_margin_kw=0,
+        contracted_power_schedule=schedule,
+        effective_utc=datetime(2025, 12, 1, tzinfo=UTC),
+    )
+    configuration = archive.resolve_configuration("meter-a", start, start + timedelta(minutes=15))
+    quarter = CompletedQuarter(
+        start_utc=start,
+        end_utc=start + timedelta(minutes=15),
+        import_kwh=0.2,
+        export_kwh=0.1,
+        signed_net_kwh=0.1,
+        signed_average_kw=0.4,
+        import_demand_kw=0.8,
+        coverage_seconds=900,
+        gap_seconds=0,
+        quality=DataQuality.RECONSTRUCTED,
+        source_id="sensor.grid|positive_means_import=True",
+    )
+    record = archive_record_from_quarter(
+        namespace="meter-a",
+        quarter=quarter,
+        configuration=configuration,
+        provenance="user_confirmed_recorder_reconstruction",
+        tariff=tariff_for_configuration(start, configuration),
+    )
+    assert record.source_epoch == epoch.epoch
+    return record
+
+
+def _scheduled_job(archive: QuarterArchive, start: datetime) -> str:
+    return archive.begin_reconstruction_job(
+        "meter-a",
+        start,
+        start + timedelta(minutes=15),
+        "sensor.grid",
+        mode="confirmed_reconstruction",
+        summary={"candidate_count": 1},
+    )
+
+
+def test_reconstruction_revalidates_exact_dated_assignment_and_block_target(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "archive.db")
+    archive.open()
+    schedule = _schedule(target_2026=3.5, target_2027=4.7)
+    start = datetime(2027, 1, 4, 8, tzinfo=UTC)
+    candidate = _scheduled_record(archive, start, schedule)
+    assert candidate.contractual_target_kw == 4.7
+    stale_2026_target = replace(
+        candidate,
+        contractual_target_kw=3.5,
+        operational_target_kw=3.5,
+        target_effective_from="2026-01-01",
+        target_effective_to="2026-12-31",
+        target_provenance="2026 assignment",
+    )
+    assert not archive.apply_reconstructed_record(
+        _scheduled_job(archive, start), stale_2026_target, reason="stale dated assignment"
+    )
+    assert archive.apply_reconstructed_record(
+        _scheduled_job(archive, start), candidate, reason="exact 2027 assignment"
+    )
+
+
+def test_reconstruction_rejects_another_blocks_target_from_same_assignment(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "archive.db")
+    archive.open()
+    start = datetime(2027, 1, 4, 8, tzinfo=UTC)
+    schedule = _schedule(target_2027=(3.1, 3.2, 3.3, 3.4, 3.5))
+    candidate = _scheduled_record(archive, start, schedule)
+    wrong_target = next(
+        target
+        for index, target in enumerate(schedule.periods[1].block_targets_kw, start=1)
+        if index != candidate.tariff_block
+    )
+    wrong_block_value = replace(
+        candidate,
+        contractual_target_kw=wrong_target,
+        operational_target_kw=wrong_target,
+    )
+    assert not archive.apply_reconstructed_record(
+        _scheduled_job(archive, start), wrong_block_value, reason="wrong block target"
+    )
+
+
+def test_reconstruction_rejects_audit_plan_after_configuration_schedule_changes(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "archive.db")
+    archive.open()
+    start = datetime(2027, 2, 1, 8, tzinfo=UTC)
+    candidate = _scheduled_record(archive, start, _schedule(target_2027=4.7))
+    archive.register_configuration_epoch(
+        namespace="meter-a",
+        source_id="sensor.grid",
+        positive_means_import=True,
+        contractual_target_kw=3.5,
+        safety_margin_kw=0,
+        contracted_power_schedule=_schedule(target_2027=5.1),
+        effective_utc=start - timedelta(days=1),
+    )
+    assert not archive.apply_reconstructed_record(
+        _scheduled_job(archive, start), candidate, reason="stale audit schedule"
+    )
+    assert archive.list_quarters("meter-a", start, start + timedelta(minutes=15)) == []
 
 
 def test_stale_audit_cannot_overwrite_newer_live_evidence(tmp_path) -> None:
