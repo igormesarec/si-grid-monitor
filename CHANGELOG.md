@@ -4,6 +4,19 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-10-21
+
+- Corrected HISTORY completeness statistics so only already completed fixed
+  quarters can be missing. The current in-progress quarter and later quarters
+  are reported separately as future/uncompleted.
+- Added explicit completed-expected, completed-archived, incomplete,
+  unavailable and future/uncompleted counts. Local-day ranges retain their
+  true 92/96/100-quarter Europe/Ljubljana DST lengths.
+- Added regression coverage for current and future dates, local midnight,
+  exact quarter transitions, real gaps and both 2026 DST transition days.
+
+## [0.8.1] - 2026-10-21
+
 - Aligned HISTORY axis ticks and quarter grids inside a shared scroll area,
   including phone layouts and desktop scrollbars. Partial measurement status
   wraps outside the bar, with no partial contractual-demand bar.
