@@ -666,6 +666,16 @@ export function historyQuarterChartModel(rows) {
   };
 }
 
+export function historyResponsiveLayout(viewportWidth) {
+  const width = Math.max(0, Number(viewportWidth) || 0);
+  return {
+    mode: width <= 700 ? "mobile_cards" : "desktop_table",
+    stackedHeader: width <= 700,
+    singleColumnFilters: width <= 700,
+    horizontalPageOverflow: false,
+  };
+}
+
 export function adjacentPeriodAnchor(period, direction) {
   if (!period || ![-1, 1].includes(direction)) return null;
   if (period.period_type === "custom") {

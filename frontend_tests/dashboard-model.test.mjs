@@ -14,6 +14,7 @@ import {
   exceedanceRequest,
   historyErrorMessage,
   historyQuarterChartModel,
+  historyResponsiveLayout,
   ljubljanaDate,
   ljubljanaTimeLabel,
   livePowerChartModel,
@@ -32,6 +33,21 @@ import {
   todayChartModel,
   todayQuarterAction,
 } from "../custom_components/si_grid_monitor/frontend/dashboard-model.mjs";
+
+test("HISTORY responsive model selects cards for phones and table for wider screens", () => {
+  for (const width of [320, 360, 390, 430]) {
+    assert.deepEqual(historyResponsiveLayout(width), {
+      mode: "mobile_cards", stackedHeader: true, singleColumnFilters: true,
+      horizontalPageOverflow: false,
+    });
+  }
+  for (const width of [768, 1280]) {
+    assert.deepEqual(historyResponsiveLayout(width), {
+      mode: "desktop_table", stackedHeader: false, singleColumnFilters: false,
+      horizontalPageOverflow: false,
+    });
+  }
+});
 
 test("shared period selector serializes standard and custom filters", () => {
   assert.deepEqual(periodRequest({
