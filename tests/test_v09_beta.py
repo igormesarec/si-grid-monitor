@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import sys
 import types
 from datetime import UTC, datetime, timedelta
@@ -31,6 +32,9 @@ from custom_components.si_grid_monitor.const import (
 )
 
 ROOT = Path(__file__).parents[1]
+REAL_LOOP_UNAVAILABLE = (
+    sys.platform == "win32" and os.environ.get("SI_GRID_MONITOR_FORCE_REAL_LOOP_TESTS") != "1"
+)
 
 
 def _run(coroutine: Any) -> Any:
@@ -334,7 +338,7 @@ def test_immediate_setup_cancellation_rolls_back_and_propagates(
 
 
 @pytest.mark.skipif(
-    sys.platform == "win32",
+    REAL_LOOP_UNAVAILABLE,
     reason="the managed Windows runtime cannot create asyncio's socketpair",
 )
 def test_cancelled_integration_setup_rolls_back_and_propagates(
@@ -558,7 +562,7 @@ def test_runtime_startup_cancellation_closes_archive_and_propagates(
 ) -> None:
     """Cancel a real runtime startup at an executor boundary on a real loop."""
 
-    if sys.platform == "win32":
+    if REAL_LOOP_UNAVAILABLE:
         pytest.skip("the managed Windows runtime cannot create asyncio's socketpair")
     _ensure_homeassistant_stubs()
     from custom_components.si_grid_monitor.runtime import GridMonitorRuntime
@@ -690,7 +694,7 @@ def test_runtime_shutdown_finishes_durable_cleanup_after_listener_failure() -> N
 
 
 @pytest.mark.skipif(
-    sys.platform == "win32",
+    REAL_LOOP_UNAVAILABLE,
     reason="the managed Windows runtime cannot create asyncio's socketpair",
 )
 @pytest.mark.parametrize("cancel_phase", ["drain", "checkpoint", "close"])
@@ -793,7 +797,7 @@ def test_real_loop_shutdown_cancellation_finishes_archive_and_reopens(
         runtime.archive.open()
         rows = runtime.archive.list_quarters(entry.entry_id, start, start + timedelta(minutes=15))
         assert len(rows) == 1
-        assert rows[0].import_kwh == pytest.approx(0.25)
+        assert rows[0]["import_kwh"] == pytest.approx(0.25)
         assert runtime.archive.schema_version == 6
         runtime.archive.close()
 
@@ -801,7 +805,7 @@ def test_real_loop_shutdown_cancellation_finishes_archive_and_reopens(
 
 
 @pytest.mark.skipif(
-    sys.platform == "win32",
+    REAL_LOOP_UNAVAILABLE,
     reason="the managed Windows runtime cannot create asyncio's socketpair",
 )
 def test_cancelled_unload_retains_registry_until_shutdown_is_complete(
