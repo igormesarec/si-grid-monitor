@@ -4,6 +4,29 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+- Started the V0.9.0 beta-readiness milestone with a complete V1 acceptance
+  matrix, safe V0.8 upgrade/rollback guidance and a clean-HA test procedure.
+- Made config-entry setup transactional: failed platform forwarding now stops
+  the runtime, removes its registry entry and unregisters a newly created panel.
+  Partial runtime startup also closes SQLite and removes listeners/tasks before
+  returning the original error.
+- Added beta lifecycle regressions for clean setup/unload, failed setup rollback,
+  archive persistence across code reinstall, multiple-meter namespaces, startup
+  cleanup and synchronized backend/frontend versioning.
+- Hardened cancellation and partial-platform startup rollback: both platform
+  orders unload cleanly, stale `runtime_data` is cleared before retry, and
+  runtime shutdown completes pending archive/checkpoint work despite individual
+  listener cleanup failures before reporting the collected errors.
+- Made runtime shutdown itself cancellation-safe: durable drain, pending-quarter,
+  checkpoint and SQLite-close work runs in one shielded idempotent task with a
+  finite cancellation grace period. An unload interrupted before cleanup finishes
+  retains its runtime registry reference for a safe join/retry instead of
+  advertising successful removal while archive work is active.
+- Added same-entry runtime ownership gating: setup now waits a bounded interval
+  for a prior durable shutdown, defers without overwriting registry/runtime data
+  while SQLite ownership remains active, and transfers ownership only after the
+  prior task confirms archive closure. Failed rollback uses the same rule.
+
 ## [0.8.2] - 2026-10-21
 
 - Corrected HISTORY completeness statistics so only already completed fixed

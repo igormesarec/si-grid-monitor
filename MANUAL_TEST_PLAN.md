@@ -1,11 +1,11 @@
-# SI Grid Monitor V0.8.2 - Real Home Assistant Test Plan
+# SI Grid Monitor V0.9.0 Beta - Real Home Assistant Test Plan
 
 ## V0.8 HISTORY, reconstruction and platform acceptance
 
 1. Back up Home Assistant. Record the pre-update schema-5 row count, database
    size, oldest/newest quarter, config-entry ID and entity unique IDs.
 2. Update through HACS, restart, and hard-refresh desktop and Android WebViews.
-   Confirm versioned `0.8.2` dashboard modules load and no entry reconfiguration
+   Confirm versioned `0.9.0` dashboard modules load and no entry reconfiguration
    is requested. Verify schema 6 and the exact same historical quarter count.
 3. Open HISTORY and test day/week/month/year/custom ranges, B1–B5, quality and
    exceedance filters, sorting and pagination. A valid measured zero must remain
@@ -484,3 +484,45 @@ rendering and live SolarEdge cadence still require the real-instance checks.
     warnings, errors, chart legends, table headings, pagination, controls and
     accessibility labels. Units and stored technical values (quality/provenance
     codes, entity IDs and UTC identities) must remain unchanged.
+
+## V0.9 clean Home Assistant beta gate
+
+The authoritative beta classification, safe-upgrade and rollback instructions
+are in `V0.9_BETA_ACCEPTANCE.md`. Complete its clean-HA procedure on a disposable
+instance before recommending a beta release. Preserve evidence for:
+
+1. Fresh HACS installation and the complete Mode A setup wizard.
+2. V0.8-to-V0.9 upgrade with unchanged entry IDs, entity unique IDs, SQLite row
+   counts, source epochs, dated targets and tariff provenance.
+3. Two simultaneous meters, repeated reloads/restarts and a restart immediately
+   after a fixed-quarter boundary.
+4. HACS code removal and reinstall with the external archive retained. Do not
+   treat this as a factory reset; V0.9 has no destructive reset workflow.
+5. WebSocket disconnect/recovery, a temporary SQLite lock/read-only failure and
+   Recorder unavailability without fabricated measurements or lost quarters.
+6. All seven dashboard pages in English and Slovenian at Android, tablet and
+   desktop sizes, light/dark themes, keyboard and touch.
+7. Live import/export, measured zero, stale/unavailable/recovery, 92/96/100-slot
+   days and three consecutive exceeded quarters as three separate records.
+8. During setup or reload, interrupt/cancel platform loading. Test a failure after
+   the sensor platform loads and after the binary-sensor platform loads. Confirm
+   there are no orphan entities, callbacks, listeners, runtime registry entries
+   or stale `runtime_data`; retry without deleting the entry and confirm it loads.
+9. Inject one listener-unsubscribe failure during reload on a disposable instance.
+   Confirm logs retain the cleanup error while pending quarter writes, checkpoint
+   saving and SQLite close still complete, and the preserved archive reopens.
+10. Cancel unload separately while archive tasks are draining, while a checkpoint
+    is being saved and while SQLite is closing. Cancellation must return to HA
+    within the documented grace bound. If cleanup is still active, confirm the
+    runtime remains registered; retry unload, reopen the schema-6 archive and
+    compare quarter identities/counts to prove no committed row was lost or
+    duplicated.
+11. Immediately request setup/reload again while the prior same-entry shutdown is
+    deliberately held open. Confirm setup defers with a clear diagnostic for no
+    longer than the documented bound, does not replace `runtime_data` or create a
+    second SQLite owner, then succeeds after cleanup completes. Repeat with two
+    meters and confirm one entry's shutdown never blocks or replaces the other.
+
+Automated tests do not satisfy this gate. Record the HA version, HACS version,
+browser/app version, integration commit, source update cadence and database
+before/after counts with the results.

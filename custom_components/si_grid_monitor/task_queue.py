@@ -17,6 +17,12 @@ class ArchiveTaskQueue:
         self._tasks: set[asyncio.Task[Any]] = set()
         self._failures: list[BaseException] = []
 
+    @property
+    def has_active_tasks(self) -> bool:
+        """Return whether durable archive work is still running."""
+
+        return bool(self._tasks)
+
     def create(self, coroutine: Coroutine[Any, Any, Any], *, name: str) -> asyncio.Task[Any]:
         return self.track(asyncio.create_task(coroutine, name=name))
 

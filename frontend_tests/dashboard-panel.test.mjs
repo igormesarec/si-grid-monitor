@@ -21,7 +21,7 @@ globalThis.HTMLElement = FakeElement;
 globalThis.customElements = {define() {}};
 
 const {SIGridMonitorPanel} = await import(
-  "../custom_components/si_grid_monitor/frontend/dashboard.js?panel-tests=0.6.0"
+  "../custom_components/si_grid_monitor/frontend/dashboard.js?panel-tests=0.9.0"
 );
 
 const START_A = "2026-10-19T08:00:00+00:00";
@@ -76,6 +76,39 @@ function panelForToday(quarters = [quarter(START_A)]) {
   panel._day = day(quarters);
   return panel;
 }
+
+test("panel reconnect owns exactly one countdown and one refresh timer", () => {
+  const originalSetInterval = globalThis.setInterval;
+  const originalClearInterval = globalThis.clearInterval;
+  const created = [];
+  const cleared = [];
+  globalThis.setInterval = (callback, milliseconds) => {
+    const handle = {callback, milliseconds, id: created.length + 1};
+    created.push(handle);
+    return handle;
+  };
+  globalThis.clearInterval = handle => cleared.push(handle);
+  try {
+    const panel = new SIGridMonitorPanel();
+    panel._render = () => {};
+    panel.connectedCallback();
+    panel.connectedCallback();
+    assert.deepEqual(created.map(item => item.milliseconds), [1000, 10000]);
+
+    panel.disconnectedCallback();
+    assert.deepEqual(cleared, created);
+    assert.equal(panel._timer, null);
+    assert.equal(panel._refresh, null);
+
+    panel.connectedCallback();
+    assert.deepEqual(created.map(item => item.milliseconds), [1000, 10000, 1000, 10000]);
+    panel.disconnectedCallback();
+    assert.equal(cleared.length, 4);
+  } finally {
+    globalThis.setInterval = originalSetInterval;
+    globalThis.clearInterval = originalClearInterval;
+  }
+});
 
 test("periodic TODAY refresh joins the selected delayed archive request", async () => {
   const panel = panelForToday();

@@ -80,6 +80,8 @@ from .task_queue import ArchiveTaskQueue
 
 _LOGGER = logging.getLogger(__name__)
 
+SHUTDOWN_CANCELLATION_GRACE_SECONDS = 10.0
+
 
 class GridMonitorRuntime:
     """Translate HA state changes into normalized engine samples."""
@@ -134,6 +136,8 @@ class GridMonitorRuntime:
         self._archive_tasks = ArchiveTaskQueue()
         self._archive_operation_lock = asyncio.Lock()
         self._reconstruction_plans: dict[str, dict[str, object]] = {}
+        self._shutdown_task: asyncio.Task[None] | None = None
+        self._shutdown_complete = False
 
     @property
     def settings(self) -> dict[str, float | int | bool | str]:
@@ -508,76 +512,187 @@ class GridMonitorRuntime:
 
     async def async_start(self) -> None:
         """Read the current state and register state/timer listeners."""
+        try:
+            await self.hass.async_add_executor_job(self.archive.open)
+            startup_settings = self.settings
+            targets = self.current_block_targets_kw or (None, None, None, None, None)
+            self.configuration_epoch = await self.hass.async_add_executor_job(
+                partial(
+                    self.archive.register_configuration_epoch,
+                    namespace=self.namespace,
+                    source_id=self.power_entity,
+                    positive_means_import=self.positive_means_import,
+                    contractual_target_kw=targets[0],
+                    safety_margin_kw=float(startup_settings[CONF_SAFETY_MARGIN_KW]),
+                    block_targets_kw=targets,
+                    allow_provisional_tariff=bool(startup_settings[CONF_ALLOW_PROVISIONAL_TARIFF]),
+                    contracted_power_schedule=self.contracted_power_schedule,
+                    effective_utc=dt_util.utcnow(),
+                )
+            )
+            await self.hass.async_add_executor_job(
+                self.archive.classify_existing_quarters,
+                self.namespace,
+                self.tariff_calendar.classify_rule,
+            )
+            checkpoint, self.archived_last_completed = await asyncio.gather(
+                self.hass.async_add_executor_job(self.archive.load_checkpoint, self.namespace),
+                self.hass.async_add_executor_job(self.archive.load_latest_quarter, self.namespace),
+            )
+            if checkpoint is not None:
+                self.engine.restore_checkpoint(checkpoint)
 
-        await self.hass.async_add_executor_job(self.archive.open)
-        startup_settings = self.settings
-        targets = self.current_block_targets_kw or (None, None, None, None, None)
-        self.configuration_epoch = await self.hass.async_add_executor_job(
-            partial(
-                self.archive.register_configuration_epoch,
-                namespace=self.namespace,
-                source_id=self.power_entity,
-                positive_means_import=self.positive_means_import,
-                contractual_target_kw=targets[0],
-                safety_margin_kw=float(startup_settings[CONF_SAFETY_MARGIN_KW]),
-                block_targets_kw=targets,
-                allow_provisional_tariff=bool(startup_settings[CONF_ALLOW_PROVISIONAL_TARIFF]),
-                contracted_power_schedule=self.contracted_power_schedule,
-                effective_utc=dt_util.utcnow(),
-            )
-        )
-        await self.hass.async_add_executor_job(
-            self.archive.classify_existing_quarters,
-            self.namespace,
-            self.tariff_calendar.classify_rule,
-        )
-        checkpoint, self.archived_last_completed = await asyncio.gather(
-            self.hass.async_add_executor_job(self.archive.load_checkpoint, self.namespace),
-            self.hass.async_add_executor_job(self.archive.load_latest_quarter, self.namespace),
-        )
-        if checkpoint is not None:
-            self.engine.restore_checkpoint(checkpoint)
+            current = self.hass.states.get(self.power_entity)
+            if current is not None:
+                self._ingest_state(current)
 
-        current = self.hass.states.get(self.power_entity)
-        if current is not None:
-            self._ingest_state(current)
-
-        self._unsubscribers.append(
-            async_track_state_change_event(
-                self.hass, [self.power_entity], self._async_state_changed
+            self._unsubscribers.append(
+                async_track_state_change_event(
+                    self.hass, [self.power_entity], self._async_state_changed
+                )
             )
-        )
-        self._unsubscribers.append(
-            async_track_state_report_event(
-                self.hass, [self.power_entity], self._async_state_changed
+            self._unsubscribers.append(
+                async_track_state_report_event(
+                    self.hass, [self.power_entity], self._async_state_changed
+                )
             )
-        )
-        self._backfill_task = self._archive_tasks.track(
-            self.hass.async_create_task(
-                self._async_backfill_recorder(), "SI Grid Monitor recorder backfill"
+            self._backfill_task = self._archive_tasks.track(
+                self.hass.async_create_task(
+                    self._async_backfill_recorder(), "SI Grid Monitor recorder backfill"
+                )
             )
-        )
-        self._unsubscribers.append(
-            async_track_time_interval(self.hass, self._async_tick, timedelta(seconds=1))
-        )
+            self._unsubscribers.append(
+                async_track_time_interval(self.hass, self._async_tick, timedelta(seconds=1))
+            )
+        except (Exception, asyncio.CancelledError):
+            for unsubscribe in self._unsubscribers:
+                try:
+                    unsubscribe()
+                except Exception:
+                    _LOGGER.exception("Failed to remove listener after runtime startup failure")
+            self._unsubscribers.clear()
+            try:
+                await self._archive_tasks.cancel_and_wait(self._backfill_task)
+                await self._archive_tasks.drain()
+            except Exception:
+                _LOGGER.exception("Failed to drain archive tasks after runtime startup failure")
+            try:
+                await self.hass.async_add_executor_job(self.archive.close)
+            except Exception:
+                _LOGGER.exception("Failed to close archive after runtime startup failure")
+            raise
 
     async def async_stop(self) -> None:
-        """Remove runtime listeners."""
+        """Finish durable teardown while preserving caller cancellation."""
 
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # Narrow synchronous test doubles do not provide an event loop.
+            await self._async_stop_impl()
+            return
+
+        if self._shutdown_task is None:
+            self._shutdown_task = asyncio.create_task(
+                self._async_stop_impl(), name="SI Grid Monitor durable shutdown"
+            )
+        try:
+            await asyncio.shield(self._shutdown_task)
+        except asyncio.CancelledError:
+            # Do not let caller cancellation abandon SQLite work. Give the
+            # independently running teardown a finite grace period, then
+            # propagate cancellation either way. A timed-out task remains
+            # registered and can be joined by a later unload/restart attempt.
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._shutdown_task),
+                    timeout=SHUTDOWN_CANCELLATION_GRACE_SECONDS,
+                )
+            except TimeoutError:
+                _LOGGER.warning(
+                    "SI Grid Monitor shutdown exceeded %.1f second cancellation grace; "
+                    "archive cleanup continues in the background",
+                    SHUTDOWN_CANCELLATION_GRACE_SECONDS,
+                )
+            except Exception:
+                _LOGGER.exception("SI Grid Monitor shutdown failed after cancellation")
+            raise
+
+    @property
+    def shutdown_complete(self) -> bool:
+        """Return whether archive tasks finished and SQLite closed."""
+
+        return self._shutdown_complete
+
+    async def async_wait_for_shutdown(self, timeout: float) -> bool:
+        """Wait a bounded time for an already-started durable shutdown."""
+
+        if self._shutdown_complete:
+            return True
+        task = self._shutdown_task
+        if task is None:
+            return False
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+        except TimeoutError:
+            return False
+        except Exception:
+            # The teardown reports its own errors. Ownership may transfer only
+            # if it nevertheless drained tasks and closed SQLite.
+            _LOGGER.exception("Prior SI Grid Monitor shutdown completed with errors")
+        return self._shutdown_complete
+
+    async def _async_stop_impl(self) -> None:
+        """Run one best-effort durable shutdown sequence."""
+
+        errors: list[Exception] = []
+        archive_closed = False
         for unsubscribe in self._unsubscribers:
-            unsubscribe()
+            try:
+                unsubscribe()
+            except Exception as err:
+                errors.append(err)
+                _LOGGER.exception("Failed to remove SI Grid Monitor runtime listener")
         self._unsubscribers.clear()
         self._listeners.clear()
-        await self._archive_tasks.cancel_and_wait(self._backfill_task)
-        self._drain_completed()
-        await self._archive_tasks.drain()
+        try:
+            await self._archive_tasks.cancel_and_wait(self._backfill_task)
+        except Exception as err:
+            errors.append(err)
+            _LOGGER.exception("Failed to stop SI Grid Monitor recorder backfill")
+        try:
+            self._drain_completed()
+            errors.extend(
+                failure
+                for failure in await self._archive_tasks.drain()
+                if isinstance(failure, Exception)
+            )
+        except Exception as err:
+            errors.append(err)
+            _LOGGER.exception("Failed to drain SI Grid Monitor archive tasks")
         # A prior executor/database failure leaves the durable cursor unchanged.
         # Retry outstanding quarters synchronously before the connection closes.
-        await self._async_store_pending_completed()
-        payload = self.engine.checkpoint()
-        if payload is not None:
-            await self._async_save_checkpoint(payload)
-        await self.hass.async_add_executor_job(self.archive.close)
+        try:
+            await self._async_store_pending_completed()
+        except Exception as err:
+            errors.append(err)
+            _LOGGER.exception("Failed to store pending completed quarters during shutdown")
+        try:
+            payload = self.engine.checkpoint()
+            if payload is not None:
+                await self._async_save_checkpoint(payload)
+        except Exception as err:
+            errors.append(err)
+            _LOGGER.exception("Failed to save SI Grid Monitor checkpoint during shutdown")
+        try:
+            await self.hass.async_add_executor_job(self.archive.close)
+            archive_closed = True
+        except Exception as err:
+            errors.append(err)
+            _LOGGER.exception("Failed to close SI Grid Monitor archive during shutdown")
+        self._shutdown_complete = archive_closed and not self._archive_tasks.has_active_tasks
+        if errors:
+            raise ExceptionGroup("SI Grid Monitor shutdown encountered errors", errors)
 
     @callback
     def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
