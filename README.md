@@ -1,7 +1,7 @@
 # SI Grid Monitor
 
 SI Grid Monitor is a HACS-compatible Home Assistant custom integration for
-Slovenian fixed 15-minute grid-demand monitoring. V0.8.0 provides guided setup,
+Slovenian fixed 15-minute grid-demand monitoring. V0.9.0 beta provides guided setup,
 an automatically registered sidebar dashboard, import-only live calculations,
 sustained-load forecasting, and a permanent
 SQLite quarter archive, a paginated HISTORY explorer, controlled Recorder
@@ -21,8 +21,11 @@ in [`REAL_WORLD_VALIDATION.md`](REAL_WORLD_VALIDATION.md); its values are test
 fixtures, never installation defaults.
 The combined history/platform-release status is tracked in
 [`V0.8_IMPLEMENTATION_STATUS.md`](V0.8_IMPLEMENTATION_STATUS.md).
+The V1 requirement audit, safe-upgrade instructions, rollback guidance and clean
+Home Assistant beta procedure are in
+[`V0.9_BETA_ACCEPTANCE.md`](V0.9_BETA_ACCEPTANCE.md).
 
-## V0.8 installation and dashboard
+## V0.9 beta installation and dashboard
 
 1. Install from HACS and restart Home Assistant.
 2. Add SI Grid Monitor from Settings > Devices & services.
@@ -69,7 +72,11 @@ are preserved by the additive schema-6 migration.
 - **CAN ADD and SUSTAINED CAN ADD are energy-budget estimates. They are not proof that a breaker,
   phase, cable, connection, or inverter can safely carry that power.**
 
-## V0.8 status
+## V0.9 beta status
+
+V0.9 is a stabilization candidate, not a claim of real Home Assistant
+acceptance. Automated coverage and remaining manual blockers are classified in
+the beta acceptance report linked above.
 
 | Feature | Planned | Implemented | Tested | HA-verified |
 |---|:---:|:---:|:---:|:---:|

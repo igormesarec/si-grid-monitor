@@ -422,3 +422,27 @@ rendering and live SolarEdge cadence still require the real-instance checks.
     warnings, errors, chart legends, table headings, pagination, controls and
     accessibility labels. Units and stored technical values (quality/provenance
     codes, entity IDs and UTC identities) must remain unchanged.
+
+## V0.9 clean Home Assistant beta gate
+
+The authoritative beta classification, safe-upgrade and rollback instructions
+are in `V0.9_BETA_ACCEPTANCE.md`. Complete its clean-HA procedure on a disposable
+instance before recommending a beta release. Preserve evidence for:
+
+1. Fresh HACS installation and the complete Mode A setup wizard.
+2. V0.8-to-V0.9 upgrade with unchanged entry IDs, entity unique IDs, SQLite row
+   counts, source epochs, dated targets and tariff provenance.
+3. Two simultaneous meters, repeated reloads/restarts and a restart immediately
+   after a fixed-quarter boundary.
+4. HACS code removal and reinstall with the external archive retained. Do not
+   treat this as a factory reset; V0.9 has no destructive reset workflow.
+5. WebSocket disconnect/recovery, a temporary SQLite lock/read-only failure and
+   Recorder unavailability without fabricated measurements or lost quarters.
+6. All seven dashboard pages in English and Slovenian at Android, tablet and
+   desktop sizes, light/dark themes, keyboard and touch.
+7. Live import/export, measured zero, stale/unavailable/recovery, 92/96/100-slot
+   days and three consecutive exceeded quarters as three separate records.
+
+Automated tests do not satisfy this gate. Record the HA version, HACS version,
+browser/app version, integration commit, source update cadence and database
+before/after counts with the results.

@@ -16,9 +16,9 @@ def test_v08_versions_and_frontend_cache_keys_are_consistent() -> None:
     dashboard = (ROOT / "custom_components/si_grid_monitor/frontend/dashboard.js").read_text(
         encoding="utf-8"
     )
-    assert manifest["version"] == VERSION == "0.8.0"
-    assert "dashboard-model.mjs?v=0.8.0" in dashboard
-    assert "dashboard-i18n.mjs?v=0.8.0" in dashboard
+    assert manifest["version"] == VERSION == "0.9.0"
+    assert "dashboard-model.mjs?v=0.9.0" in dashboard
+    assert "dashboard-i18n.mjs?v=0.9.0" in dashboard
     assert SCHEMA_VERSION == 6
 
 

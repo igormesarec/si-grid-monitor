@@ -4,6 +4,15 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+- Started the V0.9.0 beta-readiness milestone with a complete V1 acceptance
+  matrix, safe V0.8 upgrade/rollback guidance and a clean-HA test procedure.
+- Made config-entry setup transactional: failed platform forwarding now stops
+  the runtime, removes its registry entry and unregisters a newly created panel.
+  Partial runtime startup also closes SQLite and removes listeners/tasks before
+  returning the original error.
+- Added beta lifecycle regressions for clean setup/unload, failed setup rollback,
+  archive persistence across code reinstall, multiple-meter namespaces, startup
+  cleanup and synchronized backend/frontend versioning.
 - Made the schema-5 to schema-6 archive upgrade explicitly transactional and
   restart-safe, including validation/recovery of partial development objects.
 - Made each reconstruction update and its revision entry one atomic operation;
