@@ -1,11 +1,11 @@
-# SI Grid Monitor V0.8.1 - Real Home Assistant Test Plan
+# SI Grid Monitor V0.8.2 - Real Home Assistant Test Plan
 
 ## V0.8 HISTORY, reconstruction and platform acceptance
 
 1. Back up Home Assistant. Record the pre-update schema-5 row count, database
    size, oldest/newest quarter, config-entry ID and entity unique IDs.
 2. Update through HACS, restart, and hard-refresh desktop and Android WebViews.
-   Confirm versioned `0.8.1` dashboard modules load and no entry reconfiguration
+   Confirm versioned `0.8.2` dashboard modules load and no entry reconfiguration
    is requested. Verify schema 6 and the exact same historical quarter count.
 3. Open HISTORY and test day/week/month/year/custom ranges, B1–B5, quality and
    exceedance filters, sorting and pagination. A valid measured zero must remain
@@ -33,6 +33,28 @@
 
 The Recorder audit uses detailed timestamped states only. It must never claim
 that long-term hourly statistics can reconstruct import/export quarters.
+
+## V0.8.2 HISTORY missing-interval acceptance
+
+1. Open HISTORY for today during a quarter. Confirm **Missing completed
+   intervals** excludes the current interval and all later intervals;
+   **Future / uncompleted intervals** shows them separately.
+2. Repeat immediately before and after a `:00`, `:15`, `:30` or `:45`
+   boundary. Only the interval whose end boundary has passed may become an
+   expected completed interval.
+3. Select a fully past day with a known archive gap. Confirm the absent
+   completed interval is missing, while archived incomplete and unavailable
+   records appear in their own metrics and are not counted as missing.
+4. Select a future day. It must report zero completed expected and zero missing
+   intervals; all local-day slots are future/uncompleted.
+5. Inspect 29 March and 25 October 2026. Confirm totals of 92 and 100 local
+   quarters respectively, with missing calculated only among completed slots.
+6. Apply tariff, quality, exceedance or source-epoch filters. Confirm the
+   range-wide completeness metrics remain visibly separate from the filtered
+   row count, and missing remains unclassified when a row-only filter is active.
+
+These steps require the actual Home Assistant clock, timezone and live archive;
+automated tests cover the same boundary calculations with deterministic times.
 
 ## V0.8.1 Android and narrow-screen HISTORY acceptance
 

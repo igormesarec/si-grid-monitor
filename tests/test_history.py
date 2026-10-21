@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import replace
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 
 from custom_components.si_grid_monitor.archive import ArchiveRecord, QuarterArchive
+from custom_components.si_grid_monitor.engine import LJUBLJANA, quarter_starts_for_local_day
 from custom_components.si_grid_monitor.history import HistoryQuery, history_report
 
 
@@ -42,6 +43,130 @@ def _record(start: datetime, index: int = 0, **changes: object) -> ArchiveRecord
         confirmed_exceeded=False,
     )
     return replace(base, **changes)
+
+
+def _local_day_report(
+    archive: QuarterArchive, local_date: date, now_local: datetime
+) -> dict[str, object]:
+    starts = quarter_starts_for_local_day(local_date)
+    return history_report(
+        archive,
+        "meter-a",
+        HistoryQuery(starts[0], starts[-1] + timedelta(minutes=15)),
+        now_utc=now_local.astimezone(UTC),
+    )
+
+
+def test_current_day_does_not_count_future_quarters_as_missing(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "current-day.db")
+    archive.open()
+    local_date = date(2026, 4, 10)
+    starts = quarter_starts_for_local_day(local_date)
+    for index, start in enumerate(starts[:77]):
+        archive.upsert_quarter(_record(start, index))
+
+    report = _local_day_report(
+        archive,
+        local_date,
+        datetime(2026, 4, 10, 19, 20, tzinfo=LJUBLJANA),
+    )
+    summary = report["summary"]
+    assert summary["expected_count"] == 96
+    assert summary["completed_expected_count"] == 77
+    assert summary["completed_archived_count"] == 77
+    assert summary["future_or_uncompleted_count"] == 19
+    assert summary["missing_count"] == 0
+
+
+def test_midnight_and_future_day_have_no_missing_completed_intervals(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "midnight-future.db")
+    archive.open()
+    current_date = date(2026, 1, 2)
+    midnight = datetime(2026, 1, 2, 0, 0, tzinfo=LJUBLJANA)
+
+    current = _local_day_report(archive, current_date, midnight)["summary"]
+    future = _local_day_report(archive, date(2026, 1, 3), midnight)["summary"]
+    for summary in (current, future):
+        assert summary["completed_expected_count"] == 0
+        assert summary["future_or_uncompleted_count"] == 96
+        assert summary["missing_count"] == 0
+
+
+def test_exact_quarter_transition_promotes_only_completed_slot(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "quarter-transition.db")
+    archive.open()
+    local_date = date(2026, 1, 2)
+    starts = quarter_starts_for_local_day(local_date)
+    for index, start in enumerate(starts[:40]):
+        archive.upsert_quarter(_record(start, index))
+
+    before = _local_day_report(
+        archive,
+        local_date,
+        datetime(2026, 1, 2, 10, 14, 59, tzinfo=LJUBLJANA),
+    )["summary"]
+    boundary = _local_day_report(
+        archive,
+        local_date,
+        datetime(2026, 1, 2, 10, 15, tzinfo=LJUBLJANA),
+    )["summary"]
+    assert before["completed_expected_count"] == 40
+    assert before["missing_count"] == 0
+    assert boundary["completed_expected_count"] == 41
+    assert boundary["missing_count"] == 1
+
+
+def test_past_day_separates_gaps_incomplete_and_unavailable_rows(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "quality-gaps.db")
+    archive.open()
+    local_date = date(2026, 1, 2)
+    starts = quarter_starts_for_local_day(local_date)
+    for index, start in enumerate(starts):
+        if index in {5, 6}:
+            continue
+        changes: dict[str, object] = {}
+        if index == 3:
+            changes = {"quality": "incomplete", "coverage_seconds": 300, "gap_seconds": 600}
+        elif index == 4:
+            changes = {"quality": "unavailable", "coverage_seconds": 0, "gap_seconds": 900}
+        archive.upsert_quarter(_record(start, index, **changes))
+
+    summary = _local_day_report(
+        archive,
+        local_date,
+        datetime(2026, 1, 3, 0, 0, tzinfo=LJUBLJANA),
+    )["summary"]
+    assert summary["completed_expected_count"] == 96
+    assert summary["completed_archived_count"] == 94
+    assert summary["missing_count"] == 2
+    assert summary["incomplete_measurement_count"] == 1
+    assert summary["unavailable_measurement_count"] == 1
+    assert summary["incomplete_count"] == 2
+
+
+@pytest.mark.parametrize(
+    ("local_date", "expected"),
+    [(date(2026, 3, 29), 92), (date(2026, 10, 25), 100)],
+)
+def test_completed_dst_days_use_actual_ljubljana_quarter_count(
+    tmp_path, local_date: date, expected: int
+) -> None:
+    archive = QuarterArchive(tmp_path / f"dst-{local_date}.db")
+    archive.open()
+    starts = quarter_starts_for_local_day(local_date)
+    for index, start in enumerate(starts[:-1]):
+        archive.upsert_quarter(_record(start, index))
+
+    summary = _local_day_report(
+        archive,
+        local_date,
+        datetime.combine(local_date + timedelta(days=1), datetime.min.time(), LJUBLJANA),
+    )["summary"]
+    assert len(starts) == expected
+    assert summary["expected_count"] == expected
+    assert summary["completed_expected_count"] == expected
+    assert summary["future_or_uncompleted_count"] == 0
+    assert summary["missing_count"] == 1
 
 
 def test_history_is_paginated_and_keeps_missing_distinct_from_zero(tmp_path) -> None:

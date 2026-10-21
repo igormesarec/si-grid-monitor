@@ -552,6 +552,11 @@ test("HISTORY distinguishes range totals and exposes source epoch filtering", ()
     summary: {
       total: 20,
       matching_filtered_count: 3,
+      completed_expected_count: 16,
+      future_or_uncompleted_count: 4,
+      missing_count: 2,
+      incomplete_measurement_count: 1,
+      unavailable_measurement_count: 1,
       source_epochs: [{source_epoch: 4, source_id: "sensor.grid", count: 12}],
       quality_distribution: {},
       provenance_distribution: {},
@@ -562,6 +567,11 @@ test("HISTORY distinguishes range totals and exposes source epoch filtering", ()
   assert.match(html, /data-history-source-epoch/);
   assert.match(html, /sensor\.grid · obdobje 4 \(12\)/);
   assert.match(html, /celotno izbrano časovno obdobje/);
+  assert.match(html, /Pričakovani zaključeni intervali/);
+  assert.match(html, /Manjkajoči zaključeni intervali/);
+  assert.match(html, /Prihodnji \/ nezaključeni intervali/);
+  assert.match(html, /Nepopolne arhivirane meritve/);
+  assert.match(html, /Nedostopne arhivirane meritve/);
   assert.match(html, /Stran 1 od 1 · 3 ustreznih četrtin/);
 });
 

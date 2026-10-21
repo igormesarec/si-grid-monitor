@@ -567,8 +567,19 @@ async def ws_history(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) 
             sort_by=msg.get("sort_by", "start_utc"),
             direction=msg.get("direction", "desc"),
         )
+        live = runtime.dashboard_current()
+        now_utc = (
+            datetime.fromisoformat(str(live.get("now_utc"))).astimezone(UTC)
+            if live.get("now_utc")
+            else datetime.now(UTC)
+        )
         report = await hass.async_add_executor_job(
-            history_report, runtime.archive, runtime.namespace, query
+            lambda: history_report(
+                runtime.archive,
+                runtime.namespace,
+                query,
+                now_utc=now_utc,
+            )
         )
         storage = await hass.async_add_executor_job(runtime.archive.archive_storage_status)
     except (KeyError, TypeError, ValueError):

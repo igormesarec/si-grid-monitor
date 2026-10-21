@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .archive import QuarterArchive, archive_row_validity
+from .engine import quarter_bounds
 
 SUPPORTED_QUALITIES = frozenset(
     {"measured_aligned", "counter_derived", "reconstructed", "incomplete", "unavailable"}
@@ -49,11 +50,21 @@ class HistoryQuery:
             raise ValueError("invalid history page")
 
 
-def history_report(archive: QuarterArchive, namespace: str, query: HistoryQuery) -> dict[str, Any]:
+def history_report(
+    archive: QuarterArchive,
+    namespace: str,
+    query: HistoryQuery,
+    *,
+    now_utc: datetime | None = None,
+) -> dict[str, Any]:
     """Build a bounded page plus a range-wide, non-fabricated summary."""
 
     start = query.start_utc.astimezone(UTC)
     end = query.end_utc.astimezone(UTC)
+    now = datetime.now(UTC) if now_utc is None else now_utc
+    if now.tzinfo is None:
+        raise ValueError("history current timestamp must be timezone-aware")
+    completed_end = min(end, max(start, quarter_bounds(now).start_utc))
     chronological_block_report = query.tariff_block is not None
     effective_sort = "start_utc" if chronological_block_report else query.sort_by
     effective_direction = "desc" if chronological_block_report else query.direction
@@ -70,8 +81,15 @@ def history_report(archive: QuarterArchive, namespace: str, query: HistoryQuery)
         sort_by=effective_sort,
         direction=effective_direction,
     )
-    facets = archive.history_facets(namespace, start, end)
-    expected_count = max(0, math.ceil((end - start).total_seconds() / 900))
+    facets = archive.history_facets(
+        namespace,
+        start,
+        end,
+        completed_before_utc=completed_end,
+    )
+    range_expected_count = max(0, math.ceil((end - start).total_seconds() / 900))
+    completed_expected_count = max(0, math.ceil((completed_end - start).total_seconds() / 900))
+    uncompleted_count = max(0, range_expected_count - completed_expected_count)
     # Missing is meaningful only for the unfiltered range. Filtered views cannot
     # infer what a missing row's block, quality, or epoch would have been.
     filters_active = any(
@@ -82,7 +100,11 @@ def history_report(archive: QuarterArchive, namespace: str, query: HistoryQuery)
             query.source_epoch is not None,
         )
     )
-    missing_count = None if filters_active else max(0, expected_count - int(facets["total"]))
+    missing_count = (
+        None
+        if filters_active
+        else max(0, completed_expected_count - int(facets["completed_total"]))
+    )
     items = []
     for row in rows:
         item = {key: row[key] for key in row.keys()}  # noqa: SIM118 - sqlite Row values differ
@@ -117,8 +139,20 @@ def history_report(archive: QuarterArchive, namespace: str, query: HistoryQuery)
             "scope": "selected_range_unfiltered",
             "matching_filtered_count": total,
             "filters_active": filters_active,
-            "expected_count": expected_count,
+            # ``expected_count`` remains the complete selected calendar range for
+            # API compatibility. Missing intervals use only quarters whose end
+            # boundary has passed at ``now_utc``.
+            "expected_count": range_expected_count,
+            "completed_expected_count": completed_expected_count,
+            "completed_archived_count": int(facets["completed_total"]),
+            "future_or_uncompleted_count": uncompleted_count,
             "missing_count": missing_count,
+            "incomplete_measurement_count": int(
+                facets["quality_distribution"].get("incomplete", 0)
+            ),
+            "unavailable_measurement_count": int(
+                facets["quality_distribution"].get("unavailable", 0)
+            ),
             "missing_count_reason": (
                 None
                 if missing_count is not None
