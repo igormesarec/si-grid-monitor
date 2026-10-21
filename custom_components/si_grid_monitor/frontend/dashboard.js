@@ -11,12 +11,14 @@ import {
   energyAxisScale,
   exceedanceRequest,
   historyErrorMessage,
+  historyQuarterChartModel,
   ljubljanaDate,
   ljubljanaTimeLabel,
   livePowerChartModel,
   localQuarterLabel,
   moveTodayQuarter,
   periodChartModel,
+  periodAxisLabels,
   periodBinDescription,
   periodDrillDown,
   periodRequest,
@@ -26,7 +28,8 @@ import {
   selectTimelineHour,
   todayChartModel,
   todayQuarterAction,
-} from "./dashboard-model.mjs?v=0.6.0";
+} from "./dashboard-model.mjs?v=0.8.0";
+import {dashboardLanguage, localizeDashboard, translateDashboard} from "./dashboard-i18n.mjs?v=0.8.0";
 
 const fmt = (value, digits = 2) => value == null ? "—" : Number(value).toFixed(digits);
 const fmtEnergyReference = value => value == null ? "—" : Number(value).toFixed(3);
@@ -55,12 +58,18 @@ export class SIGridMonitorPanel extends HTMLElement {
   }
 
   set hass(value) {
+    const previousLanguage = dashboardLanguage(this._hass);
     this._hass = value;
     if (!this._loaded) this._load();
+    else if (previousLanguage !== dashboardLanguage(value)) this._render();
   }
 
   set panel(value) { this._panel = value; }
   set route(value) { this._route = value; }
+
+  _t(key, parameters = {}) {
+    return translateDashboard(key, dashboardLanguage(this._hass), parameters);
+  }
 
   connectedCallback() {
     this._render();
@@ -82,11 +91,32 @@ export class SIGridMonitorPanel extends HTMLElement {
     this._day = null;
     this._dayError = null;
     this._calendar = null;
+    this._tariffStatus = null;
     this._calendarError = null;
     this._transitions = null;
     this._period = null;
     this._blocks = null;
     this._exceedances = null;
+    this._historyPage = null;
+    this._historyPageError = null;
+    this._historyPageLoading = false;
+    this._historyAudit = null;
+    this._historyAuditError = null;
+    this._historyAuditLoading = false;
+    this._historyPageNumber ??= 1;
+    this._historyPageSize ??= 50;
+    this._historyQuality ??= "all";
+    this._historyBlock ??= "all";
+    this._historyConfirmed ??= "all";
+    this._historySourceEpoch = "all";
+    this._historySort ??= "start_utc";
+    this._historyDirection ??= "desc";
+    if (!this._historyStartDate) {
+      const start = new Date();
+      start.setDate(start.getDate() - 30);
+      this._historyStartDate = localDate(start);
+    }
+    this._historyEndDate ??= this._selectedDate;
     this._periodError = null;
     this._periodLoading = false;
     this._periodType ??= "day";
@@ -266,10 +296,33 @@ export class SIGridMonitorPanel extends HTMLElement {
         this._exceedances = exceedances;
         this._periodError = null;
         this._periodLoading = false;
+      } else if (this._tab === "history") {
+        this._historyPageLoading = true;
+        const chronologicalBlockReport = this._historyBlock !== "all";
+        const history = await this._call("history", {
+          start_date: this._historyStartDate,
+          end_date: this._historyEndDate,
+          ...(this._historyBlock === "all" ? {} : {tariff_block: Number(this._historyBlock)}),
+          ...(this._historyQuality === "all" ? {} : {qualities: [this._historyQuality]}),
+          ...(this._historyConfirmed === "all" ? {} : {exceedance_status: this._historyConfirmed}),
+          ...(this._historySourceEpoch === "all" ? {} : {source_epoch: Number(this._historySourceEpoch)}),
+          page: this._historyPageNumber,
+          page_size: this._historyPageSize,
+          sort_by: chronologicalBlockReport ? "start_utc" : this._historySort,
+          direction: chronologicalBlockReport ? "desc" : this._historyDirection,
+        }, entryId);
+        if (!this._gate.accepts(token)) return;
+        this._historyPage = history;
+        this._historyPageError = null;
+        this._historyPageLoading = false;
       } else {
-        const calendar = await this._call("calendar", {date: this._selectedDate}, entryId);
+        const [calendar, tariffStatus] = await Promise.all([
+          this._call("calendar", {date: this._selectedDate}, entryId),
+          this._call("tariff_status", {}, entryId),
+        ]);
         if (!this._gate.accepts(token)) return;
         this._calendar = calendar;
+        this._tariffStatus = tariffStatus;
         this._calendarError = null;
       }
       this._error = null;
@@ -284,6 +337,10 @@ export class SIGridMonitorPanel extends HTMLElement {
           this._exceedances = null;
           this._periodLoading = false;
           this._periodError = error?.message || "Could not load the selected period.";
+        } else if (this._tab === "history") {
+          this._historyPage = null;
+          this._historyPageLoading = false;
+          this._historyPageError = error?.message || "Could not load the HISTORY archive.";
         } else if (this._tab === "calendar") {
           this._calendar = null;
           this._calendarError = error?.message || "Could not load the tariff calendar.";
@@ -643,7 +700,7 @@ export class SIGridMonitorPanel extends HTMLElement {
 
   _overview() {
     const live = this._live;
-    if (!live) return `<section class="card">Loading live meter…</section>`;
+    if (!live) return `<section class="card">${esc(this._t("error.live_loading"))}</section>`;
     if (!live.available) return `<section class="card"><h2>Waiting for measurements</h2><p>${esc(live.reason)}</p></section>`;
     const quarter = live.quarter;
     const power = live.power;
@@ -743,9 +800,9 @@ export class SIGridMonitorPanel extends HTMLElement {
   }
 
   _today() {
-    if (this._dayError) return `<section class="card error"><h2>Daily history unavailable</h2><p>${esc(this._dayError)}</p><button data-retry-day>Retry</button></section>`;
+    if (this._dayError) return `<section class="card error"><h2>${esc(this._t("error.day_unavailable"))}</h2><p>${esc(this._dayError)}</p><button data-retry-day>${esc(this._t("common.retry"))}</button></section>`;
     const day = this._day;
-    if (!day) return `<section class="card">Loading day…</section>`;
+    if (!day) return `<section class="card">${esc(this._t("error.day_loading"))}</section>`;
     const quarters = day.quarters || [];
     const current = quarters.find(item => item.display_status === "live");
     const selected = quarters.find(item => item.start_utc === this._selectedTodayQuarterUtc);
@@ -766,8 +823,14 @@ export class SIGridMonitorPanel extends HTMLElement {
     if (!bins.length) return `<div class="empty">No completed archive bins are available for this selection.</div>`;
     const mode = this._periodChartMode;
     const model = periodChartModel(bins, mode);
+    const resolution = this._period?.period?.resolution || "quarter";
+    const labels = periodAxisLabels(bins, resolution);
+    const labelBases = labels.map(label => label.replace(/ GMT[+-]\d+$/, ""));
+    const repeatedLabels = new Set(
+      labelBases.filter((label, index) => labelBases.indexOf(label) !== index),
+    );
     const unit = mode === "energy" ? "kWh" : mode === "demand" ? "kW" : mode === "coverage" ? "%" : "count";
-    const grid = [0, model.maximum / 2, model.maximum].map(value => `<g><line class="gridline" x1="${model.margin.left}" x2="${model.width - model.margin.right}" y1="${model.valueToY(value)}" y2="${model.valueToY(value)}"/><text x="4" y="${model.valueToY(value) + 4}">${fmt(value)} ${unit}</text></g>`).join("");
+    const grid = model.ticks.map(value => `<g><line class="gridline" x1="${model.margin.left}" x2="${model.width - model.margin.right}" y1="${model.valueToY(value)}" y2="${model.valueToY(value)}"/><text x="4" y="${model.valueToY(value) + 4}">${fmtAxis(value)} ${unit}</text></g>`).join("");
     const items = model.items.map((item, index) => {
       const x = item.centerX;
       let marks = "";
@@ -782,23 +845,45 @@ export class SIGridMonitorPanel extends HTMLElement {
         const averageY = model.valueToY(item.average_import_demand_kw);
         const targets = item.targets_kw || [];
         const targetLines = targets.map(target => `<line class="target-step" x1="${x - model.step / 2}" x2="${x + model.step / 2}" y1="${model.valueToY(target)}" y2="${model.valueToY(target)}"><title>Historical target ${fmt(target)} kW</title></line>`).join("");
-        marks = `<rect class="import-bar" x="${x - item.barWidth}" y="${maximumY}" width="${item.barWidth}" height="${model.valueToY(0) - maximumY}"/><rect class="average-bar" x="${x}" y="${averageY}" width="${item.barWidth}" height="${model.valueToY(0) - averageY}"/>${targetLines}`;
+        const maximumX = item.showAverage ? x - item.barWidth : x - item.barWidth / 2;
+        const average = item.showAverage
+          ? `<rect class="average-bar" x="${x}" y="${averageY}" width="${item.barWidth}" height="${model.valueToY(0) - averageY}"/>`
+          : "";
+        marks = `<rect class="import-bar" x="${maximumX}" y="${maximumY}" width="${item.barWidth}" height="${model.valueToY(0) - maximumY}"/>${average}${targetLines}`;
       } else {
         const value = mode === "coverage" ? item.coverage_pct : item.exceeded_count;
         const y = model.valueToY(value);
         marks = `<rect class="${mode === "coverage" ? "coverage-bar" : "exceedance-bar"}" x="${x - item.barWidth / 2}" y="${y}" width="${item.barWidth}" height="${model.valueToY(0) - y}"/>`;
       }
-      const label = bins.length <= 32 || index % Math.ceil(bins.length / 12) === 0
-        ? `<text class="time-label" x="${x}" y="${model.height - 18}" text-anchor="middle">${esc(String(item.bin_key).split("|")[0].slice(-8))}</text>` : "";
+      const label = bins.length <= 32 || repeatedLabels.has(labelBases[index])
+        || index % Math.ceil(bins.length / 12) === 0
+        ? `<text class="time-label" x="${x}" y="${model.height - 18}" text-anchor="middle">${esc(labels[index])}</text>` : "";
       const description = periodBinDescription(item);
       return `<g class="period-bin ${item.status}" tabindex="0" role="button" data-period-bin="${index}" aria-label="${esc(description)}"><title>${esc(description)}</title><rect class="period-hit-area" x="${x - model.step / 2}" y="${model.margin.top}" width="${model.step}" height="${model.height - model.margin.top - model.margin.bottom}"/>${marks}${label}</g>`;
     }).join("");
-    return `<div class="chart-scroll" data-chart-scroll="period" tabindex="0"><svg viewBox="0 0 ${model.width} ${model.height}" role="img" aria-label="Historical ${esc(mode)} chart in ${unit}">${grid}${items}<text class="axis-title" x="4" y="14">${esc(unit)}</text></svg></div>`;
+    const measured = model.items.filter(item => item.hasMeasuredData);
+    const missingVisible = model.items.some(item => !item.hasMeasuredData);
+    let legend = "";
+    if (mode === "energy") {
+      legend = `<span><i class="swatch import"></i>${esc(this._t("period.imported_energy"))}</span><span><i class="swatch export"></i>${esc(this._t("period.exported_energy"))}</span>`;
+    } else if (mode === "demand") {
+      const average = measured.some(item => item.showAverage)
+        ? `<span><i class="swatch smooth"></i>${esc(this._t("period.average_demand"))}</span>` : "";
+      const target = measured.some(item => (item.targets_kw || []).length)
+        ? `<span><i class="swatch contract"></i>${esc(this._t("period.historical_limit"))}</span>` : "";
+      legend = `<span><i class="swatch import"></i>${esc(this._t("period.maximum_demand"))}</span>${average}${target}`;
+    } else if (mode === "coverage") {
+      legend = `<span><i class="swatch coverage"></i>${esc(this._t("period.valid_coverage"))}</span>`;
+    } else {
+      legend = `<span><i class="swatch exceedance"></i>${esc(this._t("period.confirmed_exceedances"))}</span>`;
+    }
+    if (missingVisible) legend += `<span><i class="swatch missing"></i>${esc(this._t("period.missing_measurements"))}</span>`;
+    return `<div class="chart-scroll" data-chart-scroll="period" tabindex="0"><svg viewBox="0 0 ${model.width} ${model.height}" role="img" aria-label="${esc(this._t("period.chart_aria", {mode, unit}))}">${grid}${items}<text class="axis-title" x="4" y="14">${esc(unit)}</text></svg></div><div class="chart-legend" data-period-legend="${esc(mode)}">${legend}</div>`;
   }
 
   _periodView() {
-    if (this._periodError) return `<section class="card error"><h2>Period history unavailable</h2><p>${esc(this._periodError)}</p><button data-retry-period>Retry</button></section>`;
-    if (!this._period || this._periodLoading) return `<section class="card">${this._periodControls()}<p>Loading historical period…</p></section>`;
+    if (this._periodError) return `<section class="card error"><h2>${esc(this._t("error.period_unavailable"))}</h2><p>${esc(this._periodError)}</p><button data-retry-period>${esc(this._t("common.retry"))}</button></section>`;
+    if (!this._period || this._periodLoading) return `<section class="card">${this._periodControls()}<p>${esc(this._t("error.period_loading"))}</p></section>`;
     const data = this._period;
     const summary = data.summary;
     const comparison = data.comparison;
@@ -814,29 +899,42 @@ export class SIGridMonitorPanel extends HTMLElement {
     const comparisonHtml = !comparison?.available
       ? `<div class="notice"><p>Previous-period comparison unavailable: ${esc(comparisonReasons[comparison?.reason] || comparison?.reason || "no comparable archive")}. Missing energy is not extrapolated or treated as zero.</p><p>Selected: ${esc(quality(comparison?.current_quality))} · Previous: ${esc(quality(comparison?.previous_quality))}</p></div>`
       : `<div class="grid">${this._metric("Import change", fmt(comparison.changes.import_kwh), "kWh")}${this._metric("Export change", fmt(comparison.changes.export_kwh), "kWh")}${this._metric("Maximum-demand change", fmt(comparison.changes.maximum_import_demand_kw), "kW")}</div><p class="chart-key">Comparable coverage: selected ${esc(quality(comparison.current_quality))}; previous ${esc(quality(comparison.previous_quality))}.</p>`;
-    return `<section class="card">${this._periodControls()}<div class="herohead"><div><p class="eyebrow">HISTORICAL PERIOD</p><h2>${esc(data.period.label)}</h2><p>${esc(data.period.resolution)} bins · half-open ${esc(data.period.start_utc)} to ${esc(data.period.end_utc)}</p></div>${data.period.partial ? `<span class="chip b0">PARTIAL</span>` : ""}</div><div class="row chart-modes">${[["energy", "Import / export energy"], ["demand", "Import demand"], ["exceedances", "Exceedances"], ["coverage", "Coverage"]].map(([value, label]) => `<button data-chart-mode="${value}" class="${this._periodChartMode === value ? "active" : ""}">${label}</button>`).join("")}</div>${this._periodChart()}<div class="chart-key">Red: valid imported energy or maximum import demand · Green: valid exported energy · Blue: average demand · Gold: historically stored target · missing bins remain missing, never zero.</div><div class="grid">${this._metric("Valid imported energy", fmt(summary.import_kwh), "kWh")}${this._metric("Valid exported energy", fmt(summary.export_kwh), "kWh")}${this._metric("Signed net energy", fmt(summary.signed_net_kwh), "kWh")}${this._metric("Maximum quarter import demand", fmt(summary.maximum_import_demand_kw), "kW")}${this._metric("Average valid quarter demand", fmt(summary.average_import_demand_kw), "kW")}${this._metric("Minimum signed quarter average", fmt(summary.minimum_signed_average_kw), "kW")}${this._metric("Maximum signed quarter average", fmt(summary.maximum_signed_average_kw), "kW")}${this._metric("Valid completed quarters", summary.valid_count)}${this._metric("Contract eligible", summary.contractual_eligible_count)}${this._metric("Incomplete", summary.incomplete_count)}${this._metric("Missing", summary.missing_count)}${this._metric("Partial observed import", fmt(summary.partial_observed_import_kwh), "kWh")}${this._metric("Partial observed export", fmt(summary.partial_observed_export_kwh), "kWh")}${this._metric("Confirmed exceedances", summary.exceeded_count)}${this._metric("Confirmed exceedance rate", fmt(summary.confirmed_exceedance_pct), "%")}${this._metric("Exceeded duration", summary.exceeded_duration_minutes, "minutes")}${this._metric("Data coverage", fmt(summary.coverage_pct), "%")}</div><p class="chart-key">Valid measurement totals exclude incomplete and simulation rows. Contractual results use only quarters with confirmed original targets and official rule status. Partial observed energy remains separate.</p><h3>Previous equivalent period</h3>${comparisonHtml}</section>`;
+    return `<section class="card">${this._periodControls()}<div class="herohead"><div><p class="eyebrow">HISTORICAL PERIOD</p><h2>${esc(data.period.label)}</h2><p>${esc(data.period.resolution)} bins · half-open ${esc(data.period.start_utc)} to ${esc(data.period.end_utc)}</p></div>${data.period.partial ? `<span class="chip b0">PARTIAL</span>` : ""}</div><div class="row chart-modes">${[["energy", "Import / export energy"], ["demand", "Import demand"], ["exceedances", "Exceedances"], ["coverage", "Coverage"]].map(([value, label]) => `<button data-chart-mode="${value}" class="${this._periodChartMode === value ? "active" : ""}">${label}</button>`).join("")}</div>${this._periodChart()}<div class="grid">${this._metric("Valid imported energy", fmt(summary.import_kwh), "kWh")}${this._metric("Valid exported energy", fmt(summary.export_kwh), "kWh")}${this._metric("Signed net energy", fmt(summary.signed_net_kwh), "kWh")}${this._metric("Maximum quarter import demand", fmt(summary.maximum_import_demand_kw), "kW")}${this._metric("Average valid quarter demand", fmt(summary.average_import_demand_kw), "kW")}${this._metric("Minimum signed quarter average", fmt(summary.minimum_signed_average_kw), "kW")}${this._metric("Maximum signed quarter average", fmt(summary.maximum_signed_average_kw), "kW")}${this._metric("Valid completed quarters", summary.valid_count)}${this._metric("Contract eligible", summary.contractual_eligible_count)}${this._metric("Incomplete", summary.incomplete_count)}${this._metric("Missing", summary.missing_count)}${this._metric("Partial observed import", fmt(summary.partial_observed_import_kwh), "kWh")}${this._metric("Partial observed export", fmt(summary.partial_observed_export_kwh), "kWh")}${this._metric("Confirmed exceedances", summary.exceeded_count)}${this._metric("Confirmed exceedance rate", fmt(summary.confirmed_exceedance_pct), "%")}${this._metric("Exceeded duration", summary.exceeded_duration_minutes, "minutes")}${this._metric("Data coverage", fmt(summary.coverage_pct), "%")}</div><p class="chart-key">Valid measurement totals exclude incomplete and simulation rows. Contractual results use only quarters with confirmed original targets and official rule status. Partial observed energy remains separate.</p><h3>Previous equivalent period</h3>${comparisonHtml}</section>`;
   }
 
   _blockCharts(blocks, totals = this._blocks?.totals) {
     const model = blockChartModel(blocks);
-    const chart = (title, maximum, value, value2 = null, unit = "") => {
+    const chart = (title, scale, value, value2 = null, unit = "", kind = "energy") => {
+      const left = 48;
+      const plotWidth = 510;
+      const grid = scale.ticks.map(tick => {
+        const x = left + plotWidth * tick / scale.maximum;
+        return `<g><line class="gridline" x1="${x}" x2="${x}" y1="24" y2="265"/><text x="${x}" y="282" text-anchor="middle">${fmtAxis(tick)}</text></g>`;
+      }).join("");
       const rows = model.rows.map((row, index) => {
         const first = Number(value(row) || 0);
         const second = value2 ? Number(value2(row) || 0) : null;
-        const width = 560 * first / maximum;
-        const width2 = second == null ? 0 : 560 * second / maximum;
+        const width = plotWidth * first / scale.maximum;
+        const width2 = second == null ? 0 : plotWidth * second / scale.maximum;
         const y = 34 + index * 48;
-        return `<g class="block-chart-row" tabindex="0" role="button" data-block="${row.block}" aria-label="B${row.block}: ${fmt(first)} ${unit}"><text x="8" y="${y + 15}">B${row.block}</text><rect x="48" y="${y}" width="${width}" height="14" fill="${BLOCK_COLORS[row.block]}"/>${second == null ? "" : `<rect x="48" y="${y + 18}" width="${width2}" height="8" fill="#38bdf8"/>`}<text x="620" y="${y + 15}" text-anchor="end">${fmt(first)}${second == null ? "" : ` / ${fmt(second)}`} ${unit}</text></g>`;
+        const primaryColor = kind === "exceedance" ? "#8b5cf6" : CHART_SERIES.import.color;
+        const targetLines = kind === "demand" ? (row.targets_kw || []).map(target => {
+          const targetX = left + plotWidth * Number(target) / scale.maximum;
+          return `<line class="block-target" x1="${targetX}" x2="${targetX}" y1="${y - 3}" y2="${y + 30}"><title>${esc(this._t("blocks.historical_target_value", {target: fmt(target)}))}</title></line>`;
+        }).join("") : "";
+        return `<g class="block-chart-row" tabindex="0" role="button" data-block="${row.block}" aria-label="${esc(this._t("blocks.row_aria", {block: `B${row.block}`, maximum: fmt(first), average: second == null ? "" : fmt(second), unit}))}"><rect x="8" y="${y + 3}" width="10" height="10" rx="2" fill="${BLOCK_COLORS[row.block]}"/><text x="23" y="${y + 15}">B${row.block}</text><rect class="block-primary-${kind}" x="${left}" y="${y}" width="${width}" height="14" fill="${primaryColor}"/>${second == null ? "" : `<rect class="block-average" x="${left}" y="${y + 18}" width="${width2}" height="8" fill="${CHART_SERIES.smooth.color}"/>`}${targetLines}<text x="630" y="${y + 15}" text-anchor="end">${fmt(first)}${second == null ? "" : ` / ${fmt(second)}`} ${unit}</text></g>`;
       }).join("");
-      return `<div class="block-chart"><h3>${esc(title)}</h3><svg viewBox="0 0 640 290" role="img" aria-label="${esc(title)} by tariff block">${rows}</svg></div>`;
+      return `<div class="block-chart"><h3>${esc(title)}</h3><svg viewBox="0 0 640 300" role="img" aria-label="${esc(this._t("blocks.chart_aria", {title, unit}))}">${grid}${rows}<text x="558" y="296" text-anchor="end">${esc(unit)}</text></svg></div>`;
     };
     const reconciliation = totals ? `<div class="grid">${this._metric("Reconciled valid import", fmt(totals.import_kwh), "kWh")}${this._metric("Reconciled valid export", fmt(totals.export_kwh), "kWh")}${this._metric("Reconciled valid quarters", totals.valid_count)}${this._metric("Reconciled eligible quarters", totals.contractual_eligible_count)}</div>` : "";
-    return `${reconciliation}<div class="block-charts">${chart("Imported energy", model.energyMaximum, row => row.import_kwh, null, "kWh")}${chart("Maximum / average import demand", model.demandMaximum, row => row.maximum_import_demand_kw, row => row.average_import_demand_kw, "kW")}${chart("Confirmed exceeded quarters", model.exceedanceMaximum, row => row.exceeded_count, null, "quarters")}</div>`;
+    const blockIdentity = `<span>${esc(this._t("blocks.identity_legend"))}: ${model.rows.map(row => `<i class="block-swatch" style="background:${BLOCK_COLORS[row.block]}"></i>B${row.block}`).join(" ")}</span>`;
+    const targetsVisible = model.rows.some(row => (row.targets_kw || []).length);
+    return `${reconciliation}<div class="block-charts">${chart(this._t("blocks.imported_energy"), model.energyScale, row => row.import_kwh, null, "kWh", "energy")}<div class="chart-legend"><span><i class="swatch import"></i>${esc(this._t("blocks.imported_energy_legend"))}</span>${blockIdentity}<span>${esc(this._t("blocks.grid_energy"))}</span></div>${chart(this._t("blocks.maximum_average"), model.demandScale, row => row.maximum_import_demand_kw, row => row.average_import_demand_kw, "kW", "demand")}<div class="chart-legend"><span><i class="swatch import"></i>${esc(this._t("blocks.maximum_legend"))}</span><span><i class="swatch smooth"></i>${esc(this._t("blocks.average_legend"))}</span>${targetsVisible ? `<span><i class="swatch contract"></i>${esc(this._t("blocks.historical_target_legend"))}</span>` : ""}${blockIdentity}<span>${esc(this._t("blocks.grid_power"))}</span></div>${chart(this._t("blocks.confirmed_exceeded"), model.exceedanceScale, row => row.exceeded_count, null, this._t("common.quarters"), "exceedance")}</div>`;
   }
 
   _blocksView() {
-    if (this._periodError) return `<section class="card error"><h2>Block analysis unavailable</h2><p>${esc(this._periodError)}</p><button data-retry-period>Retry</button></section>`;
-    if (!this._blocks || this._periodLoading) return `<section class="card">${this._periodControls()}<p>Loading tariff-block analysis…</p></section>`;
+    if (this._periodError) return `<section class="card error"><h2>${esc(this._t("error.blocks_unavailable"))}</h2><p>${esc(this._periodError)}</p><button data-retry-period>${esc(this._t("common.retry"))}</button></section>`;
+    if (!this._blocks || this._periodLoading) return `<section class="card">${this._periodControls()}<p>${esc(this._t("error.blocks_loading"))}</p></section>`;
     const data = this._blocks;
     const selectedNumber = this._periodBlock === "all" ? null : Number(this._periodBlock);
     const selected = data.blocks.find(row => row.block === selectedNumber);
@@ -845,8 +943,8 @@ export class SIGridMonitorPanel extends HTMLElement {
   }
 
   _exceedancesView() {
-    if (this._periodError) return `<section class="card error"><h2>Exceedance analysis unavailable</h2><p>${esc(this._periodError)}</p><button data-retry-period>Retry</button></section>`;
-    if (!this._exceedances || this._periodLoading) return `<section class="card">${this._periodControls()}<p>Loading confirmed exceedances…</p></section>`;
+    if (this._periodError) return `<section class="card error"><h2>${esc(this._t("error.exceedances_unavailable"))}</h2><p>${esc(this._periodError)}</p><button data-retry-period>${esc(this._t("common.retry"))}</button></section>`;
+    if (!this._exceedances || this._periodLoading) return `<section class="card">${this._periodControls()}<p>${esc(this._t("error.exceedances_loading"))}</p></section>`;
     const data = this._exceedances;
     const summary = data.summary;
     const greatest = summary.greatest_exceedance;
@@ -873,10 +971,80 @@ export class SIGridMonitorPanel extends HTMLElement {
     return `<section class="card">${this._periodControls()}<div class="herohead"><div><p class="eyebrow">CONFIRMED CONTRACTUAL EXCEEDANCES</p><h2>${esc(data.period.label)}</h2></div><strong class="count">${summary.exceedance_count}</strong></div><div class="grid">${this._metric("Exceeded quarters", summary.exceedance_count)}${this._metric("Exceeded duration", summary.exceeded_duration_minutes, "minutes")}${this._metric("Maximum import demand", fmt(summary.maximum_import_demand_kw), "kW")}${this._metric("Maximum excess", fmt(summary.maximum_excess_kw), "kW")}${this._metric("Maximum excess percentage", fmt(summary.maximum_excess_percentage), "%")}${this._metric("Average excess", fmt(summary.average_excess_kw), "kW")}${this._metric("Confirmed rate", fmt(summary.confirmed_exceedance_rate_pct), "%")}${this._metric("Eligible quarters", summary.contractual_eligible_count)}${this._metric("Incomplete / unconfirmed", summary.incomplete_or_unconfirmed_count)}${this._metric("Most affected block", summary.most_affected_block ? `B${summary.most_affected_block}` : "—")}${this._metric("Greatest exceedance", greatest?.start_utc ? localQuarterLabel(greatest.start_utc) : "—")}</div><div class="exceedance-controls"><label>Sort <select data-exceedance-sort>${[["date", "Date"], ["demand", "Demand"], ["excess_kw", "Excess kW"], ["excess_percentage", "Excess %"]].map(([value, label]) => `<option value="${value}" ${value === this._exceedanceSort ? "selected" : ""}>${label}</option>`).join("")}</select></label><label>Order <select data-exceedance-direction><option value="desc" ${this._exceedanceDirection === "desc" ? "selected" : ""}>Descending</option><option value="asc" ${this._exceedanceDirection === "asc" ? "selected" : ""}>Ascending</option></select></label></div>${zeroState}${table}<div class="pagination"><button data-exceedance-page="${data.pagination.page - 1}" ${data.pagination.page <= 1 ? "disabled" : ""}>Previous</button><span>Page ${data.pagination.page} of ${Math.max(1, data.pagination.pages)} · ${data.pagination.total} quarters</span><button data-exceedance-page="${data.pagination.page + 1}" ${data.pagination.page >= data.pagination.pages ? "disabled" : ""}>Next</button></div><p class="chart-key">Each row is one confirmed 15-minute interval. Consecutive intervals are never merged. Equivalent excess energy is analytical only and is not an official network fee.</p></section>`;
   }
 
+  _historyQuarterReport(data) {
+    if (this._historyBlock === "all") {
+      return `<p class="notice">${esc(this._t("history.select_block_report"))}</p>`;
+    }
+    const model = historyQuarterChartModel(data.items || []);
+    if (!model.rows.length) return `<p class="empty">${esc(this._t("history.empty"))}</p>`;
+    const grid = model.ticks.map(value => `<i class="history-grid" style="left:${100 * value / model.maximum}%"></i>`).join("");
+    const axisTicks = model.ticks.map(value => `<i class="history-axis-tick" style="left:${100 * value / model.maximum}%"><b>${fmtAxis(value)}</b></i>`).join("");
+    const measurementText = row => {
+      if (["valid", "valid_zero"].includes(row.measurementState)) {
+        return `${fmt(row.demandKw)} kW`;
+      }
+      if (row.measurementState === "partial") {
+        return this._t("history.partial_observation", {energy: fmt(row.import_kwh, 3)});
+      }
+      return this._t(`history.measurement_${row.measurementState}`);
+    };
+    const chartRows = model.rows.map(row => {
+      const demand = row.demandPct != null
+        ? `<i class="history-demand" style="width:${row.demandPct}%"></i>`
+        : `<em class="history-measurement-state">${esc(measurementText(row))}</em>`;
+      const peak = row.peakPct == null ? "" : `<i class="history-peak" style="left:${row.peakPct}%" title="${esc(this._t("history.measured_peak"))}: ${fmt(row.measuredPeakKw)} kW"></i>`;
+      const target = row.targetPct == null ? "" : `<i class="history-target" style="left:${row.targetPct}%" title="${esc(this._t("history.historical_limit"))}: ${fmt(row.contractual_target_kw)} kW"></i>`;
+      return `<button type="button" class="history-chart-row state-${esc(row.measurementState)}" data-history-quarter="${esc(row.start_utc)}" aria-label="${esc(this._t("history.row_aria", {quarter: localQuarterLabel(row.start_utc), measurement: measurementText(row), target: fmt(row.contractual_target_kw), quality: row.quality, coverage: fmt(row.coverage_pct)}))}"><span>${esc(localQuarterLabel(row.start_utc))}<small>${row.tariff_block ? `B${row.tariff_block}` : this._t("common.unknown")} · ${esc(row.quality)}</small></span><span class="history-bar">${grid}${demand}${peak}${target}</span><span><b>${esc(measurementText(row))}</b><small>${fmt(row.coverage_pct)}%</small></span></button>`;
+    }).join("");
+    const tableRows = model.rows.map(row => `<tr data-history-quarter="${esc(row.start_utc)}" tabindex="0" class="state-${esc(row.measurementState)}"><td>${esc(localQuarterLabel(row.start_utc))}–${esc(localTime(row.end_utc))}</td><td><code>${esc(row.start_utc)}</code></td><td>${row.tariff_block ? `B${row.tariff_block}` : this._t("common.unknown")}</td><td>${esc(measurementText(row))}</td><td>${row.measuredPeakKw == null ? this._t("history.peak_not_archived") : `${fmt(row.measuredPeakKw)} kW`}</td><td>${fmt(row.contractual_target_kw)} kW</td><td>${row.confirmed_exceeded === true ? `${this._t("common.yes")} · ${fmt(row.excess_kw)} kW` : row.confirmed_exceeded === false ? this._t("common.no") : this._t("common.unconfirmed")}</td><td>${fmt(row.import_kwh,3)} / ${fmt(row.export_kwh,3)} kWh</td><td>${esc(row.quality)} · ${fmt(row.coverage_pct)}%</td><td>${esc(row.source_id || this._t("common.unknown"))} / ${row.source_epoch ?? "—"}</td><td>${esc(row.tariff_rule_version || this._t("common.unknown"))} · ${esc(row.tariff_rule_status || this._t("common.unknown"))}</td></tr>`).join("");
+    return `<section class="history-quarter-report"><h3>${esc(this._t("history.quarter_report", {block: `B${this._historyBlock}`}))}</h3><p>${esc(this._t("history.quarter_report_help"))}</p><div class="history-report-scroll"><div class="history-axis"><span></span><span class="history-axis-track">${axisTicks}</span><b>kW</b></div><div class="history-quarter-chart" data-chart-scroll="historyQuarters" tabindex="0" role="list" aria-label="${esc(this._t("history.chart_aria", {block: `B${this._historyBlock}`}))}">${chartRows}</div></div><div class="chart-legend"><span><i class="swatch import"></i>${esc(this._t("history.quarter_average"))}</span><span><i class="history-peak legend-marker"></i>${esc(this._t("history.measured_peak_evidence"))}</span><span><i class="swatch contract"></i>${esc(this._t("history.historical_limit"))}</span><span>${esc(this._t("history.grid_power"))}</span></div><div class="table-scroll"><table class="history-table"><thead><tr><th>${esc(this._t("history.local_quarter"))}</th><th>${esc(this._t("history.utc_identity"))}</th><th>${esc(this._t("history.block"))}</th><th>${esc(this._t("history.quarter_average"))}</th><th>${esc(this._t("history.measured_peak"))}</th><th>${esc(this._t("history.historical_limit"))}</th><th>${esc(this._t("history.excess"))}</th><th>${esc(this._t("history.import_export"))}</th><th>${esc(this._t("history.quality_coverage"))}</th><th>${esc(this._t("history.source_epoch"))}</th><th>${esc(this._t("history.tariff_rule"))}</th></tr></thead><tbody>${tableRows}</tbody></table></div></section>`;
+  }
+
+  _historyView() {
+    if (this._historyPageError) return `<section class="card error"><h2>${esc(this._t("error.history_unavailable"))}</h2><p>${esc(this._historyPageError)}</p><button data-history-retry>${esc(this._t("common.retry"))}</button></section>`;
+    const data = this._historyPage;
+    const epochs = this._historyPage?.summary?.source_epochs || [];
+    const qualityOptions = [
+      ["all", this._t("history.all")], ["measured_aligned", "Measured aligned"],
+      ["counter_derived", "Counter derived"], ["reconstructed", "Reconstructed"],
+      ["incomplete", "Incomplete"], ["unavailable", this._t("common.unavailable")],
+    ];
+    const exceedanceOptions = [
+      ["all", this._t("history.all")], ["confirmed_yes", this._t("history.confirmed_yes")],
+      ["confirmed_no", this._t("history.confirmed_no")], ["unconfirmed", this._t("history.unconfirmed")],
+    ];
+    const controls = `<section class="card"><div class="history-controls"><label>${esc(this._t("history.from"))}<input data-history-start type="date" value="${esc(this._historyStartDate)}"></label><label>${esc(this._t("history.through"))}<input data-history-end type="date" value="${esc(this._historyEndDate)}"></label><label>${esc(this._t("history.tariff_block_filter"))}<select data-history-block><option value="all">${esc(this._t("history.all"))}</option>${[1,2,3,4,5].map(block => `<option value="${block}" ${this._historyBlock === String(block) ? "selected" : ""}>B${block}</option>`).join("")}</select></label><label>${esc(this._t("history.data_quality_filter"))}<select data-history-quality>${qualityOptions.map(([value,label]) => `<option value="${value}" ${this._historyQuality === value ? "selected" : ""}>${esc(label)}</option>`).join("")}</select></label><label>${esc(this._t("history.exceedance_filter"))}<select data-history-confirmed>${exceedanceOptions.map(([value,label]) => `<option value="${value}" ${this._historyConfirmed === value ? "selected" : ""}>${esc(label)}</option>`).join("")}</select></label><label>${esc(this._t("history.source_epoch_filter"))}<select data-history-source-epoch><option value="all">${esc(this._t("history.all_known_epochs"))}</option>${epochs.filter(item => item.source_epoch != null).map(item => `<option value="${item.source_epoch}" ${this._historySourceEpoch === String(item.source_epoch) ? "selected" : ""}>${esc(this._t("history.epoch_option", {source: item.source_id || this._t("common.unknown"), epoch: item.source_epoch, count: item.count}))}</option>`).join("")}</select></label><button data-history-apply>${esc(this._t("history.apply_filters"))}</button></div><p class="chart-key">${esc(this._t("history.epoch_help"))}</p></section>`;
+    if (!data) return `${controls}<section class="card">${esc(this._t(this._historyPageLoading ? "history.loading" : "history.select_range"))}</section>`;
+    const summary = data.summary || {};
+    const storage = data.storage || {};
+    const missing = summary.missing_count == null ? this._t("history.missing_filtered") : summary.missing_count;
+    const quality = Object.entries(summary.quality_distribution || {}).map(([name,count]) => `${esc(name)}: ${count}`).join(" · ") || "No archived rows";
+    const provenance = Object.entries(summary.provenance_distribution || {}).map(([name,count]) => `${esc(name)}: ${count}`).join(" · ") || "No archived rows";
+    const report = this._historyQuarterReport(data);
+    return `${controls}<section class="card"><div class="herohead"><div><p class="eyebrow">PERMANENT 15-MINUTE ARCHIVE</p><h2>HISTORY</h2><p>${esc(this._t("history.scope"))}</p></div><strong class="count">${summary.total ?? 0}</strong></div><div class="grid">${this._metric("Overall range archived quarters", summary.total ?? 0)}${this._metric("Matching filtered quarters", data.pagination.total ?? 0)}${this._metric("Oldest archived quarter", summary.oldest ? localQuarterLabel(summary.oldest) : "—")}${this._metric("Newest archived quarter", summary.newest ? localQuarterLabel(summary.newest) : "—")}${this._metric("Valid completed quarters", summary.valid_count ?? 0)}${this._metric("Incomplete / unavailable", summary.incomplete_count ?? 0)}${this._metric("Missing expected intervals", missing)}${this._metric("Valid imported energy", fmt(summary.import_kwh,3), "kWh")}${this._metric("Valid exported energy", fmt(summary.export_kwh,3), "kWh")}${this._metric("Partial observed import", fmt(summary.partial_import_kwh,3), "kWh")}${this._metric("Archive schema", storage.schema_version)}${this._metric("Database size", storage.size_bytes == null ? "—" : fmt(storage.size_bytes / 1048576,2), "MiB")}${this._metric("Retention", storage.retention || "Unknown")}</div><p class="chart-key">Quality: ${quality}</p><p class="chart-key">Provenance: ${provenance}</p>${report}<div class="pagination"><button data-history-page="${data.pagination.page - 1}" ${data.pagination.page <= 1 ? "disabled" : ""}>${esc(this._t("common.previous"))}</button><span>${esc(this._t("history.page", {page: data.pagination.page, pages: Math.max(1,data.pagination.pages), count: data.pagination.total}))}</span><button data-history-page="${data.pagination.page + 1}" ${data.pagination.page >= data.pagination.pages ? "disabled" : ""}>${esc(this._t("common.next"))}</button></div><p class="safety">${esc(this._t("history.no_fabricated_curve"))}</p></section>`;
+  }
+
+  _historyAuditPanel() {
+    const audit = this._historyAudit;
+    const candidates = audit?.candidates?.length
+      ? `<table><thead><tr><th>Quarter (UTC)</th><th>Decision</th><th>Existing → proposed quality</th><th>Coverage</th><th>Import difference</th><th>Contractual status</th></tr></thead><tbody>${audit.candidates.map(item => `<tr><td><code>${esc(item.start_utc)}</code></td><td>${esc(item.action)}</td><td>${esc(item.existing_quality || "missing")} → ${esc(item.proposed_quality)}</td><td>${fmt(item.existing_coverage_seconds,0)} → ${fmt(item.proposed_coverage_seconds,0)} s</td><td>${fmt(item.import_difference_kwh,4)} kWh</td><td>${esc(item.contractual_status)}</td></tr>`).join("")}</tbody></table>`
+      : "";
+    const result = audit
+      ? `<div class="grid">${this._metric("Candidates", audit.summary.candidate_count)}${this._metric("Missing inserts", audit.summary.insert_count)}${this._metric("Quality improvements", audit.summary.improve_count)}${this._metric("Protected / skipped", audit.summary.skip_count)}${this._metric("Contractually unconfirmed", audit.summary.contractually_unconfirmed_count)}</div>${candidates}${audit.candidates_truncated ? `<p class="notice">${esc(this._t("audit.preview_limited"))}</p>` : ""}<p class="safety">${esc(this._t("audit.safety"))}</p><label class="row"><input data-recorder-confirm type="checkbox"> ${esc(this._t("audit.confirm"))}</label><button data-recorder-apply>${esc(this._t("audit.apply"))}</button>`
+      : "";
+    return `<section class="selected-quarter" data-history-audit-panel><h3>Home Assistant Recorder audit</h3><p>${esc(this._t("audit.description"))}</p><button data-recorder-audit ${this._historyAuditLoading ? "disabled" : ""}>${esc(this._t(this._historyAuditLoading ? "audit.loading" : "audit.start"))}</button>${this._historyAuditError ? `<p class="error">${esc(this._historyAuditError)}</p>` : ""}${result}</section>`;
+  }
+
+  _tariffStatusView() {
+    const status = this._tariffStatus;
+    if (!status) return "";
+    return `<section class="card"><h2>Tariff-rule status</h2><div class="grid">${this._metric("Installed integration", status.integration_version)}${this._metric("Applied rule", status.current_rule_version || "Unavailable")}${this._metric("Rule status", status.current_status)}${this._metric("Official coverage ends", status.official_coverage_end || "Unknown")}${this._metric("Update", status.update_recommended ? "Recommended" : "Not currently required")}</div><table><thead><tr><th>Year</th><th>Version</th><th>Status</th><th>Enabled by policy</th><th>Source</th></tr></thead><tbody>${(status.years || []).map(rule => `<tr><td>${rule.year}</td><td>${esc(rule.version)}</td><td>${esc(rule.status)}</td><td>${rule.enabled ? "Yes" : "No"}</td><td><a href="${esc(rule.source_url)}" target="_blank" rel="noreferrer">URO</a></td></tr>`).join("")}</tbody></table><p class="safety">Rule metadata is bundled and works offline. Downloaded or unreviewed rules never become effective automatically.</p></section>`;
+  }
+
   _calendarView() {
-    if (this._calendarError) return `<section class="card error"><h2>Tariff calendar unavailable</h2><p>${esc(this._calendarError)}</p><button data-retry-calendar>Retry</button></section>`;
+    if (this._calendarError) return `<section class="card error"><h2>${esc(this._t("error.calendar_unavailable"))}</h2><p>${esc(this._calendarError)}</p><button data-retry-calendar>${esc(this._t("common.retry"))}</button></section>`;
     const calendar = this._calendar;
-    if (!calendar) return `<section class="card">Loading calendar…</section>`;
+    if (!calendar) return `<section class="card">${esc(this._t("error.calendar_loading"))}</section>`;
     const selected = calendar.hours.find(hour => hour.start_utc === this._selectedHourUtc) || calendar.hours[0];
     const locale = this._hass?.language || this._hass?.locale?.language || "en";
     const slovenian = String(locale).toLowerCase().startsWith("sl");
@@ -1102,6 +1270,103 @@ export class SIGridMonitorPanel extends HTMLElement {
         }
       });
     });
+    root.querySelector("[data-history-apply]")?.addEventListener("click", () => {
+      this._historyStartDate = root.querySelector("[data-history-start]")?.value || this._historyStartDate;
+      this._historyEndDate = root.querySelector("[data-history-end]")?.value || this._historyEndDate;
+      this._historyBlock = root.querySelector("[data-history-block]")?.value || "all";
+      this._historyQuality = root.querySelector("[data-history-quality]")?.value || "all";
+      this._historyConfirmed = root.querySelector("[data-history-confirmed]")?.value || "all";
+      this._historySourceEpoch = root.querySelector("[data-history-source-epoch]")?.value || "all";
+      this._historySort = root.querySelector("[data-history-sort]")?.value || "start_utc";
+      this._historyDirection = root.querySelector("[data-history-direction]")?.value || "desc";
+      if (this._historyBlock !== "all") {
+        this._historySort = "start_utc";
+        this._historyDirection = "desc";
+      }
+      this._historyPageNumber = 1;
+      this._historyPage = null;
+      this._historyAudit = null;
+      this._historyAuditError = null;
+      this._loadTab();
+    });
+    root.querySelector("[data-open-history]")?.addEventListener("click", () => {
+      const period = (this._period || this._blocks || this._exceedances)?.period;
+      this._historyStartDate = period?.start_local?.slice(0, 10) || this._selectedDate;
+      this._historyEndDate = period?.end_utc
+        ? localDate(new Date(new Date(period.end_utc).getTime() - 1))
+        : this._selectedDate;
+      this._historyPageNumber = 1;
+      this._historyPage = null;
+      this._tab = "history";
+      this._render();
+      this._loadTab();
+    });
+    root.querySelector("[data-history-retry]")?.addEventListener("click", () => this._loadTab());
+    root.querySelector("[data-recorder-audit]")?.addEventListener("click", async () => {
+      this._historyAuditLoading = true;
+      this._historyAuditError = null;
+      this._render();
+      try {
+        this._historyAudit = await this._call("recorder_audit", {
+          start_date: this._historyStartDate,
+          end_date: this._historyEndDate,
+        });
+      } catch (error) {
+        this._historyAudit = null;
+        this._historyAuditError = error?.message || String(error);
+      } finally {
+        this._historyAuditLoading = false;
+        this._render();
+      }
+    });
+    if (this._historyAudit?.candidates_truncated) {
+      root.querySelector("[data-recorder-apply]")?.setAttribute("disabled", "");
+    }
+    root.querySelector("[data-recorder-apply]")?.addEventListener("click", async () => {
+      if (!root.querySelector("[data-recorder-confirm]")?.checked
+          || !this._historyAudit || this._historyAudit.candidates_truncated) return;
+      this._historyAuditLoading = true;
+      this._render();
+      try {
+        await this._call("recorder_reconstruct", {
+          audit_token: this._historyAudit.audit_token,
+          confirm: true,
+        });
+        this._historyAudit = null;
+        this._historyPage = null;
+        await this._loadTab();
+      } catch (error) {
+        this._historyAuditError = error?.message || String(error);
+      } finally {
+        this._historyAuditLoading = false;
+        this._render();
+      }
+    });
+    root.querySelectorAll("[data-history-page]").forEach(element => {
+      element.addEventListener("click", () => {
+        this._historyPageNumber = Number(element.dataset.historyPage);
+        this._historyPage = null;
+        this._loadTab();
+      });
+    });
+    root.querySelectorAll("[data-history-quarter]").forEach(element => {
+      const activate = () => {
+        const start = element.dataset.historyQuarter;
+        this._tab = "today";
+        this._selectedDate = localDate(new Date(start));
+        this._selectedTodayQuarterUtc = start;
+        this._day = null;
+        this._render();
+        this._loadTab();
+      };
+      element.addEventListener("click", activate);
+      element.addEventListener("keydown", event => {
+        if (["Enter", " "].includes(event.key)) {
+          event.preventDefault();
+          activate();
+        }
+      });
+    });
     root.querySelectorAll("[data-chart-mode]").forEach(element => {
       element.addEventListener("click", () => {
         this._periodChartMode = element.dataset.chartMode;
@@ -1203,16 +1468,36 @@ export class SIGridMonitorPanel extends HTMLElement {
     if (nextChartDataKey) this._chartDataKey = nextChartDataKey;
     this._resetChartScrollOnRender = false;
     const active = this._entries.find(entry => entry.entry_id === this._entryId);
-    const tabs = [["overview", "OVERVIEW"], ["today", "TODAY"], ["period", "PERIOD"], ["blocks", "BLOCKS"], ["exceedances", "EXCEEDANCES"], ["calendar", "TARIFF CALENDAR"]];
+    const tabs = ["overview", "today", "period", "blocks", "exceedances", "history", "calendar"];
     const content = !this._entries.length
-      ? `<section class="card"><h2>No configured meter</h2><p>Complete the SI Grid Monitor integration setup wizard first.</p></section>`
+      ? `<section class="card"><h2>${esc(this._t("setup.no_meter"))}</h2><p>${esc(this._t("setup.no_meter_help"))}</p></section>`
       : this._tab === "overview" ? this._overview()
         : this._tab === "today" ? this._today()
           : this._tab === "period" ? this._periodView()
             : this._tab === "blocks" ? this._blocksView()
               : this._tab === "exceedances" ? this._exceedancesView()
-                : this._calendarView();
-    this.shadowRoot.innerHTML = `<style>${this._styles()}</style><style>${this._legendStyles()}</style><main><header><div class="brand"><span>SI</span><div><h1>SI Grid Monitor</h1><p>Import-only contractual demand intelligence</p></div></div><div class="meter"><small>Active meter</small>${this._entries.length > 1 ? `<select data-entry>${this._entries.map(entry => `<option value="${esc(entry.entry_id)}" ${entry.entry_id === this._entryId ? "selected" : ""}>${esc(entry.title)}</option>`).join("")}</select>` : `<strong>${esc(active?.title || "None")}</strong>`}</div></header><nav>${tabs.map(([id, label]) => `<button data-tab="${id}" class="${this._tab === id ? "active" : ""}">${label}</button>`).join("")}</nav>${this._error ? `<div class="error">Connection error: ${esc(this._error)}. The panel will retry automatically.</div>` : ""}${content}</main>`;
+                : this._tab === "history" ? this._historyView()
+                  : `${this._calendarView()}${this._tariffStatusView()}`;
+    this.shadowRoot.innerHTML = `<style>${this._styles()}</style><style>${this._legendStyles()}</style><main><header><div class="brand"><span>SI</span><div><h1>SI Grid Monitor</h1><p>Import-only contractual demand intelligence</p></div></div><div class="meter"><small>Active meter</small>${this._entries.length > 1 ? `<select data-entry>${this._entries.map(entry => `<option value="${esc(entry.entry_id)}" ${entry.entry_id === this._entryId ? "selected" : ""}>${esc(entry.title)}</option>`).join("")}</select>` : `<strong>${esc(active?.title || "None")}</strong>`}</div></header><nav>${tabs.map(id => `<button data-tab="${id}" class="${this._tab === id ? "active" : ""}">${esc(this._t(`nav.${id}`))}</button>`).join("")}</nav>${this._error ? `<div class="error">${esc(this._t("error.connection", {message: this._error}))}</div>` : ""}${content}</main>`;
+    if (this._tab === "history" && this._historyPage) {
+      this.shadowRoot.querySelector("main > section.card:last-of-type")?.insertAdjacentHTML(
+        "beforeend", this._historyAuditPanel(),
+      );
+    }
+    if (this._tab === "history") {
+      this.shadowRoot.querySelector(".history-controls")?.insertAdjacentHTML(
+        "beforeend",
+        this._historyBlock === "all"
+          ? `<label>Sort by<select data-history-sort>${[["start_utc", "Date"], ["import_kwh", "Imported energy"], ["import_demand_kw", "Import demand"], ["utilization_pct", "Utilization"], ["quality", "Quality"]].map(([value, label]) => `<option value="${value}" ${this._historySort === value ? "selected" : ""}>${label}</option>`).join("")}</select></label><label>Order<select data-history-direction><option value="desc" ${this._historyDirection === "desc" ? "selected" : ""}>Descending</option><option value="asc" ${this._historyDirection === "asc" ? "selected" : ""}>Ascending</option></select></label>`
+          : `<span class="notice history-order-lock">${esc(this._t("history.order_locked"))}</span>`,
+      );
+    }
+    if (["today", "period", "blocks", "exceedances"].includes(this._tab)) {
+      this.shadowRoot.querySelector("main > section.card:last-of-type")?.insertAdjacentHTML(
+        "beforeend", '<button data-open-history>Open this range in HISTORY</button>',
+      );
+    }
+    localizeDashboard(this.shadowRoot, dashboardLanguage(this._hass));
     this._bind();
     restoreChartScrollState(
       this.shadowRoot, this._chartScrollPositions, chartView.focused,
@@ -1244,7 +1529,7 @@ export class SIGridMonitorPanel extends HTMLElement {
   }
 
   _legendStyles() {
-    return `.legend-line{width:28px;height:6px;min-width:28px;background:none}.legend-line line{fill:none;stroke-width:3}.legend-line .import,.legend-line .energy-actual{stroke:${CHART_SERIES.import.color}}.legend-line .export{stroke:${CHART_SERIES.export.color}}.legend-line .smooth{stroke:${CHART_SERIES.smooth.color}}.legend-line .future{stroke:${CHART_SERIES.future.color};stroke-dasharray:${CHART_SERIES.future.dash}}.legend-line .energy-projection{stroke:${CHART_SERIES.energyProjection.color};stroke-dasharray:${CHART_SERIES.energyProjection.dash}}.legend-line .contract{stroke:${CHART_SERIES.contract.color};stroke-dasharray:${CHART_SERIES.contract.dash}}.legend-line .contract-safety{stroke:${CHART_SERIES.contractSafety.color};stroke-dasharray:${CHART_SERIES.contractSafety.dash}}.legend-line .simulation{stroke:${CHART_SERIES.simulation.color};stroke-dasharray:${CHART_SERIES.simulation.dash}}.legend-line .operational{stroke:${CHART_SERIES.operational.color};stroke-dasharray:${CHART_SERIES.operational.dash}}.quarter-hit-area{fill:transparent;pointer-events:all}.period-hit-area{fill:transparent;pointer-events:all}.quarter-selection{pointer-events:none}.period-controls{display:flex;align-items:end;gap:8px;flex-wrap:wrap;margin-bottom:14px}.period-controls label{display:flex;flex-direction:column;font-size:.75rem;color:var(--secondary-text-color)}.chart-modes{flex-wrap:wrap;margin:12px 0}.chart-modes .active{border-color:var(--primary-color,#03a9f4);color:var(--primary-color,#03a9f4)}.average-bar{fill:#38bdf8}.coverage-bar{fill:#0891b2}.exceedance-bar{fill:#8b5cf6}.period-bin{cursor:pointer}.period-bin:focus{outline:none}.period-bin:focus .period-hit-area{stroke:var(--primary-color,#03a9f4);stroke-width:2}.period-bin.missing .period-hit-area{fill:#f59e0b18;stroke:#f59e0b;stroke-dasharray:3 3}`;
+    return `.legend-line{width:28px;height:6px;min-width:28px;background:none}.legend-line line{fill:none;stroke-width:3}.legend-line .import,.legend-line .energy-actual{stroke:${CHART_SERIES.import.color}}.legend-line .export{stroke:${CHART_SERIES.export.color}}.legend-line .smooth{stroke:${CHART_SERIES.smooth.color}}.legend-line .future{stroke:${CHART_SERIES.future.color};stroke-dasharray:${CHART_SERIES.future.dash}}.legend-line .energy-projection{stroke:${CHART_SERIES.energyProjection.color};stroke-dasharray:${CHART_SERIES.energyProjection.dash}}.legend-line .contract{stroke:${CHART_SERIES.contract.color};stroke-dasharray:${CHART_SERIES.contract.dash}}.legend-line .contract-safety{stroke:${CHART_SERIES.contractSafety.color};stroke-dasharray:${CHART_SERIES.contractSafety.dash}}.legend-line .simulation{stroke:${CHART_SERIES.simulation.color};stroke-dasharray:${CHART_SERIES.simulation.dash}}.legend-line .operational{stroke:${CHART_SERIES.operational.color};stroke-dasharray:${CHART_SERIES.operational.dash}}.quarter-hit-area{fill:transparent;pointer-events:all}.period-hit-area{fill:transparent;pointer-events:all}.quarter-selection{pointer-events:none}.period-controls{display:flex;align-items:end;gap:8px;flex-wrap:wrap;margin-bottom:14px}.period-controls label{display:flex;flex-direction:column;font-size:.75rem;color:var(--secondary-text-color)}.chart-modes{flex-wrap:wrap;margin:12px 0}.chart-modes .active{border-color:var(--primary-color,#03a9f4);color:var(--primary-color,#03a9f4)}.average-bar{fill:${CHART_SERIES.smooth.color}}.coverage-bar{fill:#0891b2}.exceedance-bar{fill:#8b5cf6}.period-bin{cursor:pointer}.period-bin:focus{outline:none}.period-bin:focus .period-hit-area{stroke:var(--primary-color,#03a9f4);stroke-width:2}.period-bin.missing .period-hit-area,.period-bin.unavailable .period-hit-area{fill:#f59e0b18;stroke:#f59e0b;stroke-dasharray:3 3}.swatch.coverage{border-color:#0891b2}.swatch.exceedance{border-color:#8b5cf6}.swatch.missing{height:10px;border:1px dashed #f59e0b;background:#f59e0b18}.block-swatch{display:inline-block;width:12px;height:10px;border-radius:2px;margin-inline:2px}.block-target{stroke:${CHART_SERIES.contract.color};stroke-width:2;stroke-dasharray:${CHART_SERIES.contract.dash}}.history-quarter-report{margin-top:18px;max-width:100%}.history-report-scroll{max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain}.history-axis,.history-chart-row{display:grid;grid-template-columns:minmax(190px,1.2fr) minmax(420px,4fr) minmax(110px,.8fr);gap:10px;align-items:center;min-width:760px}.history-axis{font-size:.72rem;color:var(--secondary-text-color);padding:0 10px;height:30px}.history-axis-track{position:relative;height:24px}.history-axis-tick{position:absolute;inset-block:0;transform:translateX(-50%);font-style:normal;white-space:nowrap}.history-quarter-chart{max-height:620px;min-width:760px;overflow-y:auto;overflow-x:hidden;overscroll-behavior:contain;border:1px solid var(--line);border-radius:9px}.history-chart-row{width:100%;border:0;border-bottom:1px solid var(--line);border-radius:0;text-align:left;min-height:56px;background:transparent}.history-chart-row:hover,.history-chart-row:focus{background:#0284c712;outline:2px solid var(--primary-color,#03a9f4);outline-offset:-2px}.history-chart-row span,.history-chart-row small{display:block}.history-chart-row>span:last-child{min-width:0;overflow-wrap:anywhere}.history-bar{height:24px;position:relative;background:color-mix(in srgb,var(--card),var(--primary-text-color) 5%);overflow:hidden}.history-grid{position:absolute;inset-block:0;border-left:1px solid var(--divider-color,#d6d9de);pointer-events:none}.history-demand{position:absolute;inset-block:4px;inset-inline-start:0;background:${CHART_SERIES.import.color};opacity:.85}.history-peak{position:absolute;inset-block:0;border-left:3px solid #b91c1c}.history-target{position:absolute;inset-block:0;border-left:3px dashed ${CHART_SERIES.contract.color}}.history-measurement-state{position:absolute;inset-inline-start:8px;inset-block-start:3px;font-size:.72rem;color:var(--secondary-text-color);white-space:nowrap}.history-chart-row.state-partial .history-bar{background:#f59e0b18}.history-chart-row.state-unavailable .history-bar,.history-chart-row.state-missing .history-bar{background:repeating-linear-gradient(135deg,transparent,transparent 5px,#94a3b833 5px,#94a3b833 8px)}.legend-marker{position:relative;display:inline-block;width:24px;height:12px;border-left:3px solid #b91c1c}.table-scroll{max-width:100%;overflow:auto}.history-table thead th{position:sticky;top:0;background:var(--card);z-index:1}@media(max-width:700px){.history-axis,.history-chart-row,.history-quarter-chart{min-width:760px}.history-report-scroll{margin-inline:0}.history-chart-row{font-size:.78rem}.history-measurement-state{font-size:.68rem}}`;
   }
 
   _styles() {

@@ -32,7 +32,8 @@ from .const import (
     VERSION,
 )
 from .dashboard_models import build_day_view
-from .engine import quarter_starts_for_local_day
+from .engine import LJUBLJANA, quarter_starts_for_local_day
+from .history import HistoryQuery, history_report
 
 DATA_RUNTIMES = "runtimes"
 DATA_FRONTEND_READY = "frontend_ready"
@@ -113,7 +114,11 @@ async def async_setup_dashboard(hass: HomeAssistant) -> None:
             ws_period,
             ws_blocks,
             ws_exceedances,
+            ws_history,
+            ws_recorder_audit,
+            ws_recorder_reconstruct,
             ws_calendar,
+            ws_tariff_status,
             ws_transitions,
             ws_archive_status,
         ):
@@ -517,6 +522,173 @@ async def ws_exceedances(hass: HomeAssistant, connection: Any, msg: dict[str, An
     connection.send_result(msg["id"], _json(report))
 
 
+_HISTORY_SCHEMA = {
+    vol.Required("start_date"): str,
+    vol.Required("end_date"): str,
+    vol.Optional("tariff_block"): int,
+    vol.Optional("qualities"): [str],
+    vol.Optional("exceedance_status"): str,
+    vol.Optional("source_epoch"): int,
+    vol.Optional("page"): int,
+    vol.Optional("page_size"): int,
+    vol.Optional("sort_by"): str,
+    vol.Optional("direction"): str,
+}
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/history", **_ENTRY_SCHEMA, **_HISTORY_SCHEMA}
+)
+@websocket_api.async_response
+async def ws_history(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
+    """Return a bounded, server-side filtered HISTORY archive page."""
+
+    runtime = _runtime(hass, msg)
+    if runtime is None:
+        connection.send_error(msg["id"], "entry_not_found", "SI Grid Monitor entry not found")
+        return
+    try:
+        start_date = date.fromisoformat(msg["start_date"])
+        end_date = date.fromisoformat(msg["end_date"])
+        if end_date < start_date:
+            raise ValueError("history end date precedes start date")
+        start = quarter_starts_for_local_day(start_date)[0]
+        following = quarter_starts_for_local_day(end_date + timedelta(days=1))
+        end = following[0]
+        query = HistoryQuery(
+            start_utc=start,
+            end_utc=end,
+            tariff_block=msg.get("tariff_block"),
+            qualities=tuple(msg.get("qualities", [])),
+            exceedance_status=msg.get("exceedance_status", "all"),
+            source_epoch=msg.get("source_epoch"),
+            page=msg.get("page", 1),
+            page_size=msg.get("page_size", 50),
+            sort_by=msg.get("sort_by", "start_utc"),
+            direction=msg.get("direction", "desc"),
+        )
+        report = await hass.async_add_executor_job(
+            history_report, runtime.archive, runtime.namespace, query
+        )
+        storage = await hass.async_add_executor_job(runtime.archive.archive_storage_status)
+    except (KeyError, TypeError, ValueError):
+        connection.send_error(msg["id"], "invalid_query", "Invalid HISTORY archive query")
+        return
+    except sqlite3.Error:
+        _history_error(
+            connection,
+            msg,
+            operation="history",
+            requested=f"{msg.get('start_date')}..{msg.get('end_date')}",
+            code="archive_unavailable",
+            message="Historical archive is temporarily unavailable",
+        )
+        return
+    except Exception:
+        _history_error(
+            connection,
+            msg,
+            operation="history",
+            requested=f"{msg.get('start_date')}..{msg.get('end_date')}",
+            code="history_query_failed",
+            message="Could not load the HISTORY archive",
+        )
+        return
+    connection.send_result(msg["id"], _json({**report, "storage": storage}))
+
+
+_RECORDER_AUDIT_SCHEMA = {
+    vol.Required("start_date"): str,
+    vol.Required("end_date"): str,
+}
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/recorder_audit",
+        **_ENTRY_SCHEMA,
+        **_RECORDER_AUDIT_SCHEMA,
+    }
+)
+@websocket_api.async_response
+async def ws_recorder_audit(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
+    """Run an admin-only, read-only detailed Recorder audit."""
+
+    if not connection.user.is_admin:
+        connection.send_error(msg["id"], "unauthorized", "Administrator access is required")
+        return
+    runtime = _runtime(hass, msg)
+    if runtime is None:
+        connection.send_error(msg["id"], "entry_not_found", "SI Grid Monitor entry not found")
+        return
+    try:
+        start_date = date.fromisoformat(msg["start_date"])
+        end_date = date.fromisoformat(msg["end_date"])
+        if end_date < start_date or (end_date - start_date).days > 366:
+            raise ValueError("audit range must be between one day and 367 days")
+        start = quarter_starts_for_local_day(start_date)[0]
+        end = quarter_starts_for_local_day(end_date + timedelta(days=1))[0]
+        result = await runtime.async_audit_recorder_history(start, end)
+    except (KeyError, TypeError, ValueError) as err:
+        connection.send_error(msg["id"], "invalid_audit", str(err))
+        return
+    except Exception:
+        _history_error(
+            connection,
+            msg,
+            operation="recorder_audit",
+            requested=f"{msg.get('start_date')}..{msg.get('end_date')}",
+            code="recorder_audit_failed",
+            message="Recorder audit could not be completed",
+        )
+        return
+    result["candidates"] = result.get("candidates", [])[:1000]
+    result["candidates_truncated"] = result["summary"]["candidate_count"] > 1000
+    connection.send_result(msg["id"], _json(result))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/recorder_reconstruct",
+        vol.Required("audit_token"): str,
+        vol.Required("confirm"): bool,
+        **_ENTRY_SCHEMA,
+    }
+)
+@websocket_api.async_response
+async def ws_recorder_reconstruct(
+    hass: HomeAssistant, connection: Any, msg: dict[str, Any]
+) -> None:
+    """Apply an explicitly confirmed audit plan after a SQLite backup."""
+
+    if not connection.user.is_admin:
+        connection.send_error(msg["id"], "unauthorized", "Administrator access is required")
+        return
+    if msg.get("confirm") is not True:
+        connection.send_error(msg["id"], "confirmation_required", "Explicit confirmation required")
+        return
+    runtime = _runtime(hass, msg)
+    if runtime is None:
+        connection.send_error(msg["id"], "entry_not_found", "SI Grid Monitor entry not found")
+        return
+    try:
+        result = await runtime.async_apply_recorder_reconstruction(msg["audit_token"])
+    except ValueError as err:
+        connection.send_error(msg["id"], "invalid_audit_token", str(err))
+        return
+    except Exception:
+        _history_error(
+            connection,
+            msg,
+            operation="recorder_reconstruct",
+            requested=str(msg.get("audit_token"))[:12],
+            code="reconstruction_failed",
+            message="Controlled reconstruction failed; archive recovery metadata was retained",
+        )
+        return
+    connection.send_result(msg["id"], _json(result))
+
+
 @websocket_api.websocket_command(
     {
         vol.Required("type"): f"{DOMAIN}/calendar",
@@ -559,6 +731,32 @@ async def ws_calendar(hass: HomeAssistant, connection: Any, msg: dict[str, Any])
             "season": first.get("season"),
             "holiday_name": first.get("holiday_name"),
         },
+    )
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/tariff_status", **_ENTRY_SCHEMA})
+@websocket_api.async_response
+async def ws_tariff_status(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
+    """Expose installed, offline tariff metadata without applying remote rules."""
+
+    runtime = _runtime(hass, msg)
+    if runtime is None:
+        connection.send_error(msg["id"], "entry_not_found", "SI Grid Monitor entry not found")
+        return
+    now = runtime.dashboard_current().get("now_utc")
+    today = (
+        datetime.fromisoformat(str(now)).astimezone(LJUBLJANA).date()
+        if now
+        else datetime.now(UTC).astimezone(LJUBLJANA).date()
+    )
+    connection.send_result(
+        msg["id"],
+        _json(
+            {
+                **runtime.tariff_calendar.rule_status_report(today),
+                "integration_version": VERSION,
+            }
+        ),
     )
 
 

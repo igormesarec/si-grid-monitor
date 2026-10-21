@@ -1,4 +1,38 @@
-# SI Grid Monitor V0.6.0 - Real Home Assistant Test Plan
+# SI Grid Monitor V0.8.0 - Real Home Assistant Test Plan
+
+## V0.8 HISTORY, reconstruction and platform acceptance
+
+1. Back up Home Assistant. Record the pre-update schema-5 row count, database
+   size, oldest/newest quarter, config-entry ID and entity unique IDs.
+2. Update through HACS, restart, and hard-refresh desktop and Android WebViews.
+   Confirm versioned `0.8.0` dashboard modules load and no entry reconfiguration
+   is requested. Verify schema 6 and the exact same historical quarter count.
+3. Open HISTORY and test day/week/month/year/custom ranges, B1–B5, quality and
+   exceedance filters, sorting and pagination. A valid measured zero must remain
+   distinct from a missing quarter. Follow a row into exact-quarter details.
+4. Inspect 29 March and 25 October 2026. Confirm 92/100 quarters and distinguish
+   both repeated 02:00 hours by UTC identity/offset/fold.
+5. On a copy of the production system, choose a small range with known detailed
+   Recorder states and run Audit only. Confirm no archive row or row count changes.
+   Verify dates before the first known source/sign epoch are reported uncertain.
+6. Review candidates, deliberately confirm reconstruction, and verify a backup
+   metadata entry exists before changed rows. Re-run the audit: equal/stronger
+   rows must be skipped. Interrupt one test job and verify restart leaves a valid
+   database, preserved backup and retryable audit.
+7. Simulate Recorder unavailable, SQLite locked/read-only and full storage on a
+   disposable instance. Live monitoring must continue where safe; errors must be
+   explicit and no trusted row may be downgraded.
+8. Change Home Assistant between English and Slovenian while HISTORY has filters
+   and a selected meter. Text should change without losing selection or showing
+   data from another meter. Review every tab, warning, error, legend and control.
+9. Verify Tariff Calendar reports 2026/2027 official and 2028–2030 provisional.
+   With provisional policy disabled, future contractual advice stays unavailable;
+   enabling it must still label results provisional, never confirmed.
+10. Build the Pages preview artifact and inspect mobile/desktop navigation and
+    links. Do not enable repository Pages deployment without owner approval.
+
+The Recorder audit uses detailed timestamped states only. It must never claim
+that long-term hourly statistics can reconstruct import/export quarters.
 
 Use a disposable or backed-up Home Assistant instance. Never infer physical
 connection capacity from CAN ADD values.
@@ -310,3 +344,81 @@ delete the integration entry or its SQLite file.
 
 Automated model/DOM tests cover state transitions and geometry. Android theme
 rendering and live SolarEdge cadence still require the real-instance checks.
+
+## V0.8 archive-safety and localization acceptance
+
+1. Before upgrading a copy of a schema-5 archive, stop Home Assistant and keep
+   the database plus its `-wal` and `-shm` files together. Start V0.8 and verify
+   schema 6 is reported while quarter rows, source epochs, checkpoints, dated
+   targets, tariff versions and provenance remain unchanged.
+2. To recognize a database touched by the earlier development migration, check
+   `PRAGMA user_version`. Version 5 accompanied by one or more of
+   `reconstruction_jobs`, `quarter_revisions` or `archive_backups` is a partial
+   development migration. Preserve a copy and restart with the corrected build;
+   it completes expected table shapes idempotently. If Home Assistant reports
+   an incompatible partial-V6 table, do not delete `quarters`, `source_epochs`
+   or `checkpoints`; restore the preserved database or request a reviewed repair.
+3. On a disposable archive, interrupt startup during migration (locked/full
+   storage is sufficient) and verify startup fails without changing the schema
+   version or historical rows. Restore storage and verify the next startup
+   completes normally.
+4. Run Recorder AUDIT ONLY, then allow a live quarter update before pressing
+   Apply. Verify the stale candidate is rejected, the newer live evidence stays
+   intact, and no revision row claims a change occurred.
+5. Interrupt reconstruction while a revision is being recorded. Verify that
+   the matching quarter remains at its original quality/coverage and no orphan
+   revision exists. Earlier successfully committed quarters may remain applied;
+   each quarter is intentionally its own atomic unit and the job reports partial
+   failure.
+6. In HISTORY, apply block, quality, exceedance and source-configuration-epoch
+   filters. Verify the header labels totals as the overall selected date range,
+   while the table/pagination count is explicitly the filtered result. Missing
+   intervals must not acquire a block, quality or source epoch.
+7. Switch Home Assistant between English and Slovenian on every dashboard page.
+   Verify navigation, parameterized pagination, Recorder audit/reconstruction
+   messages, warnings, dialogs, accessibility labels and connection errors
+   switch language without changing the active meter, date, quarter or filter.
+8. Create dated contracted-power assignments for 2026 and 2027 with different
+   B1-B5 values. Audit a 2027 Recorder quarter, then change the applicable 2027
+   assignment before Apply. Verify the stale plan is rejected. Repeat without
+   changing the assignment and verify the exact target for that quarter's block
+   and local date is retained; a target from another block or 2026 must not pass.
+9. In HISTORY, verify the four exceedance choices independently: All, Confirmed
+   Yes, Confirmed No and Unconfirmed. Confirmed No must not include SQL NULL
+   rows, and Unconfirmed must not present those rows as known non-exceedances.
+10. Select each of B1-B5 over a populated date range. Verify the chronological
+    chart and detailed table show the same bounded page newest-to-oldest, use
+    original historical targets, and open the exact UTC quarter. The peak-power
+    column must say that no peak is archived unless genuine evidence exists; it
+    must never copy the 15-minute average into the peak column.
+11. On BLOCKS, confirm the demand chart uses 1 kW vertical references at normal
+    household ranges and the energy chart uses readable adaptive kWh references.
+    Verify red maximum and light-blue average legends match their series.
+12. On PERIOD, check Day labels as Ljubljana `HH:mm`, longer views as appropriate
+    local dates, and the 25 October 2026 rollback. The two 02:00 labels must show
+    distinct GMT offsets. Verify energy and demand have separate visual legends,
+    a one-quarter demand bin draws one red bar, and aggregated bins draw red
+    maximum plus light-blue average with the gold historical-limit reference.
+13. In a HISTORY block report, compare four quarters: a valid measured zero, an
+    incomplete row with partial imported energy, an unavailable measurement,
+    and a missing archive row. Only the valid zero may show a contractual-demand
+    bar/value (`0.00 kW`). Confirm the adjacent label, table value, tooltip or
+    screen-reader description uses the same state and never exposes a stored
+    partial value as confirmed demand.
+14. Request the same populated B1-B5 report after previously selecting demand,
+    energy, quality, ascending, and descending sorts. Confirm every block report
+    remains newest UTC quarter first across page boundaries and that the chart
+    and table have identical row order.
+15. In BLOCKS, confirm maximum demand is red, average demand is light blue and
+    historical targets are gold dashed. B1-B5 identity chips may retain their
+    block colors, but those colors must not replace or contradict measurement
+    series colors. Check both light and dark themes.
+16. On a long HISTORY report, verify the bars begin at the zero tick, vertical
+    reference lines align with their axis numbers, and chart/table remain inside
+    the panel. Repeat at Android widths (320, 360 and 390 px), at 768 px, in light
+    and dark themes, and with browser/text scaling enabled. Check that labels do
+    not overlap and horizontal/vertical scrolling remains usable.
+17. Visit all seven tabs in English and Slovenian. Check metric descriptions,
+    warnings, errors, chart legends, table headings, pagination, controls and
+    accessibility labels. Units and stored technical values (quality/provenance
+    codes, entity IDs and UTC identities) must remain unchanged.

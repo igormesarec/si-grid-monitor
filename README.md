@@ -1,10 +1,12 @@
 # SI Grid Monitor
 
 SI Grid Monitor is a HACS-compatible Home Assistant custom integration for
-Slovenian fixed 15-minute grid-demand monitoring. V0.6.0 provides guided setup,
+Slovenian fixed 15-minute grid-demand monitoring. V0.8.0 provides guided setup,
 an automatically registered sidebar dashboard, import-only live calculations,
 sustained-load forecasting, and a permanent
-SQLite quarter archive. It is an early development release, not the complete V1
+SQLite quarter archive, a paginated HISTORY explorer, controlled Recorder
+reconstruction safeguards, and bilingual dashboard support. It is an early
+development release, not the complete V1
 product.
 
 The authoritative MASTER PRODUCT SPECIFICATION V1.1 is preserved unchanged in
@@ -17,10 +19,10 @@ V0.4 behavior is documented in
 The user-supplied 2026 contracted-power acceptance case is documented separately
 in [`REAL_WORLD_VALIDATION.md`](REAL_WORLD_VALIDATION.md); its values are test
 fixtures, never installation defaults.
-The combined analysis-release status is tracked in
-[`V0.6_IMPLEMENTATION_STATUS.md`](V0.6_IMPLEMENTATION_STATUS.md).
+The combined history/platform-release status is tracked in
+[`V0.8_IMPLEMENTATION_STATUS.md`](V0.8_IMPLEMENTATION_STATUS.md).
 
-## V0.6 installation and dashboard
+## V0.8 installation and dashboard
 
 1. Install from HACS and restart Home Assistant.
 2. Add SI Grid Monitor from Settings > Devices & services.
@@ -40,17 +42,20 @@ with separate archive namespaces and is removed only after the final entry unloa
   confirmed-contract statistics, with high-demand quarter details.
 - **Exceedances** lists every confirmed exceeded quarter separately with safe
   filtering, sorting, server-side pagination and analytical excess quantities.
+- **History** explores the permanent archive with bounded server-side paging,
+  quality/block/exceedance filters, exact-quarter drill-down, archive metadata,
+  and an administrator-only Recorder audit/reconstruction workflow.
 - **Tariff Calendar** shows backend-classified 2026-2030 hours with DST and rule status.
 
 The countdown is browser-local. Missing historical detail is explicitly labeled;
 the dashboard never fabricates samples from SQLite quarter summaries.
 
-V0.6.0 retains V0.4.2's gap-aware cumulative-energy segments, adaptive Overview axes and a
+V0.8.0 retains V0.4.2's gap-aware cumulative-energy segments, adaptive Overview axes and a
 complete Today 15-minute interval selector. After updating through HACS, restart
 Home Assistant and perform a normal browser/app frontend refresh so the new
 versioned JavaScript assets replace any cached V0.4.1 module. Do not remove and
-re-add the integration: existing entity identities and the schema-5 SQLite
-archive are preserved.
+re-add the integration: existing entity identities and all schema-5 quarter rows
+are preserved by the additive schema-6 migration.
 
 ## Safety and accuracy
 
@@ -64,7 +69,7 @@ archive are preserved.
 - **CAN ADD and SUSTAINED CAN ADD are energy-budget estimates. They are not proof that a breaker,
   phase, cable, connection, or inverter can safely carry that power.**
 
-## V0.6 status
+## V0.8 status
 
 | Feature | Planned | Implemented | Tested | HA-verified |
 |---|:---:|:---:|:---:|:---:|
@@ -89,8 +94,11 @@ archive are preserved.
 | Official 2026/2027 tariff/calendar rules | V0.3 | Yes | Yes | No |
 | 2028–2030 explicit provisional/unverified policy | V0.3 | Yes | Yes | No |
 | Five block-specific targets and migration | V0.3 | Yes | Yes | No |
-| Six-tab professional dashboard through Exceedances | V0.4-V0.6 | Yes | Yes (automated) | No |
-| GitHub Pages and HACS default listing | V0.8 | No | No | No |
+| Seven-tab dashboard including HISTORY | V0.4-V0.8 | Yes | Yes (automated) | No |
+| Controlled Recorder audit/reconstruction | V0.8 | Yes | Pure/unit tests | No |
+| English/Slovenian dashboard localization | V0.8 | Yes | Automated fallback tests | No |
+| GitHub Pages source/build preview | V0.8 | Yes | Static build | Not published |
+| Official HACS default listing | External future work | No | No | No |
 
 “Pure Python only” means that the adapter and its validation contract exist but
 the Home Assistant config entry and entity lifecycle for that source mode do

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
+import uuid
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -21,7 +23,7 @@ from .engine import EPSILON, LJUBLJANA, CompletedQuarter, DataQuality
 from .tariffs.calendar import SlovenianTariffCalendar
 from .tariffs.models import RuleStatus, TariffClassification
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 _QUALITY_RANK = {
     DataQuality.UNAVAILABLE.value: 0,
     DataQuality.INCOMPLETE.value: 1,
@@ -29,6 +31,38 @@ _QUALITY_RANK = {
     DataQuality.COUNTER_DERIVED.value: 3,
     DataQuality.MEASURED_ALIGNED.value: 4,
 }
+
+_RECONSTRUCTION_IDENTITY_FIELDS = (
+    "end_utc",
+    "import_kwh",
+    "export_kwh",
+    "signed_average_kw",
+    "import_demand_kw",
+    "quality",
+    "coverage_seconds",
+    "gap_seconds",
+    "provenance",
+    "source_id",
+    "source_epoch",
+    "configuration_status",
+    "contractual_target_kw",
+    "safety_margin_kw",
+    "operational_target_kw",
+    "utilization_pct",
+    "exceeded",
+    "excess_kw",
+    "simulation",
+    "tariff_block",
+    "tariff_rule_version",
+    "tariff_rule_status",
+    "contractual_status",
+    "confirmed_exceeded",
+    "target_effective_from",
+    "target_effective_to",
+    "target_provenance",
+    "target_recorded_on",
+    "created_utc",
+)
 
 
 class ConfigurationStatus(StrEnum):
@@ -407,7 +441,12 @@ class QuarterArchive:
             connection.execute("PRAGMA journal_mode=WAL")
             connection.execute("PRAGMA synchronous=NORMAL")
             self._connection = connection
-            self._migrate()
+            try:
+                self._migrate()
+            except BaseException:
+                connection.close()
+                self._connection = None
+                raise
 
     def close(self) -> None:
         with self._lock:
@@ -612,61 +651,64 @@ class QuarterArchive:
                 and record.provenance.startswith("recorder")
             ):
                 return False
-            local = record.start_utc.astimezone(LJUBLJANA)
-            values = (
-                record.namespace,
-                start,
-                _utc_iso(record.end_utc),
-                local.isoformat(),
-                int(local.utcoffset().total_seconds()),
-                int(local.fold),
-                record.import_kwh,
-                record.export_kwh,
-                record.signed_average_kw,
-                record.import_demand_kw,
-                record.coverage_seconds,
-                record.gap_seconds,
-                record.quality,
-                record.provenance,
-                record.source_id,
-                record.source_epoch,
-                record.configuration_status,
-                record.contractual_target_kw,
-                record.safety_margin_kw,
-                record.operational_target_kw,
-                record.utilization_pct,
-                None if record.exceeded is None else int(record.exceeded),
-                record.excess_kw,
-                int(record.simulation),
-                record.tariff_block,
-                record.tariff_rule_version,
-                record.tariff_calendar_year,
-                record.tariff_season,
-                record.tariff_day_type,
-                record.tariff_rule_status,
-                record.tariff_source_url,
-                record.tariff_policy,
-                record.contractual_status,
-                record.contractual_status_reason,
-                (
-                    int(record.exceeded)
-                    if record.confirmed_exceeded is None
-                    and record.contractual_status == "confirmed"
-                    and record.exceeded is not None
-                    else (
-                        None
-                        if record.confirmed_exceeded is None
-                        else int(record.confirmed_exceeded)
-                    )
-                ),
-                record.target_effective_from,
-                record.target_effective_to,
-                record.target_provenance,
-                record.target_recorded_on,
-                _utc_iso(datetime.now(UTC)),
-            )
-            self._db.execute(
-                """INSERT INTO quarters (
+            self._execute_quarter_upsert(record)
+            return existing is None
+
+    def _execute_quarter_upsert(self, record: ArchiveRecord) -> None:
+        """Write a quarter without opening or committing a transaction."""
+
+        local = record.start_utc.astimezone(LJUBLJANA)
+        confirmed_exceeded = (
+            int(record.exceeded)
+            if record.confirmed_exceeded is None
+            and record.contractual_status == "confirmed"
+            and record.exceeded is not None
+            else (None if record.confirmed_exceeded is None else int(record.confirmed_exceeded))
+        )
+        values = (
+            record.namespace,
+            _utc_iso(record.start_utc),
+            _utc_iso(record.end_utc),
+            local.isoformat(),
+            int(local.utcoffset().total_seconds()),
+            int(local.fold),
+            record.import_kwh,
+            record.export_kwh,
+            record.signed_average_kw,
+            record.import_demand_kw,
+            record.coverage_seconds,
+            record.gap_seconds,
+            record.quality,
+            record.provenance,
+            record.source_id,
+            record.source_epoch,
+            record.configuration_status,
+            record.contractual_target_kw,
+            record.safety_margin_kw,
+            record.operational_target_kw,
+            record.utilization_pct,
+            None if record.exceeded is None else int(record.exceeded),
+            record.excess_kw,
+            int(record.simulation),
+            record.tariff_block,
+            record.tariff_rule_version,
+            record.tariff_calendar_year,
+            record.tariff_season,
+            record.tariff_day_type,
+            record.tariff_rule_status,
+            record.tariff_source_url,
+            record.tariff_policy,
+            record.contractual_status,
+            record.contractual_status_reason,
+            confirmed_exceeded,
+            record.target_effective_from,
+            record.target_effective_to,
+            record.target_provenance,
+            record.target_recorded_on,
+            _utc_iso(datetime.now(UTC)),
+        )
+        self._db.execute(
+            """INSERT INTO quarters (
                     namespace,start_utc,end_utc,start_local,utc_offset_seconds,fold,
                     import_kwh,export_kwh,signed_average_kw,import_demand_kw,
                     coverage_seconds,gap_seconds,quality,provenance,source_id,
@@ -710,9 +752,8 @@ class QuarterArchive:
                     target_effective_to=excluded.target_effective_to,
                     target_provenance=excluded.target_provenance,
                     target_recorded_on=excluded.target_recorded_on""",
-                values,
-            )
-            return existing is None
+            values,
+        )
 
     def save_checkpoint(self, namespace: str, payload: dict[str, Any]) -> None:
         """Atomically replace a bounded-frequency current-quarter checkpoint."""
@@ -743,6 +784,447 @@ class QuarterArchive:
                     (namespace, _utc_iso(start_utc), _utc_iso(end_utc)),
                 ).fetchall()
             )
+
+    def query_history(
+        self,
+        namespace: str,
+        start_utc: datetime,
+        end_utc: datetime,
+        *,
+        tariff_block: int | None = None,
+        qualities: tuple[str, ...] = (),
+        exceedance_status: str = "all",
+        source_epoch: int | None = None,
+        page: int = 1,
+        page_size: int = 50,
+        sort_by: str = "start_utc",
+        direction: str = "desc",
+    ) -> tuple[list[sqlite3.Row], int]:
+        """Return one bounded archive page without loading the archive into memory."""
+
+        page = max(1, int(page))
+        page_size = max(1, min(200, int(page_size)))
+        sort_columns = {
+            "start_utc": "start_utc",
+            "import_kwh": "import_kwh",
+            "import_demand_kw": "import_demand_kw",
+            "utilization_pct": "utilization_pct",
+            "quality": "quality",
+        }
+        order_column = sort_columns.get(sort_by, "start_utc")
+        order_direction = "ASC" if direction.lower() == "asc" else "DESC"
+        clauses = ["namespace=?", "start_utc>=?", "start_utc<?", "simulation=0"]
+        parameters: list[object] = [
+            namespace,
+            _utc_iso(start_utc),
+            _utc_iso(end_utc),
+        ]
+        if tariff_block is not None:
+            clauses.append("tariff_block=?")
+            parameters.append(int(tariff_block))
+        if qualities:
+            placeholders = ",".join("?" for _ in qualities)
+            clauses.append(f"quality IN ({placeholders})")
+            parameters.extend(qualities)
+        if exceedance_status == "confirmed_yes":
+            clauses.append("confirmed_exceeded=1")
+        elif exceedance_status == "confirmed_no":
+            clauses.append("confirmed_exceeded=0")
+        elif exceedance_status == "unconfirmed":
+            clauses.append("confirmed_exceeded IS NULL")
+        elif exceedance_status != "all":
+            raise ValueError("unsupported exceedance-status filter")
+        if source_epoch is not None:
+            clauses.append("source_epoch=?")
+            parameters.append(int(source_epoch))
+        where = " AND ".join(clauses)
+        with self._lock:
+            total = int(
+                self._db.execute(
+                    f"SELECT COUNT(*) FROM quarters WHERE {where}", parameters
+                ).fetchone()[0]
+            )
+            rows = list(
+                self._db.execute(
+                    f"""SELECT * FROM quarters WHERE {where}
+                        ORDER BY {order_column} {order_direction}, start_utc {order_direction}
+                        LIMIT ? OFFSET ?""",
+                    (*parameters, page_size, (page - 1) * page_size),
+                ).fetchall()
+            )
+        return rows, total
+
+    def history_facets(
+        self, namespace: str, start_utc: datetime, end_utc: datetime
+    ) -> dict[str, object]:
+        """Return bounded archive metadata and diagnostic distributions."""
+
+        parameters = (namespace, _utc_iso(start_utc), _utc_iso(end_utc))
+        where = "namespace=? AND start_utc>=? AND start_utc<? AND simulation=0"
+        with self._lock:
+            bounds = self._db.execute(
+                f"""SELECT COUNT(*) AS total, MIN(start_utc) AS oldest,
+                           MAX(start_utc) AS newest,
+                           SUM(CASE WHEN quality IN ('measured_aligned','counter_derived',
+                               'reconstructed') AND configuration_status IN
+                               ('known','target_unknown','target_mixed')
+                               THEN 1 ELSE 0 END) AS valid_count,
+                           SUM(CASE WHEN quality IN ('incomplete','unavailable')
+                               THEN 1 ELSE 0 END) AS incomplete_count,
+                           SUM(CASE WHEN quality IN ('measured_aligned','counter_derived',
+                               'reconstructed') AND configuration_status IN
+                               ('known','target_unknown','target_mixed')
+                               THEN import_kwh ELSE 0 END) AS import_kwh,
+                           SUM(CASE WHEN quality IN ('measured_aligned','counter_derived',
+                               'reconstructed') AND configuration_status IN
+                               ('known','target_unknown','target_mixed')
+                               THEN export_kwh ELSE 0 END) AS export_kwh,
+                           SUM(CASE WHEN NOT (quality IN ('measured_aligned','counter_derived',
+                               'reconstructed') AND configuration_status IN
+                               ('known','target_unknown','target_mixed'))
+                               THEN import_kwh ELSE 0 END) AS partial_import_kwh,
+                           SUM(CASE WHEN NOT (quality IN ('measured_aligned','counter_derived',
+                               'reconstructed') AND configuration_status IN
+                               ('known','target_unknown','target_mixed'))
+                               THEN export_kwh ELSE 0 END) AS partial_export_kwh
+                    FROM quarters WHERE {where}""",
+                parameters,
+            ).fetchone()
+            quality_rows = self._db.execute(
+                f"SELECT quality, COUNT(*) AS count FROM quarters WHERE {where} GROUP BY quality",
+                parameters,
+            ).fetchall()
+            provenance_rows = self._db.execute(
+                f"""SELECT provenance, COUNT(*) AS count FROM quarters
+                    WHERE {where} GROUP BY provenance ORDER BY count DESC LIMIT 50""",
+                parameters,
+            ).fetchall()
+            source_rows = self._db.execute(
+                f"""SELECT source_epoch, source_id, COUNT(*) AS count FROM quarters
+                    WHERE {where} GROUP BY source_epoch,source_id ORDER BY source_epoch""",
+                parameters,
+            ).fetchall()
+            configuration_rows = self._db.execute(
+                f"""SELECT configuration_status, COUNT(*) AS count FROM quarters
+                    WHERE {where} GROUP BY configuration_status""",
+                parameters,
+            ).fetchall()
+            contractual_rows = self._db.execute(
+                f"""SELECT contractual_status, COUNT(*) AS count FROM quarters
+                    WHERE {where} GROUP BY contractual_status""",
+                parameters,
+            ).fetchall()
+        return {
+            "total": int(bounds["total"] or 0),
+            "oldest": bounds["oldest"],
+            "newest": bounds["newest"],
+            "valid_count": int(bounds["valid_count"] or 0),
+            "incomplete_count": int(bounds["incomplete_count"] or 0),
+            "import_kwh": float(bounds["import_kwh"] or 0.0),
+            "export_kwh": float(bounds["export_kwh"] or 0.0),
+            "partial_import_kwh": float(bounds["partial_import_kwh"] or 0.0),
+            "partial_export_kwh": float(bounds["partial_export_kwh"] or 0.0),
+            "quality_distribution": {
+                str(row["quality"]): int(row["count"]) for row in quality_rows
+            },
+            "provenance_distribution": {
+                str(row["provenance"]): int(row["count"]) for row in provenance_rows
+            },
+            "source_epochs": [
+                {
+                    "source_epoch": row["source_epoch"],
+                    "source_id": row["source_id"],
+                    "count": int(row["count"]),
+                }
+                for row in source_rows
+            ],
+            "configuration_distribution": {
+                str(row["configuration_status"]): int(row["count"]) for row in configuration_rows
+            },
+            "contractual_distribution": {
+                str(row["contractual_status"]): int(row["count"]) for row in contractual_rows
+            },
+        }
+
+    def archive_storage_status(self) -> dict[str, object]:
+        """Return non-blocking-friendly storage metadata for an executor caller."""
+
+        with self._lock:
+            self._db.execute("SELECT 1").fetchone()
+        return {
+            "schema_version": self.schema_version,
+            "path": self.path.name,
+            "size_bytes": self.path.stat().st_size if self.path.exists() else 0,
+            "retention": "forever",
+            "writable": self.path.exists() and self.path.is_file(),
+        }
+
+    def backup(self, destination: str | Path) -> Path:
+        """Create a transactionally consistent SQLite backup without rewriting history."""
+
+        target = Path(destination)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            backup_db = sqlite3.connect(target)
+            try:
+                self._db.backup(backup_db)
+            finally:
+                backup_db.close()
+        return target
+
+    def begin_reconstruction_job(
+        self,
+        namespace: str,
+        start_utc: datetime,
+        end_utc: datetime,
+        source_id: str,
+        *,
+        mode: str,
+        summary: dict[str, Any],
+    ) -> str:
+        """Persist a reconstruction audit/apply job before any archive mutation."""
+
+        job_id = uuid.uuid4().hex
+        with self._lock, self._db:
+            self._db.execute(
+                """INSERT INTO reconstruction_jobs(
+                     job_id,namespace,start_utc,end_utc,source_id,mode,status,
+                     summary_json,created_utc)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (
+                    job_id,
+                    namespace,
+                    _utc_iso(start_utc),
+                    _utc_iso(end_utc),
+                    source_id,
+                    mode,
+                    "audited" if mode == "audit" else "pending",
+                    json.dumps(summary, sort_keys=True),
+                    _utc_iso(datetime.now(UTC)),
+                ),
+            )
+        return job_id
+
+    def finish_reconstruction_job(self, job_id: str, status: str, summary: dict[str, Any]) -> None:
+        """Close a job while preserving a restart-visible partial/failure result."""
+
+        with self._lock, self._db:
+            self._db.execute(
+                """UPDATE reconstruction_jobs SET status=?,summary_json=?,completed_utc=?
+                   WHERE job_id=?""",
+                (
+                    status,
+                    json.dumps(summary, sort_keys=True),
+                    _utc_iso(datetime.now(UTC)),
+                    job_id,
+                ),
+            )
+
+    def register_backup(self, namespace: str, job_id: str, backup_path: Path) -> str:
+        """Record backup metadata without exposing the host path to the frontend."""
+
+        backup_id = uuid.uuid4().hex
+        with self._lock, self._db:
+            self._db.execute(
+                """INSERT INTO archive_backups(
+                     backup_id,namespace,job_id,filename,size_bytes,created_utc)
+                   VALUES(?,?,?,?,?,?)""",
+                (
+                    backup_id,
+                    namespace,
+                    job_id,
+                    backup_path.name,
+                    backup_path.stat().st_size,
+                    _utc_iso(datetime.now(UTC)),
+                ),
+            )
+        return backup_id
+
+    def apply_reconstructed_record(
+        self,
+        job_id: str,
+        record: ArchiveRecord,
+        *,
+        reason: str,
+        expected_fingerprint: str | None = None,
+        planned_action: str | None = None,
+    ) -> bool:
+        """Atomically apply one still-eligible improvement and its revision."""
+
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                existing = self._db.execute(
+                    "SELECT * FROM quarters WHERE namespace=? AND start_utc=?",
+                    (record.namespace, _utc_iso(record.start_utc)),
+                ).fetchone()
+                if planned_action == "insert" and existing is not None:
+                    self._db.rollback()
+                    return False
+                if planned_action == "improve" and existing is None:
+                    self._db.rollback()
+                    return False
+                if expected_fingerprint is not None and archive_row_fingerprint(existing) != (
+                    expected_fingerprint
+                ):
+                    self._db.rollback()
+                    return False
+                if not self._reconstruction_configuration_matches(record):
+                    self._db.rollback()
+                    return False
+                if existing is not None and not self._reconstruction_still_eligible(
+                    existing, record
+                ):
+                    self._db.rollback()
+                    return False
+                original = None if existing is None else _row_dict(existing)
+                self._execute_quarter_upsert(record)
+                self._reconstruction_checkpoint("before_revision_insert")
+                self._db.execute(
+                    """INSERT INTO quarter_revisions(
+                         namespace,start_utc,job_id,original_json,replacement_json,
+                         reason,created_utc) VALUES(?,?,?,?,?,?,?)""",
+                    (
+                        record.namespace,
+                        _utc_iso(record.start_utc),
+                        job_id,
+                        json.dumps(original, sort_keys=True),
+                        json.dumps(asdict(record), sort_keys=True, default=str),
+                        reason,
+                        _utc_iso(datetime.now(UTC)),
+                    ),
+                )
+                self._db.commit()
+                return True
+            except BaseException:
+                self._db.rollback()
+                raise
+
+    def _reconstruction_still_eligible(self, existing: sqlite3.Row, record: ArchiveRecord) -> bool:
+        old_rank = _QUALITY_RANK.get(str(existing["quality"]), -1)
+        new_rank = _QUALITY_RANK.get(record.quality, -1)
+        if new_rank < old_rank:
+            return False
+        if new_rank == old_rank:
+            if str(existing["provenance"]).startswith("live"):
+                return False
+            if record.quality not in {"incomplete", "unavailable"}:
+                return False
+            if record.coverage_seconds <= float(existing["coverage_seconds"]):
+                return False
+        immutable = {
+            "source_id": record.source_id,
+            "source_epoch": record.source_epoch,
+            "configuration_status": record.configuration_status,
+            "contractual_target_kw": record.contractual_target_kw,
+            "safety_margin_kw": record.safety_margin_kw,
+            "tariff_block": record.tariff_block,
+            "tariff_rule_version": record.tariff_rule_version,
+            "tariff_rule_status": record.tariff_rule_status,
+            "contractual_status": record.contractual_status,
+            "target_effective_from": record.target_effective_from,
+            "target_effective_to": record.target_effective_to,
+            "target_provenance": record.target_provenance,
+            "target_recorded_on": record.target_recorded_on,
+        }
+        return all(existing[key] == value for key, value in immutable.items())
+
+    def _reconstruction_configuration_matches(self, record: ArchiveRecord) -> bool:
+        """Re-resolve historical source identity and target evidence at apply time."""
+
+        if record.source_epoch is None:
+            return (
+                record.configuration_status != ConfigurationStatus.KNOWN
+                and record.contractual_status != "confirmed"
+                and record.contractual_target_kw is None
+            )
+        start = _utc_iso(record.start_utc)
+        end = _utc_iso(record.end_utc)
+        epoch = self._db.execute(
+            """SELECT * FROM source_epochs WHERE namespace=? AND effective_utc<=?
+               ORDER BY effective_utc DESC,epoch DESC LIMIT 1""",
+            (record.namespace, start),
+        ).fetchone()
+        if (
+            epoch is None
+            or int(epoch["epoch"]) != record.source_epoch
+            or epoch["source_id"] != record.source_id
+        ):
+            return False
+        if self._db.execute(
+            """SELECT 1 FROM source_epochs
+               WHERE namespace=? AND effective_utc>? AND effective_utc<? LIMIT 1""",
+            (record.namespace, start, end),
+        ).fetchone():
+            return False
+        if record.configuration_status == ConfigurationStatus.KNOWN:
+            if not _same_optional_float(epoch["safety_margin_kw"], record.safety_margin_kw):
+                return False
+            periods_json = epoch["contracted_power_periods_json"]
+            if periods_json is not None:
+                tariff = SlovenianTariffCalendar(
+                    allow_provisional=epoch["allow_provisional_tariff"] == 1
+                ).classify(record.start_utc)
+                if (
+                    tariff.block != record.tariff_block
+                    or tariff.rule_version != record.tariff_rule_version
+                    or tariff.rule_status.value != record.tariff_rule_status
+                ):
+                    return False
+                schedule = contracted_power_schedule_from_json(str(periods_json))
+                period = schedule.period_for(tariff.local_datetime.date())
+                expected_target = schedule.target_for(tariff)
+                if period is None:
+                    return False
+                expected_metadata = (
+                    period.effective_from.isoformat(),
+                    period.effective_to.isoformat(),
+                    period.provenance,
+                    None if period.recorded_on is None else period.recorded_on.isoformat(),
+                )
+                if not _same_optional_float(expected_target, record.contractual_target_kw):
+                    return False
+                expected_operational = (
+                    None
+                    if expected_target is None or record.safety_margin_kw is None
+                    else max(0.0, expected_target - record.safety_margin_kw)
+                )
+                if not _same_optional_float(expected_operational, record.operational_target_kw):
+                    return False
+                if (
+                    record.target_effective_from,
+                    record.target_effective_to,
+                    record.target_provenance,
+                    record.target_recorded_on,
+                ) != expected_metadata:
+                    return False
+                expected_status = {
+                    RuleStatus.OFFICIAL: "confirmed",
+                    RuleStatus.PROVISIONAL: "provisional_estimate",
+                }.get(tariff.rule_status, "unavailable_rule")
+                if record.contractual_status != expected_status:
+                    return False
+            else:
+                possible_targets = {
+                    float(value)
+                    for key in (
+                        "contractual_target_kw",
+                        "target_b1_kw",
+                        "target_b2_kw",
+                        "target_b3_kw",
+                        "target_b4_kw",
+                        "target_b5_kw",
+                    )
+                    if (value := epoch[key]) is not None
+                }
+                if record.contractual_target_kw not in possible_targets:
+                    return False
+        return True
+
+    def _reconstruction_checkpoint(self, point: str) -> None:
+        """Failure-injection seam used to prove quarter/revision atomicity."""
+
+        del point
 
     def aggregate_period(
         self,
@@ -1185,7 +1667,7 @@ class QuarterArchive:
                     PRAGMA user_version=5;
                     """
                 )
-            return
+            version = 5
         if version == 1:
             with self._db:
                 self._db.executescript(
@@ -1295,6 +1777,141 @@ class QuarterArchive:
                     PRAGMA user_version=5;
                     """
                 )
+            version = 5
+        if version == 5:
+            self._migrate_v5_to_v6()
+
+    def _migrate_v5_to_v6(self) -> None:
+        """Atomically add reconstruction metadata, including partial-V6 recovery."""
+
+        statements = (
+            (
+                "after_first_table",
+                """CREATE TABLE IF NOT EXISTS reconstruction_jobs(
+                      job_id TEXT PRIMARY KEY, namespace TEXT NOT NULL,
+                      start_utc TEXT NOT NULL, end_utc TEXT NOT NULL,
+                      source_id TEXT NOT NULL, mode TEXT NOT NULL,
+                      status TEXT NOT NULL, summary_json TEXT NOT NULL,
+                      created_utc TEXT NOT NULL, completed_utc TEXT)""",
+            ),
+            (
+                "after_multiple_tables",
+                """CREATE TABLE IF NOT EXISTS quarter_revisions(
+                      revision_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                      namespace TEXT NOT NULL, start_utc TEXT NOT NULL,
+                      job_id TEXT NOT NULL, original_json TEXT NOT NULL,
+                      replacement_json TEXT NOT NULL, reason TEXT NOT NULL,
+                      created_utc TEXT NOT NULL,
+                      FOREIGN KEY(job_id) REFERENCES reconstruction_jobs(job_id))""",
+            ),
+            (
+                "after_archive_backups_table",
+                """CREATE TABLE IF NOT EXISTS archive_backups(
+                      backup_id TEXT PRIMARY KEY, namespace TEXT NOT NULL,
+                      job_id TEXT, filename TEXT NOT NULL, size_bytes INTEGER NOT NULL,
+                      created_utc TEXT NOT NULL)""",
+            ),
+            (
+                "during_index_creation",
+                """CREATE INDEX IF NOT EXISTS idx_quarters_namespace_quality_start
+                      ON quarters(namespace,quality,start_utc)""",
+            ),
+            (
+                "after_source_epoch_index",
+                """CREATE INDEX IF NOT EXISTS idx_quarters_namespace_source_epoch_start
+                      ON quarters(namespace,source_epoch,start_utc)""",
+            ),
+            (
+                "after_revision_index",
+                """CREATE INDEX IF NOT EXISTS idx_quarter_revisions_namespace_start
+                      ON quarter_revisions(namespace,start_utc)""",
+            ),
+        )
+        self._migration_checkpoint("before_first_schema_change")
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            for checkpoint, statement in statements:
+                self._db.execute(statement)
+                self._migration_checkpoint(checkpoint)
+            self._validate_v6_auxiliary_schema()
+            self._migration_checkpoint("before_version_update")
+            self._db.execute("PRAGMA user_version=6")
+            self._db.commit()
+        except BaseException:
+            self._db.rollback()
+            raise
+
+    def _validate_v6_auxiliary_schema(self) -> None:
+        expected = {
+            "reconstruction_jobs": {
+                "job_id",
+                "namespace",
+                "start_utc",
+                "end_utc",
+                "source_id",
+                "mode",
+                "status",
+                "summary_json",
+                "created_utc",
+                "completed_utc",
+            },
+            "quarter_revisions": {
+                "revision_id",
+                "namespace",
+                "start_utc",
+                "job_id",
+                "original_json",
+                "replacement_json",
+                "reason",
+                "created_utc",
+            },
+            "archive_backups": {
+                "backup_id",
+                "namespace",
+                "job_id",
+                "filename",
+                "size_bytes",
+                "created_utc",
+            },
+        }
+        for table, columns in expected.items():
+            actual = {
+                str(row["name"])
+                for row in self._db.execute(f"PRAGMA table_info({table})").fetchall()
+            }
+            if actual != columns:
+                raise RuntimeError(
+                    f"archive has an incompatible partial V6 table {table}; "
+                    "existing measurements were not changed"
+                )
+        expected_indexes = {
+            "idx_quarters_namespace_quality_start": (
+                "namespace",
+                "quality",
+                "start_utc",
+            ),
+            "idx_quarters_namespace_source_epoch_start": (
+                "namespace",
+                "source_epoch",
+                "start_utc",
+            ),
+            "idx_quarter_revisions_namespace_start": ("namespace", "start_utc"),
+        }
+        for index, columns in expected_indexes.items():
+            actual = tuple(
+                str(row["name"])
+                for row in self._db.execute(f"PRAGMA index_info({index})").fetchall()
+            )
+            if actual != columns:
+                raise RuntimeError(
+                    f"archive has an incompatible partial V6 index {index}; "
+                    "existing measurements were not changed"
+                )
+
+    def _migration_checkpoint(self, point: str) -> None:
+        """Failure-injection seam used to prove migration rollback behavior."""
+
+        del point
 
     @property
     def _db(self) -> sqlite3.Connection:
@@ -1307,6 +1924,25 @@ def _utc_iso(value: datetime) -> str:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("archive timestamps must be timezone-aware")
     return value.astimezone(UTC).isoformat()
+
+
+def _row_dict(row: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        key: row[key]
+        for key in row.keys()  # noqa: SIM118 - sqlite Row iteration yields values
+    }
+
+
+def archive_row_fingerprint(row: Mapping[str, Any] | None) -> str:
+    """Return a stable fingerprint of evidence relevant to reconstruction safety."""
+
+    if row is None:
+        return "missing"
+    columns = row.keys()
+    payload = {key: row[key] for key in _RECONSTRUCTION_IDENTITY_FIELDS if key in columns}
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":"), default=str).encode()
+    ).hexdigest()
 
 
 def _optional_float(value: object) -> float | None:

@@ -1,0 +1,22 @@
+name: Pages preview
+
+on:
+  pull_request:
+    paths:
+      - "docs/**"
+      - ".github/workflows/pages-preview.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+      - name: Explain publishing boundary
+        run: echo "Artifact prepared only; repository Pages settings and deployment require owner approval."

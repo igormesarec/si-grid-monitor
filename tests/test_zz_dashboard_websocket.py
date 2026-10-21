@@ -1,4 +1,4 @@
-"""WebSocket history regression tests with genuine SQLite V5 rows."""
+"""WebSocket history regression tests with genuine SQLite rows."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import json
 import sqlite3
 import sys
 import types
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
@@ -314,7 +315,7 @@ def test_history_commands_use_real_sqlite_rows_and_preserve_archive(tmp_path: Pa
 
     after = [dict(row) for row in archive.list_quarters("meter-a", starts[0], starts[8])]
     assert after == before
-    assert archive.schema_version == 5
+    assert archive.schema_version == 6
     archive.close()
 
 
@@ -457,4 +458,77 @@ def test_exceedance_command_rejects_unsafe_sort_and_pagination(tmp_path: Path) -
         )
         assert connection.error is not None
         assert connection.error[1] == "invalid_query"
+    archive.close()
+
+
+def test_history_command_pages_real_rows_and_serializes_storage(tmp_path: Path) -> None:
+    archive = QuarterArchive(tmp_path / "history-page.db")
+    archive.open()
+    starts = quarter_starts_for_local_day(date(2026, 1, 2))
+    for index, start in enumerate(starts[:7]):
+        archive.upsert_quarter(_record(start, index, incomplete=index == 6))
+    runtime = _runtime(archive)
+    connection = _Connection()
+    _run(
+        dashboard.ws_history(
+            _Hass(runtime),
+            connection,
+            {
+                "id": 70,
+                "entry_id": "entry-a",
+                "start_date": "2026-01-02",
+                "end_date": "2026-01-02",
+                "page": 1,
+                "page_size": 3,
+                "direction": "asc",
+            },
+        )
+    )
+    assert connection.error is None
+    assert len(connection.result["items"]) == 3
+    assert connection.result["pagination"]["total"] == 7
+    assert connection.result["summary"]["missing_count"] == 89
+    assert connection.result["storage"]["schema_version"] == 6
+    json.dumps(connection.result)
+    archive.close()
+
+
+def test_history_command_preserves_confirmed_false_and_null_filters(tmp_path: Path) -> None:
+    archive = QuarterArchive(tmp_path / "history-status.db")
+    archive.open()
+    starts = quarter_starts_for_local_day(date(2026, 1, 2))
+    yes = replace(_record(starts[0], 300), confirmed_exceeded=True, exceeded=True)
+    no = replace(_record(starts[1], 0), confirmed_exceeded=False, exceeded=False)
+    unknown = replace(
+        _record(starts[2], 0, incomplete=True),
+        confirmed_exceeded=None,
+        exceeded=None,
+    )
+    for record in (yes, no, unknown):
+        archive.upsert_quarter(record)
+    runtime = _runtime(archive)
+    expected = {
+        "confirmed_yes": [True],
+        "confirmed_no": [False],
+        "unconfirmed": [None],
+        "all": [True, False, None],
+    }
+    for status, values in expected.items():
+        connection = _Connection()
+        _run(
+            dashboard.ws_history(
+                _Hass(runtime),
+                connection,
+                {
+                    "id": 71,
+                    "entry_id": "entry-a",
+                    "start_date": "2026-01-02",
+                    "end_date": "2026-01-02",
+                    "exceedance_status": status,
+                    "direction": "asc",
+                },
+            )
+        )
+        assert connection.error is None
+        assert [item["confirmed_exceeded"] for item in connection.result["items"]] == values
     archive.close()

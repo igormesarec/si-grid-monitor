@@ -57,7 +57,7 @@ def record(
 def test_schema_idempotence_import_only_storage_and_dst_context(tmp_path) -> None:
     archive = QuarterArchive(tmp_path / "archive.db")
     archive.open()
-    assert archive.schema_version == 5
+    assert archive.schema_version == 6
     start = datetime(2026, 10, 25, 0, 0, tzinfo=UTC)
     assert archive.upsert_quarter(record(start))
     assert not archive.upsert_quarter(record(start))
@@ -395,7 +395,7 @@ def test_v1_migration_marks_legacy_rows_unverified_and_suppresses_exceedance(tmp
 
     archive = QuarterArchive(path)
     archive.open()
-    assert archive.schema_version == 5
+    assert archive.schema_version == 6
     migrated = archive.list_quarters("meter-a", start, start + timedelta(hours=1))[0]
     assert migrated["configuration_status"] == "legacy_unverified"
     assert migrated["exceeded"] == 1
@@ -494,7 +494,7 @@ def test_v2_to_v3_migration_copies_common_target_to_all_blocks(tmp_path) -> None
 
     archive = QuarterArchive(path)
     archive.open()
-    assert archive.schema_version == 5
+    assert archive.schema_version == 6
     epoch = archive.list_configuration_epochs("meter-a")[0]
     assert epoch.block_targets_kw == (4.8, 4.8, 4.8, 4.8, 4.8)
     assert epoch.contracted_power_periods == ()

@@ -325,6 +325,143 @@ test("PERIOD chart never announces a missing bin as measured zero", () => {
   assert.equal((html.match(/class="import-bar"/g) || []).length, 1);
 });
 
+test("PERIOD legends match visible series and single quarters do not duplicate demand", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._periodChartMode = "demand";
+  panel._period = {
+    period: {resolution: "quarter"},
+    bins: [{
+      bin_key: START_A, expected_start_utc: START_A, status: "complete",
+      valid_count: 1, expected_count: 1, maximum_import_demand_kw: 3.2,
+      average_import_demand_kw: 3.2, targets_kw: [3.9],
+    }],
+  };
+  const single = panel._periodChart();
+  assert.equal((single.match(/class="import-bar"/g) || []).length, 1);
+  assert.equal((single.match(/class="average-bar"/g) || []).length, 0);
+  assert.match(single, /Maximum import demand/);
+  assert.doesNotMatch(single, /Average import demand/);
+  assert.match(single, /Historical contracted-power limit/);
+
+  panel._period.bins[0].expected_count = 4;
+  panel._period.bins[0].valid_count = 4;
+  const aggregated = panel._periodChart();
+  assert.equal((aggregated.match(/class="average-bar"/g) || []).length, 1);
+  assert.match(aggregated, /Average import demand/);
+
+  panel._periodChartMode = "energy";
+  const energy = panel._periodChart();
+  assert.match(energy, /Imported energy \(kWh\)/);
+  assert.match(energy, /Exported energy \(kWh\)/);
+  assert.doesNotMatch(energy, /Maximum import demand/);
+});
+
+test("PERIOD renders Ljubljana labels rather than sliced UTC offsets", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._periodChartMode = "energy";
+  panel._period = {
+    period: {resolution: "hour"},
+    bins: [
+      {expected_start_utc: "2026-10-25T00:00:00+00:00", status: "complete",
+        valid_count: 4, expected_count: 4, import_kwh: 1, export_kwh: 0},
+      {expected_start_utc: "2026-10-25T01:00:00+00:00", status: "complete",
+        valid_count: 4, expected_count: 4, import_kwh: 1, export_kwh: 0},
+    ],
+  };
+  const html = panel._periodChart();
+  assert.match(html, /02:00 GMT\+2/);
+  assert.match(html, /02:00 GMT\+1/);
+  assert.doesNotMatch(html, /00\+00:00/);
+});
+
+test("HISTORY block report synchronizes chart and table without inventing peaks", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._historyBlock = "2";
+  const rows = [
+    {start_utc: START_B, end_utc: "2026-10-19T08:30:00+00:00", tariff_block: 2,
+      import_demand_kw: 3.4, contractual_target_kw: 3.9, measured_peak_kw: null,
+      measured_valid: true, confirmed_exceeded: false, import_kwh: .85, export_kwh: 0,
+      quality: "measured_aligned", coverage_pct: 100},
+    {start_utc: START_A, end_utc: START_B, tariff_block: 2,
+      import_demand_kw: 4.1, contractual_target_kw: 3.9, measured_peak_kw: null,
+      measured_valid: true, confirmed_exceeded: true, excess_kw: .2,
+      import_kwh: 1.025, export_kwh: 0, quality: "measured_aligned", coverage_pct: 100},
+  ];
+  const html = panel._historyQuarterReport({items: rows});
+  assert.equal((html.match(/class="history-chart-row state-valid"/g) || []).length, 2);
+  assert.equal((html.match(/data-history-quarter=/g) || []).length, 4);
+  assert.equal((html.match(/class="history-peak"/g) || []).length, 0);
+  assert.match(html, /Not archived; not inferred/);
+  assert.ok(html.indexOf(START_B) < html.indexOf(START_A));
+});
+
+test("HISTORY chart, labels, table and accessibility agree on measurement validity", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._historyBlock = "2";
+  const common = {tariff_block: 2, contractual_target_kw: 3.9, measured_peak_kw: null,
+    confirmed_exceeded: null, export_kwh: 0, coverage_pct: 0};
+  const html = panel._historyQuarterReport({items: [
+    {...common, start_utc: "2026-10-19T09:00:00Z", end_utc: "2026-10-19T09:15:00Z",
+      measured_valid: true, import_demand_kw: 0, import_kwh: 0,
+      coverage_seconds: 900, coverage_pct: 100, quality: "measured_aligned"},
+    {...common, start_utc: "2026-10-19T08:45:00Z", end_utc: "2026-10-19T09:00:00Z",
+      measured_valid: false, import_demand_kw: 7.8, import_kwh: .1,
+      coverage_seconds: 300, coverage_pct: 33.33, quality: "incomplete"},
+    {...common, start_utc: "2026-10-19T08:30:00Z", end_utc: "2026-10-19T08:45:00Z",
+      measured_valid: false, import_demand_kw: 8.4, import_kwh: null,
+      coverage_seconds: 0, quality: "unavailable"},
+    {...common, start_utc: "2026-10-19T08:15:00Z", end_utc: "2026-10-19T08:30:00Z",
+      archive_present: false, status: "missing", measured_valid: false,
+      import_demand_kw: 9.1, import_kwh: null, coverage_seconds: 0, quality: "missing"},
+  ]});
+  assert.equal((html.match(/class="history-demand"/g) || []).length, 1);
+  assert.match(html, /0\.00 kW/);
+  assert.match(html, /Partial observation: 0\.100 kWh import; contractual demand unavailable/);
+  assert.match(html, /Measurement unavailable/);
+  assert.match(html, /Archive record missing/);
+  assert.doesNotMatch(html, /7\.80 kW|8\.40 kW|9\.10 kW/);
+  assert.match(html, /state-valid_zero/);
+  assert.match(html, /state-partial/);
+  assert.match(html, /state-unavailable/);
+  assert.match(html, /state-missing/);
+});
+
+test("HISTORY long chart uses one contained scroll layout with aligned axis track", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._historyBlock = "1";
+  const items = Array.from({length: 120}, (_unused, index) => ({
+    start_utc: new Date(Date.UTC(2026, 0, 2, 0, -15 * index)).toISOString(),
+    end_utc: new Date(Date.UTC(2026, 0, 2, 0, 15 - 15 * index)).toISOString(),
+    tariff_block: 1, measured_valid: true, import_demand_kw: index % 5,
+    contractual_target_kw: 4.2, measured_peak_kw: null, coverage_seconds: 900,
+    coverage_pct: 100, quality: "measured_aligned", import_kwh: 0, export_kwh: 0,
+  }));
+  const html = panel._historyQuarterReport({items});
+  const css = panel._legendStyles();
+  assert.equal((html.match(/class="history-chart-row/g) || []).length, 120);
+  assert.equal((html.match(/class="history-report-scroll"/g) || []).length, 1);
+  assert.match(html, /class="history-axis-track"/);
+  assert.match(css, /history-axis-track\{position:relative/);
+  assert.match(css, /history-demand\{position:absolute;inset-block:4px;inset-inline-start:0/);
+  assert.match(css, /history-report-scroll\{max-width:100%;overflow-x:auto/);
+  assert.match(css, /@media\(max-width:700px\).*history-chart-row/s);
+});
+
+test("BLOCKS uses measurement colors independent of B1-B5 identity colors", () => {
+  const panel = new SIGridMonitorPanel();
+  const html = panel._blockCharts([
+    {block: 1, active: true, import_kwh: 4, maximum_import_demand_kw: 3.5,
+      average_import_demand_kw: 1.2, exceeded_count: 0, targets_kw: [3.9]},
+  ]);
+  assert.match(html, /class="block-primary-demand"[^>]+fill="#dc2626"/);
+  assert.match(html, /class="block-average"[^>]+fill="#38bdf8"/);
+  assert.match(html, /class="block-target"/);
+  assert.match(html, /swatch import/);
+  assert.match(html, /swatch smooth/);
+  assert.match(html, /swatch contract/);
+  assert.match(html, /Tariff-block identity/);
+});
+
 test("PERIOD panel drills missing quarter and repeated hour by canonical UTC identity", async () => {
   const panel = new SIGridMonitorPanel();
   panel._render = () => {};
@@ -352,4 +489,84 @@ test("PERIOD panel drills missing quarter and repeated hour by canonical UTC ide
   await panel._drillPeriod(0);
   assert.equal(panel._tab, "today");
   assert.equal(panel._selectedTodayQuarterUtc, START_A);
+});
+
+test("HISTORY distinguishes range totals and exposes source epoch filtering", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._hass = {language: "sl-SI"};
+  panel._historyPage = {
+    items: [],
+    pagination: {page: 1, pages: 1, total: 3},
+    summary: {
+      total: 20,
+      matching_filtered_count: 3,
+      source_epochs: [{source_epoch: 4, source_id: "sensor.grid", count: 12}],
+      quality_distribution: {},
+      provenance_distribution: {},
+    },
+    storage: {schema_version: 6, retention: "forever"},
+  };
+  const html = panel._historyView();
+  assert.match(html, /data-history-source-epoch/);
+  assert.match(html, /sensor\.grid · obdobje 4 \(12\)/);
+  assert.match(html, /celotno izbrano časovno obdobje/);
+  assert.match(html, /Stran 1 od 1 · 3 ustreznih četrtin/);
+});
+
+test("HISTORY sends the selected source epoch without leaking another namespace", async () => {
+  const panel = new SIGridMonitorPanel();
+  panel._render = () => {};
+  panel._entryId = "meter-a";
+  panel._gate.switchEntry("meter-a");
+  panel._tab = "history";
+  panel._historySourceEpoch = "4";
+  let captured;
+  panel._call = async (type, request, entryId) => {
+    captured = {type, request, entryId};
+    return {items: [], pagination: {page: 1, pages: 0, total: 0}, summary: {}};
+  };
+  await panel._loadTab();
+  assert.equal(captured.type, "history");
+  assert.equal(captured.entryId, "meter-a");
+  assert.equal(captured.request.source_epoch, 4);
+});
+
+test("HISTORY block requests lock chronology across alternative sort and pagination", async () => {
+  const panel = new SIGridMonitorPanel();
+  panel._render = () => {};
+  panel._entryId = "meter-a";
+  panel._gate.switchEntry("meter-a");
+  panel._tab = "history";
+  panel._historyBlock = "3";
+  panel._historySort = "quality";
+  panel._historyDirection = "asc";
+  panel._historyPageNumber = 4;
+  let captured;
+  panel._call = async (_type, request) => {
+    captured = request;
+    return {items: [], pagination: {page: 4, pages: 4, total: 200}, summary: {}};
+  };
+  await panel._loadTab();
+  assert.equal(captured.tariff_block, 3);
+  assert.equal(captured.sort_by, "start_utc");
+  assert.equal(captured.direction, "desc");
+  assert.equal(captured.page, 4);
+});
+
+test("Home Assistant language switching preserves meter and HISTORY selection", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._loaded = true;
+  panel._hass = {language: "en"};
+  panel._entryId = "meter-a";
+  panel._tab = "history";
+  panel._historySourceEpoch = "4";
+  panel._historyPageNumber = 3;
+  let renders = 0;
+  panel._render = () => { renders += 1; };
+  panel.hass = {language: "sl-SI"};
+  assert.equal(renders, 1);
+  assert.equal(panel._entryId, "meter-a");
+  assert.equal(panel._tab, "history");
+  assert.equal(panel._historySourceEpoch, "4");
+  assert.equal(panel._historyPageNumber, 3);
 });

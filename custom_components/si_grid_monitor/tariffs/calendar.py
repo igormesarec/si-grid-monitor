@@ -136,6 +136,47 @@ class SlovenianTariffCalendar:
             {"month": month, "days": self.monthly_view(year, month)} for month in range(1, 13)
         )
 
+    def rule_status_report(self, today: date) -> dict[str, object]:
+        """Describe installed rule metadata without activating remote content."""
+
+        official = [rule for rule in RULES.values() if rule.status == RuleStatus.OFFICIAL]
+        coverage_end = max((rule.effective_to for rule in official), default=None)
+        current = RULES.get(today.year)
+        if current is None:
+            state = RuleStatus.OUT_OF_RANGE.value
+        elif current.status == RuleStatus.PROVISIONAL and not self.allow_provisional:
+            state = RuleStatus.UNVERIFIED.value
+        else:
+            state = current.status.value
+        days_until_expiry = None if coverage_end is None else (coverage_end - today).days
+        return {
+            "current_year": today.year,
+            "current_rule_version": None if current is None else current.version,
+            "current_status": state,
+            "official_coverage_end": coverage_end,
+            "days_until_official_expiry": days_until_expiry,
+            "update_recommended": coverage_end is None or days_until_expiry <= 90,
+            "offline": True,
+            "remote_rules_activated": False,
+            "years": [
+                {
+                    "year": rule.year,
+                    "version": rule.version,
+                    "status": rule.status.value,
+                    "effective_from": rule.effective_from,
+                    "effective_to": rule.effective_to,
+                    "source_url": rule.source_url,
+                    "legal_source_url": rule.legal_source_url,
+                    "based_on_version": rule.based_on_version,
+                    "enabled": (
+                        rule.status == RuleStatus.OFFICIAL
+                        or (rule.status == RuleStatus.PROVISIONAL and self.allow_provisional)
+                    ),
+                }
+                for rule in sorted(RULES.values(), key=lambda item: item.year)
+            ],
+        }
+
 
 def _as_dict(value: TariffClassification) -> dict[str, object]:
     return {

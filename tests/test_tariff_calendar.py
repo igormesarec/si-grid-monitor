@@ -421,3 +421,16 @@ def test_sustained_forecast_selects_each_future_quarters_block_target() -> None:
     assert calendar.classify(local_utc(2027, 1, 4, 12)).block == 2
     assert result.can_add_kw == pytest.approx(2.0, abs=2e-6)
     assert result.limiting_target_kw == 2.0
+
+
+def test_rule_status_report_never_promotes_provisional_years() -> None:
+    disabled = SlovenianTariffCalendar(allow_provisional=False).rule_status_report(date(2028, 1, 1))
+    enabled = SlovenianTariffCalendar(allow_provisional=True).rule_status_report(date(2028, 1, 1))
+    assert disabled["official_coverage_end"] == date(2027, 12, 31)
+    assert disabled["current_status"] == "unverified"
+    assert enabled["current_status"] == "provisional"
+    assert disabled["remote_rules_activated"] is False
+    years = {item["year"]: item for item in disabled["years"]}
+    assert years[2026]["status"] == "official"
+    assert years[2027]["status"] == "official"
+    assert all(years[year]["status"] == "provisional" for year in (2028, 2029, 2030))
