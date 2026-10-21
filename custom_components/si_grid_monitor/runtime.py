@@ -508,58 +508,75 @@ class GridMonitorRuntime:
 
     async def async_start(self) -> None:
         """Read the current state and register state/timer listeners."""
+        try:
+            await self.hass.async_add_executor_job(self.archive.open)
+            startup_settings = self.settings
+            targets = self.current_block_targets_kw or (None, None, None, None, None)
+            self.configuration_epoch = await self.hass.async_add_executor_job(
+                partial(
+                    self.archive.register_configuration_epoch,
+                    namespace=self.namespace,
+                    source_id=self.power_entity,
+                    positive_means_import=self.positive_means_import,
+                    contractual_target_kw=targets[0],
+                    safety_margin_kw=float(startup_settings[CONF_SAFETY_MARGIN_KW]),
+                    block_targets_kw=targets,
+                    allow_provisional_tariff=bool(startup_settings[CONF_ALLOW_PROVISIONAL_TARIFF]),
+                    contracted_power_schedule=self.contracted_power_schedule,
+                    effective_utc=dt_util.utcnow(),
+                )
+            )
+            await self.hass.async_add_executor_job(
+                self.archive.classify_existing_quarters,
+                self.namespace,
+                self.tariff_calendar.classify_rule,
+            )
+            checkpoint, self.archived_last_completed = await asyncio.gather(
+                self.hass.async_add_executor_job(self.archive.load_checkpoint, self.namespace),
+                self.hass.async_add_executor_job(self.archive.load_latest_quarter, self.namespace),
+            )
+            if checkpoint is not None:
+                self.engine.restore_checkpoint(checkpoint)
 
-        await self.hass.async_add_executor_job(self.archive.open)
-        startup_settings = self.settings
-        targets = self.current_block_targets_kw or (None, None, None, None, None)
-        self.configuration_epoch = await self.hass.async_add_executor_job(
-            partial(
-                self.archive.register_configuration_epoch,
-                namespace=self.namespace,
-                source_id=self.power_entity,
-                positive_means_import=self.positive_means_import,
-                contractual_target_kw=targets[0],
-                safety_margin_kw=float(startup_settings[CONF_SAFETY_MARGIN_KW]),
-                block_targets_kw=targets,
-                allow_provisional_tariff=bool(startup_settings[CONF_ALLOW_PROVISIONAL_TARIFF]),
-                contracted_power_schedule=self.contracted_power_schedule,
-                effective_utc=dt_util.utcnow(),
-            )
-        )
-        await self.hass.async_add_executor_job(
-            self.archive.classify_existing_quarters,
-            self.namespace,
-            self.tariff_calendar.classify_rule,
-        )
-        checkpoint, self.archived_last_completed = await asyncio.gather(
-            self.hass.async_add_executor_job(self.archive.load_checkpoint, self.namespace),
-            self.hass.async_add_executor_job(self.archive.load_latest_quarter, self.namespace),
-        )
-        if checkpoint is not None:
-            self.engine.restore_checkpoint(checkpoint)
+            current = self.hass.states.get(self.power_entity)
+            if current is not None:
+                self._ingest_state(current)
 
-        current = self.hass.states.get(self.power_entity)
-        if current is not None:
-            self._ingest_state(current)
-
-        self._unsubscribers.append(
-            async_track_state_change_event(
-                self.hass, [self.power_entity], self._async_state_changed
+            self._unsubscribers.append(
+                async_track_state_change_event(
+                    self.hass, [self.power_entity], self._async_state_changed
+                )
             )
-        )
-        self._unsubscribers.append(
-            async_track_state_report_event(
-                self.hass, [self.power_entity], self._async_state_changed
+            self._unsubscribers.append(
+                async_track_state_report_event(
+                    self.hass, [self.power_entity], self._async_state_changed
+                )
             )
-        )
-        self._backfill_task = self._archive_tasks.track(
-            self.hass.async_create_task(
-                self._async_backfill_recorder(), "SI Grid Monitor recorder backfill"
+            self._backfill_task = self._archive_tasks.track(
+                self.hass.async_create_task(
+                    self._async_backfill_recorder(), "SI Grid Monitor recorder backfill"
+                )
             )
-        )
-        self._unsubscribers.append(
-            async_track_time_interval(self.hass, self._async_tick, timedelta(seconds=1))
-        )
+            self._unsubscribers.append(
+                async_track_time_interval(self.hass, self._async_tick, timedelta(seconds=1))
+            )
+        except Exception:
+            for unsubscribe in self._unsubscribers:
+                try:
+                    unsubscribe()
+                except Exception:
+                    _LOGGER.exception("Failed to remove listener after runtime startup failure")
+            self._unsubscribers.clear()
+            try:
+                await self._archive_tasks.cancel_and_wait(self._backfill_task)
+                await self._archive_tasks.drain()
+            except Exception:
+                _LOGGER.exception("Failed to drain archive tasks after runtime startup failure")
+            try:
+                await self.hass.async_add_executor_job(self.archive.close)
+            except Exception:
+                _LOGGER.exception("Failed to close archive after runtime startup failure")
+            raise
 
     async def async_stop(self) -> None:
         """Remove runtime listeners."""

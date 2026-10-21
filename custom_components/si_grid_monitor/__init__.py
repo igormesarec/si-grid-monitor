@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from .const import DOMAIN
+
+_LOGGER = logging.getLogger(__name__)
 
 try:
     from homeassistant.helpers import config_validation as cv
@@ -100,20 +103,43 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     from homeassistant.const import Platform
 
     from .const import DOMAIN
-    from .dashboard import DATA_RUNTIMES, async_register_panel, async_setup_dashboard
+    from .dashboard import (
+        DATA_RUNTIMES,
+        async_register_panel,
+        async_setup_dashboard,
+        async_unregister_panel,
+    )
     from .runtime import GridMonitorRuntime
 
     await async_setup_dashboard(hass)
 
     runtime = GridMonitorRuntime(hass, entry)
     entry.runtime_data = runtime
-    await runtime.async_start()
-    hass.data[DOMAIN][DATA_RUNTIMES][entry.entry_id] = runtime
-    await async_register_panel(hass)
+    runtimes = hass.data[DOMAIN][DATA_RUNTIMES]
+    started = False
+    panel_created = False
+    try:
+        await runtime.async_start()
+        started = True
+        runtimes[entry.entry_id] = runtime
+        panel_created = await async_register_panel(hass)
+        await hass.config_entries.async_forward_entry_setups(
+            entry, (Platform.SENSOR, Platform.BINARY_SENSOR)
+        )
+    except Exception:
+        runtimes.pop(entry.entry_id, None)
+        if started:
+            try:
+                await runtime.async_stop()
+            except Exception:
+                _LOGGER.exception("Failed to stop SI Grid Monitor after setup failure")
+        if panel_created and not runtimes:
+            try:
+                async_unregister_panel(hass)
+            except Exception:
+                _LOGGER.exception("Failed to remove SI Grid Monitor panel after setup failure")
+        raise
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
-    await hass.config_entries.async_forward_entry_setups(
-        entry, (Platform.SENSOR, Platform.BINARY_SENSOR)
-    )
     return True
 
 

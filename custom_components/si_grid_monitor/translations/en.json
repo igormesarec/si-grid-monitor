@@ -5,18 +5,18 @@
       "already_configured": "This source is already configured."
     },
     "error": {
-      "mode_not_available_v0_4": "This source mode is not implemented in V0.8. Select one signed live grid-power sensor.",
+      "mode_not_available_v0_4": "This source mode is not implemented in V0.9. Select one signed live grid-power sensor.",
       "invalid_contracted_power_periods": "Contracted-power assignments are invalid, overlapping, or have an end date before the start date."
     },
     "step": {
       "user": {
         "title": "Meter source",
-        "description": "V0.8 fully supports a signed W or kW grid-power sensor. Other source designs remain visibly unavailable.",
+        "description": "V0.9 fully supports a signed W or kW grid-power sensor. Other source designs remain visibly unavailable.",
         "data": {
           "source_mode": "Source mode"
         },
         "data_description": {
-          "source_mode": "Choose the input type. In V0.8 only a single signed power sensor (W or kW) is operational; other modes cannot yet be configured."
+          "source_mode": "Choose the input type. In V0.9 only a single signed power sensor (W or kW) is operational; other modes cannot yet be configured."
         }
       },
       "meter": {
@@ -242,7 +242,7 @@
   "selector": {
     "source_mode": {
       "options": {
-        "signed_power": "One signed live grid-power sensor (V0.8)",
+        "signed_power": "One signed live grid-power sensor (V0.9)",
         "separate_power": "Separate live import/export sensors (planned)",
         "import_only": "Live import-only sensor (planned)",
         "cumulative_energy": "Cumulative energy counters (planned)",

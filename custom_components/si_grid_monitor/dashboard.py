@@ -132,11 +132,11 @@ async def async_setup_dashboard(hass: HomeAssistant) -> None:
         domain_data[DATA_FRONTEND_READY] = True
 
 
-async def async_register_panel(hass: HomeAssistant) -> None:
+async def async_register_panel(hass: HomeAssistant) -> bool:
     """Create the branded sidebar entry when the first config entry loads."""
 
     if frontend.async_panel_exists(hass, PANEL_URL_PATH):
-        return
+        return False
     await panel_custom.async_register_panel(
         hass,
         webcomponent_name="si-grid-monitor-panel",
@@ -149,6 +149,7 @@ async def async_register_panel(hass: HomeAssistant) -> None:
         config_panel_domain=DOMAIN,
         handle_safe_area=True,
     )
+    return True
 
 
 def async_unregister_panel(hass: HomeAssistant) -> None:
