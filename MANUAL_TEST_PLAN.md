@@ -449,6 +449,12 @@ instance before recommending a beta release. Preserve evidence for:
 9. Inject one listener-unsubscribe failure during reload on a disposable instance.
    Confirm logs retain the cleanup error while pending quarter writes, checkpoint
    saving and SQLite close still complete, and the preserved archive reopens.
+10. Cancel unload separately while archive tasks are draining, while a checkpoint
+    is being saved and while SQLite is closing. Cancellation must return to HA
+    within the documented grace bound. If cleanup is still active, confirm the
+    runtime remains registered; retry unload, reopen the schema-6 archive and
+    compare quarter identities/counts to prove no committed row was lost or
+    duplicated.
 
 Automated tests do not satisfy this gate. Record the HA version, HACS version,
 browser/app version, integration commit, source update cadence and database

@@ -639,6 +639,8 @@ def test_runtime_shutdown_finishes_durable_cleanup_after_listener_failure() -> N
         completed.append("good_listener")
 
     class Queue:
+        has_active_tasks = False
+
         async def cancel_and_wait(self, _task: Any) -> None:
             completed.append("backfill_cancelled")
 
@@ -669,7 +671,7 @@ def test_runtime_shutdown_finishes_durable_cleanup_after_listener_failure() -> N
     )
 
     with pytest.raises(ExceptionGroup) as raised:
-        _run(GridMonitorRuntime.async_stop(runtime))
+        _run(GridMonitorRuntime._async_stop_impl(runtime))
 
     messages = [str(error) for error in raised.value.exceptions]
     assert messages == ["listener cleanup failed", "prior archive task failed"]
@@ -685,3 +687,165 @@ def test_runtime_shutdown_finishes_durable_cleanup_after_listener_failure() -> N
     ]
     assert runtime._unsubscribers == []
     assert runtime._listeners == set()
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the managed Windows runtime cannot create asyncio's socketpair",
+)
+@pytest.mark.parametrize("cancel_phase", ["drain", "checkpoint", "close"])
+def test_real_loop_shutdown_cancellation_finishes_archive_and_reopens(
+    tmp_path: Path,
+    cancel_phase: str,
+) -> None:
+    """Cancellation at each durable await propagates only after safe cleanup."""
+
+    _ensure_homeassistant_stubs()
+    from custom_components.si_grid_monitor.runtime import GridMonitorRuntime
+
+    class Config:
+        def path(self, *parts: str) -> str:
+            return str(tmp_path.joinpath(*parts))
+
+    entry = SimpleNamespace(
+        entry_id=f"shutdown-{cancel_phase}",
+        title="Shutdown cancellation",
+        data={
+            CONF_POWER_ENTITY: "sensor.grid",
+            CONF_POSITIVE_MEANS_IMPORT: True,
+            CONF_TARGET_KW: 4.8,
+            CONF_CONTRACTED_POWER_PERIODS: "[]",
+            CONF_ALLOW_PROVISIONAL_TARIFF: False,
+            CONF_SAFETY_MARGIN_KW: 0.0,
+            CONF_SMOOTHING_SECONDS: 120,
+            CONF_SUSTAINED_HORIZON_MINUTES: 60,
+            CONF_SIMULATION_ENABLED: False,
+            CONF_SIMULATION_TARGET_KW: 4.8,
+        },
+        options={},
+    )
+
+    async def scenario() -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        class Hass:
+            config = Config()
+            states = SimpleNamespace(get=lambda _entity_id: None)
+
+            @staticmethod
+            async def async_add_executor_job(function: Any, *args: Any) -> Any:
+                if cancel_phase == "close" and getattr(function, "__name__", "") == "close":
+                    entered.set()
+                    await release.wait()
+                return function(*args)
+
+        class Queue:
+            has_active_tasks = False
+
+            async def cancel_and_wait(self, _task: Any) -> None:
+                return None
+
+            async def drain(self) -> tuple[BaseException, ...]:
+                if cancel_phase == "drain":
+                    self.has_active_tasks = True
+                    entered.set()
+                    await release.wait()
+                    self.has_active_tasks = False
+                return ()
+
+        runtime = GridMonitorRuntime(Hass(), entry)  # type: ignore[arg-type]
+        runtime.archive.open()
+        start = datetime(2026, 10, 21, 10, 0, tzinfo=UTC)
+        runtime.archive.upsert_quarter(_archive_record(entry.entry_id, start))
+        runtime._archive_tasks = Queue()  # type: ignore[assignment]
+        runtime._backfill_task = None
+        runtime._unsubscribers = []
+        runtime._listeners = set()
+        runtime._drain_completed = lambda: None  # type: ignore[method-assign]
+
+        async def store_pending() -> None:
+            return None
+
+        async def save_checkpoint(_payload: Any) -> None:
+            if cancel_phase == "checkpoint":
+                entered.set()
+                await release.wait()
+
+        runtime._async_store_pending_completed = store_pending  # type: ignore[method-assign]
+        runtime._async_save_checkpoint = save_checkpoint  # type: ignore[method-assign]
+        runtime.engine = SimpleNamespace(completed=[], checkpoint=lambda: {"safe": True})
+
+        stop_task = asyncio.create_task(runtime.async_stop())
+        await entered.wait()
+        stop_task.cancel()
+        await asyncio.sleep(0)
+        release.set()
+        with pytest.raises(asyncio.CancelledError):
+            await stop_task
+
+        assert runtime.shutdown_complete
+        assert runtime._shutdown_task is not None
+        assert runtime._shutdown_task.done()
+        # A retry/restart can safely join the idempotent shutdown and reopen the
+        # same schema-6 archive without deleting or duplicating committed rows.
+        await runtime.async_stop()
+        runtime.archive.open()
+        rows = runtime.archive.list_quarters(entry.entry_id, start, start + timedelta(minutes=15))
+        assert len(rows) == 1
+        assert rows[0].import_kwh == pytest.approx(0.25)
+        assert runtime.archive.schema_version == 6
+        runtime.archive.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the managed Windows runtime cannot create asyncio's socketpair",
+)
+def test_cancelled_unload_retains_registry_until_shutdown_is_complete(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An interrupted unload cannot advertise removal while work is active."""
+
+    calls = _install_lifecycle_doubles(monkeypatch)
+    hass = _Hass()
+    entry = _Entry()
+
+    class Runtime:
+        def __init__(self) -> None:
+            self.shutdown_complete = False
+            self.entered: asyncio.Event | None = None
+            self.release: asyncio.Event | None = None
+
+        async def async_stop(self) -> None:
+            assert self.entered is not None
+            assert self.release is not None
+            self.entered.set()
+            await self.release.wait()
+            self.shutdown_complete = True
+
+    runtime = Runtime()
+    entry.runtime_data = runtime
+    hass.data.setdefault(DOMAIN, {}).setdefault("runtimes", {})[entry.entry_id] = runtime
+
+    async def scenario() -> None:
+        runtime.entered = asyncio.Event()
+        runtime.release = asyncio.Event()
+        unload_task = asyncio.create_task(async_unload_entry(hass, entry))
+        await runtime.entered.wait()
+        unload_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await unload_task
+        assert hass.data[DOMAIN]["runtimes"] == {entry.entry_id: runtime}
+        assert entry.runtime_data is runtime
+        assert calls["unregister"] == 0
+
+        runtime.release.set()
+        assert await async_unload_entry(hass, entry)
+        assert hass.data[DOMAIN]["runtimes"] == {}
+        assert entry.runtime_data is None
+        assert calls["unregister"] == 1
+
+    asyncio.run(scenario())

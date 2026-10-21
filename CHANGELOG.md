@@ -17,6 +17,11 @@ All notable changes to SI Grid Monitor will be documented here.
   orders unload cleanly, stale `runtime_data` is cleared before retry, and
   runtime shutdown completes pending archive/checkpoint work despite individual
   listener cleanup failures before reporting the collected errors.
+- Made runtime shutdown itself cancellation-safe: durable drain, pending-quarter,
+  checkpoint and SQLite-close work runs in one shielded idempotent task with a
+  finite cancellation grace period. An unload interrupted before cleanup finishes
+  retains its runtime registry reference for a safe join/retry instead of
+  advertising successful removal while archive work is active.
 - Made the schema-5 to schema-6 archive upgrade explicitly transactional and
   restart-safe, including validation/recovery of partial development objects.
 - Made each reconstruction update and its revision entry one atomic operation;

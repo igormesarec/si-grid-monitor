@@ -80,6 +80,8 @@ from .task_queue import ArchiveTaskQueue
 
 _LOGGER = logging.getLogger(__name__)
 
+SHUTDOWN_CANCELLATION_GRACE_SECONDS = 10.0
+
 
 class GridMonitorRuntime:
     """Translate HA state changes into normalized engine samples."""
@@ -134,6 +136,8 @@ class GridMonitorRuntime:
         self._archive_tasks = ArchiveTaskQueue()
         self._archive_operation_lock = asyncio.Lock()
         self._reconstruction_plans: dict[str, dict[str, object]] = {}
+        self._shutdown_task: asyncio.Task[None] | None = None
+        self._shutdown_complete = False
 
     @property
     def settings(self) -> dict[str, float | int | bool | str]:
@@ -579,9 +583,52 @@ class GridMonitorRuntime:
             raise
 
     async def async_stop(self) -> None:
-        """Remove listeners, finish durable writes, and close the archive."""
+        """Finish durable teardown while preserving caller cancellation."""
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # Narrow synchronous test doubles do not provide an event loop.
+            await self._async_stop_impl()
+            return
+
+        if self._shutdown_task is None:
+            self._shutdown_task = asyncio.create_task(
+                self._async_stop_impl(), name="SI Grid Monitor durable shutdown"
+            )
+        try:
+            await asyncio.shield(self._shutdown_task)
+        except asyncio.CancelledError:
+            # Do not let caller cancellation abandon SQLite work. Give the
+            # independently running teardown a finite grace period, then
+            # propagate cancellation either way. A timed-out task remains
+            # registered and can be joined by a later unload/restart attempt.
+            try:
+                await asyncio.wait_for(
+                    asyncio.shield(self._shutdown_task),
+                    timeout=SHUTDOWN_CANCELLATION_GRACE_SECONDS,
+                )
+            except TimeoutError:
+                _LOGGER.warning(
+                    "SI Grid Monitor shutdown exceeded %.1f second cancellation grace; "
+                    "archive cleanup continues in the background",
+                    SHUTDOWN_CANCELLATION_GRACE_SECONDS,
+                )
+            except Exception:
+                _LOGGER.exception("SI Grid Monitor shutdown failed after cancellation")
+            raise
+
+    @property
+    def shutdown_complete(self) -> bool:
+        """Return whether archive tasks finished and SQLite closed."""
+
+        return self._shutdown_complete
+
+    async def _async_stop_impl(self) -> None:
+        """Run one best-effort durable shutdown sequence."""
 
         errors: list[Exception] = []
+        archive_closed = False
         for unsubscribe in self._unsubscribers:
             try:
                 unsubscribe()
@@ -621,9 +668,11 @@ class GridMonitorRuntime:
             _LOGGER.exception("Failed to save SI Grid Monitor checkpoint during shutdown")
         try:
             await self.hass.async_add_executor_job(self.archive.close)
+            archive_closed = True
         except Exception as err:
             errors.append(err)
             _LOGGER.exception("Failed to close SI Grid Monitor archive during shutdown")
+        self._shutdown_complete = archive_closed and not self._archive_tasks.has_active_tasks
         if errors:
             raise ExceptionGroup("SI Grid Monitor shutdown encountered errors", errors)
 

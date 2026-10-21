@@ -179,15 +179,24 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     if unload_ok:
         runtime: Any = entry.runtime_data
+        stopped = False
         try:
             await runtime.async_stop()
+            stopped = True
         finally:
-            runtimes = hass.data.get(DOMAIN, {}).get(DATA_RUNTIMES, {})
-            runtimes.pop(entry.entry_id, None)
-            if getattr(entry, "runtime_data", None) is runtime:
-                entry.runtime_data = None
-            if not runtimes:
-                async_unregister_panel(hass)
+            cleanup_complete = stopped or bool(getattr(runtime, "shutdown_complete", False))
+            if cleanup_complete:
+                runtimes = hass.data.get(DOMAIN, {}).get(DATA_RUNTIMES, {})
+                runtimes.pop(entry.entry_id, None)
+                if getattr(entry, "runtime_data", None) is runtime:
+                    entry.runtime_data = None
+                if not runtimes:
+                    async_unregister_panel(hass)
+            else:
+                _LOGGER.warning(
+                    "Keeping SI Grid Monitor runtime registered because durable shutdown "
+                    "is still active"
+                )
     return unload_ok
 
 
