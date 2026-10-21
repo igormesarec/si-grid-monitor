@@ -36,6 +36,14 @@ that long-term hourly statistics can reconstruct import/export quarters.
 
 ## V0.8.1 Android and narrow-screen HISTORY acceptance
 
+Automated Playwright layout tests now measure the real rendered axis/bar origin,
+width, tick/grid positions, proportional bar length and unclipped partial status
+at 320/360/390/430/768/1280 px in light/dark themes. They also exercise desktop
+chart scrolling, mobile keyboard card expansion and enlarged text. These run
+against fixtures in a desktop browser; Android Companion App acceptance remains
+pending. Run locally with `npm install`, `npx playwright install chromium` and
+`npm run test:layout`.
+
 1. In the Android Companion App, test HISTORY at effective widths 320, 360, 390
    and 430 px; also test a 768 px tablet and desktop. Repeat with light/dark
    themes, browser zoom and enlarged accessibility text.
@@ -57,6 +65,14 @@ that long-term hourly statistics can reconstruct import/export quarters.
    Confirm the exact UTC quarter opens and no archived values, epochs or targets
    change. These visual checks require a real Home Assistant/Android instance;
    the automated suite validates markup, breakpoints, chart semantics and order.
+7. For All blocks, confirm the default date order is newest first, then select
+   date, energy, demand, utilization and quality in both directions. Chart/list
+   and card/table rows must follow the same server page. Select B1-B5 and confirm
+   those reports remain newest first even after an alternative All-block sort.
+8. Inspect a partial quarter with enlarged text. Its complete observation/status
+   sentence must wrap beside the bar and remain readable. The bar must not plot
+   partial imported energy as valid quarter demand. Compare several kW ticks
+   with their vertical grid lines before and after desktop chart scrolling.
 
 Use a disposable or backed-up Home Assistant instance. Never infer physical
 connection capacity from CAN ADD values.

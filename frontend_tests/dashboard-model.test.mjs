@@ -14,7 +14,6 @@ import {
   exceedanceRequest,
   historyErrorMessage,
   historyQuarterChartModel,
-  historyResponsiveLayout,
   ljubljanaDate,
   ljubljanaTimeLabel,
   livePowerChartModel,
@@ -34,21 +33,6 @@ import {
   todayQuarterAction,
 } from "../custom_components/si_grid_monitor/frontend/dashboard-model.mjs";
 
-test("HISTORY responsive model selects cards for phones and table for wider screens", () => {
-  for (const width of [320, 360, 390, 430]) {
-    assert.deepEqual(historyResponsiveLayout(width), {
-      mode: "mobile_cards", stackedHeader: true, singleColumnFilters: true,
-      horizontalPageOverflow: false,
-    });
-  }
-  for (const width of [768, 1280]) {
-    assert.deepEqual(historyResponsiveLayout(width), {
-      mode: "desktop_table", stackedHeader: false, singleColumnFilters: false,
-      horizontalPageOverflow: false,
-    });
-  }
-});
-
 test("shared period selector serializes standard and custom filters", () => {
   assert.deepEqual(periodRequest({
     periodType: "month", periodAnchor: "2026-10-19", selectedDate: "2026-10-19",
@@ -61,6 +45,17 @@ test("shared period selector serializes standard and custom filters", () => {
     period_type: "custom", anchor: "2026-10-19",
     custom_start: "2026-10-01", custom_end: "2026-10-19",
   });
+});
+
+test("All-block model preserves backend sort while block model keeps UTC chronology", () => {
+  const records = [
+    {start_utc: "2026-10-25T01:00:00Z", measured_valid: true, import_demand_kw: 1},
+    {start_utc: "2026-10-25T00:00:00Z", measured_valid: true, import_demand_kw: 3},
+  ];
+  for (const items of [records, [...records].reverse()]) {
+    assert.deepEqual(historyQuarterChartModel(items, {preserveOrder: true}).rows.map(row => row.start_utc), items.map(row => row.start_utc));
+    assert.deepEqual(historyQuarterChartModel(items).rows.map(row => row.start_utc), records.map(row => row.start_utc));
+  }
 });
 
 test("exceedance requests preserve shared filters and bounded page state", () => {

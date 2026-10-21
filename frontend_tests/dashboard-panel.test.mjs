@@ -445,7 +445,7 @@ test("HISTORY long chart is responsive with aligned axis track and no fixed mobi
   assert.match(css, /history-demand\{position:absolute;inset-block:4px;inset-inline-start:0/);
   assert.match(css, /history-report-scroll\{max-width:100%;min-width:0;overflow:hidden/);
   assert.match(css, /history-chart-row\{width:100%;min-width:0/);
-  assert.match(css, /@media\(max-width:700px\).*grid-template-areas:'identity value' 'bar bar'/s);
+  assert.match(html, /class="history-quarter-chart"[^>]*><div class="history-axis">/);
   assert.doesNotMatch(css, /min-width:760px/);
 });
 
@@ -458,7 +458,7 @@ test("HISTORY all-block mode renders chronological B1-B5 records instead of summ
   const newer = {...quarter(START_B), tariff_block: 5, measured_valid: true,
     import_demand_kw: 2.5, contractual_target_kw: 4.2, coverage_pct: 100,
     import_kwh: .625, export_kwh: 0, quality: "measured_aligned"};
-  const html = panel._historyQuarterReport({items: [older, newer]});
+  const html = panel._historyQuarterReport({items: [newer, older]});
   assert.match(html, /history-quarter-report all-blocks/);
   assert.match(html, /All archived quarters/);
   assert.match(html, /class="chip b1">B1/);
@@ -605,7 +605,7 @@ test("HISTORY block requests lock chronology across alternative sort and paginat
   assert.equal(captured.page, 4);
 });
 
-test("HISTORY all-block requests remain newest-first across pagination", async () => {
+test("HISTORY all-block requests preserve optional server sorting across pagination", async () => {
   const panel = new SIGridMonitorPanel();
   panel._render = () => {};
   panel._entryId = "meter-a";
@@ -622,8 +622,8 @@ test("HISTORY all-block requests remain newest-first across pagination", async (
   };
   await panel._loadTab();
   assert.equal(captured.tariff_block, undefined);
-  assert.equal(captured.sort_by, "start_utc");
-  assert.equal(captured.direction, "desc");
+  assert.equal(captured.sort_by, "import_kwh");
+  assert.equal(captured.direction, "asc");
   assert.equal(captured.page, 2);
 });
 
