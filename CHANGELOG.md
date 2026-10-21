@@ -13,6 +13,10 @@ All notable changes to SI Grid Monitor will be documented here.
 - Added beta lifecycle regressions for clean setup/unload, failed setup rollback,
   archive persistence across code reinstall, multiple-meter namespaces, startup
   cleanup and synchronized backend/frontend versioning.
+- Hardened cancellation and partial-platform startup rollback: both platform
+  orders unload cleanly, stale `runtime_data` is cleared before retry, and
+  runtime shutdown completes pending archive/checkpoint work despite individual
+  listener cleanup failures before reporting the collected errors.
 - Made the schema-5 to schema-6 archive upgrade explicitly transactional and
   restart-safe, including validation/recovery of partial development objects.
 - Made each reconstruction update and its revision entry one atomic operation;

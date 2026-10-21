@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING, Any
 
@@ -118,15 +119,18 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     runtimes = hass.data[DOMAIN][DATA_RUNTIMES]
     started = False
     panel_created = False
-    try:
-        await runtime.async_start()
-        started = True
-        runtimes[entry.entry_id] = runtime
-        panel_created = await async_register_panel(hass)
-        await hass.config_entries.async_forward_entry_setups(
-            entry, (Platform.SENSOR, Platform.BINARY_SENSOR)
-        )
-    except Exception:
+    forwarding_started = False
+
+    async def cleanup_failed_setup() -> None:
+        """Undo every setup phase without replacing the original failure."""
+
+        if forwarding_started:
+            try:
+                await hass.config_entries.async_unload_platforms(
+                    entry, (Platform.SENSOR, Platform.BINARY_SENSOR)
+                )
+            except Exception:
+                _LOGGER.exception("Failed to unload platforms after setup failure")
         runtimes.pop(entry.entry_id, None)
         if started:
             try:
@@ -138,6 +142,25 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 async_unregister_panel(hass)
             except Exception:
                 _LOGGER.exception("Failed to remove SI Grid Monitor panel after setup failure")
+        if getattr(entry, "runtime_data", None) is runtime:
+            entry.runtime_data = None
+
+    try:
+        await runtime.async_start()
+        started = True
+        runtimes[entry.entry_id] = runtime
+        panel_created = await async_register_panel(hass)
+        forwarding_started = True
+        await hass.config_entries.async_forward_entry_setups(
+            entry, (Platform.SENSOR, Platform.BINARY_SENSOR)
+        )
+    except asyncio.CancelledError:
+        # Once the cancellation has been caught, cleanup awaits can complete
+        # before the original cancellation is propagated to Home Assistant.
+        await cleanup_failed_setup()
+        raise
+    except Exception:
+        await cleanup_failed_setup()
         raise
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
     return True
@@ -156,11 +179,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     )
     if unload_ok:
         runtime: Any = entry.runtime_data
-        await runtime.async_stop()
-        runtimes = hass.data.get(DOMAIN, {}).get(DATA_RUNTIMES, {})
-        runtimes.pop(entry.entry_id, None)
-        if not runtimes:
-            async_unregister_panel(hass)
+        try:
+            await runtime.async_stop()
+        finally:
+            runtimes = hass.data.get(DOMAIN, {}).get(DATA_RUNTIMES, {})
+            runtimes.pop(entry.entry_id, None)
+            if getattr(entry, "runtime_data", None) is runtime:
+                entry.runtime_data = None
+            if not runtimes:
+                async_unregister_panel(hass)
     return unload_ok
 
 

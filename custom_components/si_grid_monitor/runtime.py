@@ -560,7 +560,7 @@ class GridMonitorRuntime:
             self._unsubscribers.append(
                 async_track_time_interval(self.hass, self._async_tick, timedelta(seconds=1))
             )
-        except Exception:
+        except (Exception, asyncio.CancelledError):
             for unsubscribe in self._unsubscribers:
                 try:
                     unsubscribe()
@@ -579,22 +579,53 @@ class GridMonitorRuntime:
             raise
 
     async def async_stop(self) -> None:
-        """Remove runtime listeners."""
+        """Remove listeners, finish durable writes, and close the archive."""
 
+        errors: list[Exception] = []
         for unsubscribe in self._unsubscribers:
-            unsubscribe()
+            try:
+                unsubscribe()
+            except Exception as err:
+                errors.append(err)
+                _LOGGER.exception("Failed to remove SI Grid Monitor runtime listener")
         self._unsubscribers.clear()
         self._listeners.clear()
-        await self._archive_tasks.cancel_and_wait(self._backfill_task)
-        self._drain_completed()
-        await self._archive_tasks.drain()
+        try:
+            await self._archive_tasks.cancel_and_wait(self._backfill_task)
+        except Exception as err:
+            errors.append(err)
+            _LOGGER.exception("Failed to stop SI Grid Monitor recorder backfill")
+        try:
+            self._drain_completed()
+            errors.extend(
+                failure
+                for failure in await self._archive_tasks.drain()
+                if isinstance(failure, Exception)
+            )
+        except Exception as err:
+            errors.append(err)
+            _LOGGER.exception("Failed to drain SI Grid Monitor archive tasks")
         # A prior executor/database failure leaves the durable cursor unchanged.
         # Retry outstanding quarters synchronously before the connection closes.
-        await self._async_store_pending_completed()
-        payload = self.engine.checkpoint()
-        if payload is not None:
-            await self._async_save_checkpoint(payload)
-        await self.hass.async_add_executor_job(self.archive.close)
+        try:
+            await self._async_store_pending_completed()
+        except Exception as err:
+            errors.append(err)
+            _LOGGER.exception("Failed to store pending completed quarters during shutdown")
+        try:
+            payload = self.engine.checkpoint()
+            if payload is not None:
+                await self._async_save_checkpoint(payload)
+        except Exception as err:
+            errors.append(err)
+            _LOGGER.exception("Failed to save SI Grid Monitor checkpoint during shutdown")
+        try:
+            await self.hass.async_add_executor_job(self.archive.close)
+        except Exception as err:
+            errors.append(err)
+            _LOGGER.exception("Failed to close SI Grid Monitor archive during shutdown")
+        if errors:
+            raise ExceptionGroup("SI Grid Monitor shutdown encountered errors", errors)
 
     @callback
     def add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:

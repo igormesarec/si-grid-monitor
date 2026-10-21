@@ -442,6 +442,13 @@ instance before recommending a beta release. Preserve evidence for:
    desktop sizes, light/dark themes, keyboard and touch.
 7. Live import/export, measured zero, stale/unavailable/recovery, 92/96/100-slot
    days and three consecutive exceeded quarters as three separate records.
+8. During setup or reload, interrupt/cancel platform loading. Test a failure after
+   the sensor platform loads and after the binary-sensor platform loads. Confirm
+   there are no orphan entities, callbacks, listeners, runtime registry entries
+   or stale `runtime_data`; retry without deleting the entry and confirm it loads.
+9. Inject one listener-unsubscribe failure during reload on a disposable instance.
+   Confirm logs retain the cleanup error while pending quarter writes, checkpoint
+   saving and SQLite close still complete, and the preserved archive reopens.
 
 Automated tests do not satisfy this gate. Record the HA version, HACS version,
 browser/app version, integration commit, source update cadence and database

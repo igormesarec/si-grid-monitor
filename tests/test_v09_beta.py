@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import sys
 import types
@@ -99,25 +100,38 @@ class _Entry:
 
 
 class _ConfigEntries:
-    def __init__(self, *, fail_forward: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        fail_forward: bool = False,
+        fail_platform: str | None = None,
+        forward_order: tuple[str, ...] | None = None,
+    ) -> None:
         self.fail_forward = fail_forward
+        self.fail_platform = fail_platform
+        self.forward_order = forward_order
         self.forwarded = 0
         self.unloaded = 0
+        self.loaded_platforms: list[str] = []
 
-    async def async_forward_entry_setups(self, _entry: Any, _platforms: Any) -> None:
+    async def async_forward_entry_setups(self, _entry: Any, platforms: Any) -> None:
         self.forwarded += 1
-        if self.fail_forward:
-            raise RuntimeError("platform setup failed")
+        order = self.forward_order or tuple(platforms)
+        for platform in order:
+            if self.fail_forward or platform == self.fail_platform:
+                raise RuntimeError(f"platform setup failed: {platform}")
+            self.loaded_platforms.append(platform)
 
     async def async_unload_platforms(self, _entry: Any, _platforms: Any) -> bool:
         self.unloaded += 1
+        self.loaded_platforms.clear()
         return True
 
 
 class _Hass:
-    def __init__(self, *, fail_forward: bool = False) -> None:
+    def __init__(self, **config_entry_options: Any) -> None:
         self.data: dict[str, Any] = {}
-        self.config_entries = _ConfigEntries(fail_forward=fail_forward)
+        self.config_entries = _ConfigEntries(**config_entry_options)
 
 
 class _Runtime:
@@ -128,13 +142,16 @@ class _Runtime:
         self.entry = entry
         self.started = 0
         self.stopped = 0
+        self.callbacks_registered = False
         self.instances.append(self)
 
     async def async_start(self) -> None:
         self.started += 1
+        self.callbacks_registered = True
 
     async def async_stop(self) -> None:
         self.stopped += 1
+        self.callbacks_registered = False
         if self.fail_stop:
             raise RuntimeError("injected cleanup failure")
 
@@ -191,6 +208,7 @@ def test_clean_setup_reload_and_unload_are_symmetric(monkeypatch: pytest.MonkeyP
     assert runtime.stopped == 1
     assert hass.data[DOMAIN]["runtimes"] == {}
     assert hass.config_entries.unloaded == 1
+    assert entry.runtime_data is None
     assert calls == {"setup": 1, "register": 1, "unregister": 1}
 
 
@@ -210,6 +228,8 @@ def test_failed_platform_setup_rolls_back_runtime_and_panel(
     assert runtime.started == 1
     assert runtime.stopped == 1
     assert hass.data[DOMAIN]["runtimes"] == {}
+    assert hass.config_entries.unloaded == 1
+    assert entry.runtime_data is None
     assert entry.unload_callbacks == []
     assert calls == {"setup": 1, "register": 1, "unregister": 1}
 
@@ -228,9 +248,134 @@ def test_cleanup_failure_does_not_mask_platform_setup_error(
             _run(async_setup_entry(hass, entry))
         assert _Runtime.instances[-1].stopped == 1
         assert hass.data[DOMAIN]["runtimes"] == {}
+        assert entry.runtime_data is None
         assert calls["unregister"] == 1
     finally:
         _Runtime.fail_stop = False
+
+
+@pytest.mark.parametrize(
+    ("forward_order", "fail_platform", "loaded_first"),
+    [
+        (("sensor", "binary_sensor"), "binary_sensor", "sensor"),
+        (("binary_sensor", "sensor"), "sensor", "binary_sensor"),
+    ],
+)
+def test_partial_platform_forwarding_is_fully_rolled_back(
+    monkeypatch: pytest.MonkeyPatch,
+    forward_order: tuple[str, ...],
+    fail_platform: str,
+    loaded_first: str,
+) -> None:
+    calls = _install_lifecycle_doubles(monkeypatch)
+    _Runtime.instances.clear()
+    hass = _Hass(fail_platform=fail_platform, forward_order=forward_order)
+    entry = _Entry()
+
+    with pytest.raises(RuntimeError, match=fail_platform):
+        _run(async_setup_entry(hass, entry))
+
+    assert loaded_first not in hass.config_entries.loaded_platforms
+    assert hass.config_entries.unloaded == 1
+    assert _Runtime.instances[-1].stopped == 1
+    assert not _Runtime.instances[-1].callbacks_registered
+    assert hass.data[DOMAIN]["runtimes"] == {}
+    assert entry.runtime_data is None
+    assert entry.unload_callbacks == []
+    assert calls["unregister"] == 1
+
+
+def test_failed_setup_clears_runtime_data_and_retry_succeeds(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _install_lifecycle_doubles(monkeypatch)
+    _Runtime.instances.clear()
+    hass = _Hass(fail_platform="binary_sensor")
+    entry = _Entry()
+
+    with pytest.raises(RuntimeError, match="binary_sensor"):
+        _run(async_setup_entry(hass, entry))
+    failed_runtime = _Runtime.instances[-1]
+    assert entry.runtime_data is None
+
+    hass.config_entries.fail_platform = None
+    assert _run(async_setup_entry(hass, entry))
+    retried_runtime = _Runtime.instances[-1]
+    assert retried_runtime is not failed_runtime
+    assert entry.runtime_data is retried_runtime
+    assert hass.data[DOMAIN]["runtimes"] == {entry.entry_id: retried_runtime}
+    assert hass.config_entries.loaded_platforms == ["sensor", "binary_sensor"]
+
+
+def test_immediate_setup_cancellation_rolls_back_and_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Deterministically exercise cancellation without an event-loop stub."""
+
+    calls = _install_lifecycle_doubles(monkeypatch)
+    _Runtime.instances.clear()
+    hass = _Hass()
+    entry = _Entry()
+
+    async def cancel_forward(_entry: Any, _platforms: Any) -> None:
+        hass.config_entries.loaded_platforms.append("sensor")
+        raise asyncio.CancelledError
+
+    hass.config_entries.async_forward_entry_setups = cancel_forward
+    with pytest.raises(asyncio.CancelledError):
+        _run(async_setup_entry(hass, entry))
+
+    assert hass.config_entries.loaded_platforms == []
+    assert hass.config_entries.unloaded == 1
+    assert not _Runtime.instances[-1].callbacks_registered
+    assert hass.data[DOMAIN]["runtimes"] == {}
+    assert entry.runtime_data is None
+    assert calls["unregister"] == 1
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32",
+    reason="the managed Windows runtime cannot create asyncio's socketpair",
+)
+def test_cancelled_integration_setup_rolls_back_and_propagates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Exercise cancellation with a real SelectorEventLoop, not the sync driver."""
+
+    calls = _install_lifecycle_doubles(monkeypatch)
+    _Runtime.instances.clear()
+    hass = _Hass()
+    entry = _Entry()
+
+    async def scenario() -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def delayed_forward(_entry: Any, _platforms: Any) -> None:
+            hass.config_entries.loaded_platforms.append("sensor")
+            entered.set()
+            await release.wait()
+
+        hass.config_entries.async_forward_entry_setups = delayed_forward
+        setup_task = asyncio.create_task(async_setup_entry(hass, entry))
+        await entered.wait()
+        setup_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await setup_task
+
+    loop = asyncio.SelectorEventLoop()
+    try:
+        loop.run_until_complete(scenario())
+    finally:
+        loop.close()
+
+    assert hass.config_entries.loaded_platforms == []
+    assert hass.config_entries.unloaded == 1
+    assert _Runtime.instances[-1].stopped == 1
+    assert not _Runtime.instances[-1].callbacks_registered
+    assert hass.data[DOMAIN]["runtimes"] == {}
+    assert entry.runtime_data is None
+    assert calls["unregister"] == 1
 
 
 def _archive_record(namespace: str, start: datetime) -> ArchiveRecord:
@@ -354,3 +499,189 @@ def test_runtime_startup_failure_closes_open_archive(
         _run(runtime.async_start())
     assert runtime.archive._connection is None
     assert runtime._unsubscribers == []
+
+
+def test_immediate_runtime_startup_cancellation_closes_archive(
+    tmp_path: Path,
+) -> None:
+    """Deterministically inject cancellation after SQLite has opened."""
+
+    _ensure_homeassistant_stubs()
+    from custom_components.si_grid_monitor.runtime import GridMonitorRuntime
+
+    class Config:
+        def path(self, *parts: str) -> str:
+            return str(tmp_path.joinpath(*parts))
+
+    class States:
+        @staticmethod
+        def get(_entity_id: str) -> None:
+            return None
+
+    class Hass:
+        config = Config()
+        states = States()
+
+        @staticmethod
+        async def async_add_executor_job(function: Any, *args: Any) -> Any:
+            if getattr(function, "func", None) is not None:
+                raise asyncio.CancelledError
+            return function(*args)
+
+    entry = SimpleNamespace(
+        entry_id="immediate-startup-cancel",
+        title="Immediate startup cancel",
+        data={
+            CONF_POWER_ENTITY: "sensor.grid",
+            CONF_POSITIVE_MEANS_IMPORT: True,
+            CONF_TARGET_KW: 4.8,
+            CONF_CONTRACTED_POWER_PERIODS: "[]",
+            CONF_ALLOW_PROVISIONAL_TARIFF: False,
+            CONF_SAFETY_MARGIN_KW: 0.0,
+            CONF_SMOOTHING_SECONDS: 120,
+            CONF_SUSTAINED_HORIZON_MINUTES: 60,
+            CONF_SIMULATION_ENABLED: False,
+            CONF_SIMULATION_TARGET_KW: 4.8,
+        },
+        options={},
+    )
+    runtime = GridMonitorRuntime(Hass(), entry)  # type: ignore[arg-type]
+
+    with pytest.raises(asyncio.CancelledError):
+        _run(runtime.async_start())
+    assert runtime.archive._connection is None
+    assert runtime._unsubscribers == []
+
+
+def test_runtime_startup_cancellation_closes_archive_and_propagates(
+    tmp_path: Path,
+) -> None:
+    """Cancel a real runtime startup at an executor boundary on a real loop."""
+
+    if sys.platform == "win32":
+        pytest.skip("the managed Windows runtime cannot create asyncio's socketpair")
+    _ensure_homeassistant_stubs()
+    from custom_components.si_grid_monitor.runtime import GridMonitorRuntime
+
+    class Config:
+        def path(self, *parts: str) -> str:
+            return str(tmp_path.joinpath(*parts))
+
+    class States:
+        @staticmethod
+        def get(_entity_id: str) -> None:
+            return None
+
+    entry = SimpleNamespace(
+        entry_id="startup-cancelled",
+        title="Startup cancelled",
+        data={
+            CONF_POWER_ENTITY: "sensor.grid",
+            CONF_POSITIVE_MEANS_IMPORT: True,
+            CONF_TARGET_KW: 4.8,
+            CONF_CONTRACTED_POWER_PERIODS: "[]",
+            CONF_ALLOW_PROVISIONAL_TARIFF: False,
+            CONF_SAFETY_MARGIN_KW: 0.0,
+            CONF_SMOOTHING_SECONDS: 120,
+            CONF_SUSTAINED_HORIZON_MINUTES: 60,
+            CONF_SIMULATION_ENABLED: False,
+            CONF_SIMULATION_TARGET_KW: 4.8,
+        },
+        options={},
+    )
+
+    async def scenario() -> GridMonitorRuntime:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        class Hass:
+            config = Config()
+            states = States()
+
+            @staticmethod
+            async def async_add_executor_job(function: Any, *args: Any) -> Any:
+                if getattr(function, "__name__", "") == "classify_existing_quarters":
+                    entered.set()
+                    await release.wait()
+                return function(*args)
+
+        runtime = GridMonitorRuntime(Hass(), entry)  # type: ignore[arg-type]
+        startup_task = asyncio.create_task(runtime.async_start())
+        await entered.wait()
+        startup_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await startup_task
+        return runtime
+
+    loop = asyncio.SelectorEventLoop()
+    try:
+        runtime = loop.run_until_complete(scenario())
+    finally:
+        loop.close()
+
+    assert runtime.archive._connection is None
+    assert runtime._unsubscribers == []
+
+
+def test_runtime_shutdown_finishes_durable_cleanup_after_listener_failure() -> None:
+    """Individual cleanup errors are reported only after all durable work runs."""
+
+    _ensure_homeassistant_stubs()
+    from custom_components.si_grid_monitor.runtime import GridMonitorRuntime
+
+    completed: list[str] = []
+
+    def bad_listener() -> None:
+        completed.append("bad_listener")
+        raise RuntimeError("listener cleanup failed")
+
+    def good_listener() -> None:
+        completed.append("good_listener")
+
+    class Queue:
+        async def cancel_and_wait(self, _task: Any) -> None:
+            completed.append("backfill_cancelled")
+
+        async def drain(self) -> tuple[BaseException, ...]:
+            completed.append("tasks_drained")
+            return (RuntimeError("prior archive task failed"),)
+
+    async def store_pending() -> None:
+        completed.append("pending_quarters_stored")
+
+    async def save_checkpoint(_payload: Any) -> None:
+        completed.append("checkpoint_saved")
+
+    async def executor(function: Any, *args: Any) -> Any:
+        return function(*args)
+
+    runtime = SimpleNamespace(
+        _unsubscribers=[bad_listener, good_listener],
+        _listeners={lambda: None},
+        _archive_tasks=Queue(),
+        _backfill_task=None,
+        _drain_completed=lambda: completed.append("completed_queued"),
+        _async_store_pending_completed=store_pending,
+        engine=SimpleNamespace(checkpoint=lambda: {"quarter": "durable"}),
+        _async_save_checkpoint=save_checkpoint,
+        hass=SimpleNamespace(async_add_executor_job=executor),
+        archive=SimpleNamespace(close=lambda: completed.append("archive_closed")),
+    )
+
+    with pytest.raises(ExceptionGroup) as raised:
+        _run(GridMonitorRuntime.async_stop(runtime))
+
+    messages = [str(error) for error in raised.value.exceptions]
+    assert messages == ["listener cleanup failed", "prior archive task failed"]
+    assert completed == [
+        "bad_listener",
+        "good_listener",
+        "backfill_cancelled",
+        "completed_queued",
+        "tasks_drained",
+        "pending_quarters_stored",
+        "checkpoint_saved",
+        "archive_closed",
+    ]
+    assert runtime._unsubscribers == []
+    assert runtime._listeners == set()
