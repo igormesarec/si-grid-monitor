@@ -7,7 +7,8 @@ import json
 import os
 import sys
 import types
-from datetime import UTC, datetime, timedelta
+from dataclasses import replace
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
@@ -29,6 +30,10 @@ from custom_components.si_grid_monitor.const import (
     CONF_TARGET_KW,
     DOMAIN,
     VERSION,
+)
+from custom_components.si_grid_monitor.contracted_power import (
+    ContractedPowerPeriod,
+    ContractedPowerSchedule,
 )
 
 ROOT = Path(__file__).parents[1]
@@ -590,7 +595,41 @@ def test_upgrade_reopen_and_reinstall_preserve_each_meter_namespace(tmp_path: Pa
     archive = QuarterArchive(path)
     archive.open()
     start = datetime(2026, 10, 25, 0, 0, tzinfo=UTC)
-    archive.upsert_quarter(_archive_record("meter-a", start))
+    schedule = ContractedPowerSchedule(
+        (
+            ContractedPowerPeriod(
+                effective_from=date(2026, 1, 1),
+                effective_to=date(2026, 12, 31),
+                block_targets_kw=(3.5, 3.9, 4.1, 4.2, 4.2),
+                provenance="distributor_record",
+                recorded_on=date(2025, 10, 17),
+            ),
+        )
+    )
+    epoch = archive.register_configuration_epoch(
+        namespace="meter-a",
+        source_id="sensor.meter-a",
+        positive_means_import=True,
+        contractual_target_kw=3.5,
+        safety_margin_kw=0.2,
+        block_targets_kw=(3.5, 3.9, 4.1, 4.2, 4.2),
+        allow_provisional_tariff=False,
+        contracted_power_schedule=schedule,
+        effective_utc=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    archive.upsert_quarter(
+        replace(
+            _archive_record("meter-a", start),
+            source_epoch=epoch.epoch,
+            contractual_target_kw=3.5,
+            safety_margin_kw=0.2,
+            operational_target_kw=3.3,
+            target_effective_from="2026-01-01",
+            target_effective_to="2026-12-31",
+            target_provenance="distributor_record",
+            target_recorded_on="2025-10-17",
+        )
+    )
     archive.upsert_quarter(_archive_record("meter-b", start))
     archive.save_checkpoint("meter-a", {"schema": 1, "import_kwh": 0.25})
     archive.close()
@@ -598,8 +637,17 @@ def test_upgrade_reopen_and_reinstall_preserve_each_meter_namespace(tmp_path: Pa
     reopened = QuarterArchive(path)
     reopened.open()
     assert reopened.schema_version == 6
-    assert len(reopened.list_quarters("meter-a", start, start + timedelta(hours=1))) == 1
+    meter_a = reopened.list_quarters("meter-a", start, start + timedelta(hours=1))
+    assert len(meter_a) == 1
     assert len(reopened.list_quarters("meter-b", start, start + timedelta(hours=1))) == 1
+    assert meter_a[0]["contractual_target_kw"] == pytest.approx(3.5)
+    assert meter_a[0]["operational_target_kw"] == pytest.approx(3.3)
+    assert meter_a[0]["target_provenance"] == "distributor_record"
+    epochs = reopened.list_configuration_epochs("meter-a")
+    assert len(epochs) == 1
+    assert epochs[0].source_id == "sensor.meter-a"
+    assert epochs[0].block_targets_kw == pytest.approx((3.5, 3.9, 4.1, 4.2, 4.2))
+    assert epochs[0].contracted_power_periods == schedule.periods
     assert reopened.load_checkpoint("meter-a") == {"schema": 1, "import_kwh": 0.25}
     assert reopened.list_quarters("missing-meter", start, start + timedelta(hours=1)) == []
     reopened.close()
@@ -618,6 +666,14 @@ def test_beta_version_frontend_and_hacs_package_are_consistent() -> None:
     assert "dashboard-i18n.mjs?v=0.9.0" in dashboard
     assert hacs["name"] == "SI Grid Monitor"
     assert not any(ROOT.joinpath(name).exists() for name in ("release.zip", "dist.zip"))
+
+
+def test_entity_unique_id_formulas_remain_entry_scoped_and_version_independent() -> None:
+    """A code/HACS upgrade must not change existing entity registry identities."""
+
+    for module in ("sensor.py", "binary_sensor.py"):
+        source = (ROOT / "custom_components/si_grid_monitor" / module).read_text(encoding="utf-8")
+        assert 'f"{entry.entry_id}_{description.key}"' in source
 
 
 def test_signed_mode_is_only_implemented_source_mode_and_is_documented_truthfully() -> None:

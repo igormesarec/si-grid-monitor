@@ -1,11 +1,11 @@
-# SI Grid Monitor V0.8.2 - Real Home Assistant Test Plan
+# SI Grid Monitor V0.9.0 Beta - Real Home Assistant Test Plan
 
 ## V0.8 HISTORY, reconstruction and platform acceptance
 
 1. Back up Home Assistant. Record the pre-update schema-5 row count, database
    size, oldest/newest quarter, config-entry ID and entity unique IDs.
 2. Update through HACS, restart, and hard-refresh desktop and Android WebViews.
-   Confirm versioned `0.8.2` dashboard modules load and no entry reconfiguration
+   Confirm versioned `0.9.0` dashboard modules load and no entry reconfiguration
    is requested. Verify schema 6 and the exact same historical quarter count.
 3. Open HISTORY and test day/week/month/year/custom ranges, B1–B5, quality and
    exceedance filters, sorting and pagination. A valid measured zero must remain
