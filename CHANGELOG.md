@@ -22,6 +22,10 @@ All notable changes to SI Grid Monitor will be documented here.
   finite cancellation grace period. An unload interrupted before cleanup finishes
   retains its runtime registry reference for a safe join/retry instead of
   advertising successful removal while archive work is active.
+- Added same-entry runtime ownership gating: setup now waits a bounded interval
+  for a prior durable shutdown, defers without overwriting registry/runtime data
+  while SQLite ownership remains active, and transfers ownership only after the
+  prior task confirms archive closure. Failed rollback uses the same rule.
 - Made the schema-5 to schema-6 archive upgrade explicitly transactional and
   restart-safe, including validation/recovery of partial development objects.
 - Made each reconstruction update and its revision entry one atomic operation;

@@ -49,6 +49,14 @@ def _run(coroutine: Any) -> Any:
 def _ensure_homeassistant_stubs() -> None:
     """Install the narrow HA import surface used by lifecycle/runtime tests."""
     if "homeassistant.const" in sys.modules:
+        if "homeassistant.exceptions" not in sys.modules:
+            exceptions = types.ModuleType("homeassistant.exceptions")
+
+            class ConfigEntryNotReady(Exception):
+                pass
+
+            exceptions.ConfigEntryNotReady = ConfigEntryNotReady  # type: ignore[attr-defined]
+            sys.modules["homeassistant.exceptions"] = exceptions
         return
     homeassistant = types.ModuleType("homeassistant")
     homeassistant.__path__ = []  # type: ignore[attr-defined]
@@ -61,6 +69,12 @@ def _ensure_homeassistant_stubs() -> None:
     core.HomeAssistant = object  # type: ignore[attr-defined]
     core.State = object  # type: ignore[attr-defined]
     core.callback = lambda function: function  # type: ignore[attr-defined]
+    exceptions = types.ModuleType("homeassistant.exceptions")
+
+    class ConfigEntryNotReady(Exception):
+        pass
+
+    exceptions.ConfigEntryNotReady = ConfigEntryNotReady  # type: ignore[attr-defined]
     helpers = types.ModuleType("homeassistant.helpers")
     helpers.__path__ = []  # type: ignore[attr-defined]
     event = types.ModuleType("homeassistant.helpers.event")
@@ -78,6 +92,7 @@ def _ensure_homeassistant_stubs() -> None:
             "homeassistant.config_entries": config_entries,
             "homeassistant.const": const,
             "homeassistant.core": core,
+            "homeassistant.exceptions": exceptions,
             "homeassistant.helpers": helpers,
             "homeassistant.helpers.event": event,
             "homeassistant.util": util,
@@ -250,10 +265,11 @@ def test_cleanup_failure_does_not_mask_platform_setup_error(
     try:
         with pytest.raises(RuntimeError, match="platform setup failed"):
             _run(async_setup_entry(hass, entry))
-        assert _Runtime.instances[-1].stopped == 1
-        assert hass.data[DOMAIN]["runtimes"] == {}
-        assert entry.runtime_data is None
-        assert calls["unregister"] == 1
+        runtime = _Runtime.instances[-1]
+        assert runtime.stopped == 1
+        assert hass.data[DOMAIN]["runtimes"] == {entry.entry_id: runtime}
+        assert entry.runtime_data is runtime
+        assert calls["unregister"] == 0
     finally:
         _Runtime.fail_stop = False
 
@@ -311,6 +327,43 @@ def test_failed_setup_clears_runtime_data_and_retry_succeeds(
     assert hass.config_entries.loaded_platforms == ["sensor", "binary_sensor"]
 
 
+def test_failed_setup_keeps_runtime_with_unfinished_durable_shutdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rollback never unregisters a runtime whose SQLite cleanup is unfinished."""
+
+    calls = _install_lifecycle_doubles(monkeypatch)
+
+    class LingeringRuntime(_Runtime):
+        def __init__(self, hass: Any, entry: Any) -> None:
+            super().__init__(hass, entry)
+            self.shutdown_complete = False
+
+        async def async_stop(self) -> None:
+            self.stopped += 1
+            raise RuntimeError("archive shutdown still active")
+
+    sys.modules["custom_components.si_grid_monitor.runtime"].GridMonitorRuntime = (  # type: ignore[attr-defined]
+        LingeringRuntime
+    )
+    hass = _Hass(fail_platform="binary_sensor")
+    entry = _Entry()
+
+    with pytest.raises(RuntimeError, match="binary_sensor"):
+        _run(async_setup_entry(hass, entry))
+
+    runtime = entry.runtime_data
+    assert isinstance(runtime, LingeringRuntime)
+    assert hass.data[DOMAIN]["runtimes"] == {entry.entry_id: runtime}
+    assert runtime.stopped == 1
+    assert calls["unregister"] == 0
+    config_entry_not_ready = sys.modules["homeassistant.exceptions"].ConfigEntryNotReady
+    with pytest.raises(config_entry_not_ready):
+        _run(async_setup_entry(hass, entry))
+    assert entry.runtime_data is runtime
+    assert hass.data[DOMAIN]["runtimes"] == {entry.entry_id: runtime}
+
+
 def test_immediate_setup_cancellation_rolls_back_and_propagates(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -335,6 +388,130 @@ def test_immediate_setup_cancellation_rolls_back_and_propagates(
     assert hass.data[DOMAIN]["runtimes"] == {}
     assert entry.runtime_data is None
     assert calls["unregister"] == 1
+
+
+@pytest.mark.skipif(
+    REAL_LOOP_UNAVAILABLE,
+    reason="the managed Windows runtime cannot create asyncio's socketpair",
+)
+def test_setup_cancellation_preserves_prior_runtime_until_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Cancellation while joining old shutdown cannot transfer ownership."""
+
+    _install_lifecycle_doubles(monkeypatch)
+    hass = _Hass()
+    entry = _Entry()
+
+    async def scenario() -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        class PriorRuntime:
+            shutdown_complete = False
+
+            async def async_wait_for_shutdown(self, _timeout: float) -> bool:
+                entered.set()
+                await release.wait()
+                self.shutdown_complete = True
+                return True
+
+        prior = PriorRuntime()
+        entry.runtime_data = prior
+        hass.data.setdefault(DOMAIN, {}).setdefault("runtimes", {})[entry.entry_id] = prior
+        setup_task = asyncio.create_task(async_setup_entry(hass, entry))
+        await entered.wait()
+        setup_task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await setup_task
+        assert entry.runtime_data is prior
+        assert hass.data[DOMAIN]["runtimes"] == {entry.entry_id: prior}
+        assert _Runtime.instances == []
+
+        release.set()
+        assert await prior.async_wait_for_shutdown(1.0)
+        assert await async_setup_entry(hass, entry)
+        replacement = entry.runtime_data
+        assert isinstance(replacement, _Runtime)
+        assert hass.data[DOMAIN]["runtimes"] == {entry.entry_id: replacement}
+
+    _Runtime.instances.clear()
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(
+    REAL_LOOP_UNAVAILABLE,
+    reason="the managed Windows runtime cannot create asyncio's socketpair",
+)
+def test_setup_timeout_defers_then_reopens_archive_on_successful_retry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A bounded wait preserves prior SQLite ownership until shutdown completes."""
+
+    import custom_components.si_grid_monitor as integration
+
+    _install_lifecycle_doubles(monkeypatch)
+    monkeypatch.setattr(integration, "PREVIOUS_RUNTIME_SHUTDOWN_WAIT_SECONDS", 0.01)
+    config_entry_not_ready = sys.modules["homeassistant.exceptions"].ConfigEntryNotReady
+    hass = _Hass()
+    entry = _Entry()
+    archive_path = tmp_path / ".storage" / "si_grid_monitor_retry.db"
+    archive = QuarterArchive(archive_path)
+    archive.open()
+    start = datetime(2026, 10, 21, 12, 0, tzinfo=UTC)
+    archive.upsert_quarter(_archive_record(entry.entry_id, start))
+
+    async def scenario() -> None:
+        release = asyncio.Event()
+
+        class PriorRuntime:
+            def __init__(self) -> None:
+                self.shutdown_complete = False
+                self.shutdown_task = asyncio.create_task(self._shutdown())
+
+            async def _shutdown(self) -> None:
+                await release.wait()
+                archive.close()
+                self.shutdown_complete = True
+
+            async def async_wait_for_shutdown(self, timeout: float) -> bool:
+                if self.shutdown_complete:
+                    return True
+                try:
+                    await asyncio.wait_for(asyncio.shield(self.shutdown_task), timeout)
+                except TimeoutError:
+                    return False
+                return self.shutdown_complete
+
+        prior = PriorRuntime()
+        entry.runtime_data = prior
+        hass.data.setdefault(DOMAIN, {}).setdefault("runtimes", {})[entry.entry_id] = prior
+
+        with pytest.raises(config_entry_not_ready):
+            await async_setup_entry(hass, entry)
+        assert not prior.shutdown_task.done()
+        assert entry.runtime_data is prior
+        assert hass.data[DOMAIN]["runtimes"] == {entry.entry_id: prior}
+        assert _Runtime.instances == []
+
+        release.set()
+        await prior.shutdown_task
+        assert await async_setup_entry(hass, entry)
+        replacement = entry.runtime_data
+        assert isinstance(replacement, _Runtime)
+        assert hass.data[DOMAIN]["runtimes"] == {entry.entry_id: replacement}
+
+        reopened = QuarterArchive(archive_path)
+        reopened.open()
+        rows = reopened.list_quarters(entry.entry_id, start, start + timedelta(minutes=15))
+        assert len(rows) == 1
+        assert rows[0]["import_kwh"] == pytest.approx(0.25)
+        assert reopened.schema_version == 6
+        reopened.close()
+
+    _Runtime.instances.clear()
+    asyncio.run(scenario())
 
 
 @pytest.mark.skipif(

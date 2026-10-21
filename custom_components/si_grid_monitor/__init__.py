@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
+PREVIOUS_RUNTIME_SHUTDOWN_WAIT_SECONDS = 10.0
 
 try:
     from homeassistant.helpers import config_validation as cv
@@ -102,6 +103,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up SI Grid Monitor from a config entry."""
 
     from homeassistant.const import Platform
+    from homeassistant.exceptions import ConfigEntryNotReady
 
     from .const import DOMAIN
     from .dashboard import (
@@ -114,9 +116,47 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     await async_setup_dashboard(hass)
 
+    runtimes = hass.data[DOMAIN][DATA_RUNTIMES]
+    existing_runtime = runtimes.get(entry.entry_id)
+    entry_runtime = getattr(entry, "runtime_data", None)
+    if (
+        existing_runtime is not None
+        and entry_runtime is not None
+        and existing_runtime is not entry_runtime
+    ):
+        _LOGGER.error(
+            "Deferring SI Grid Monitor setup for %s because runtime ownership conflicts",
+            entry.entry_id,
+        )
+        raise ConfigEntryNotReady("Existing SI Grid Monitor runtime ownership is inconsistent")
+    if existing_runtime is None and entry_runtime is not None:
+        existing_runtime = entry_runtime
+    if existing_runtime is not None:
+        shutdown_complete = bool(getattr(existing_runtime, "shutdown_complete", False))
+        waiter = getattr(existing_runtime, "async_wait_for_shutdown", None)
+        if not shutdown_complete and callable(waiter):
+            _LOGGER.info(
+                "Waiting up to %.1f seconds for prior SI Grid Monitor runtime %s shutdown",
+                PREVIOUS_RUNTIME_SHUTDOWN_WAIT_SECONDS,
+                entry.entry_id,
+            )
+            shutdown_complete = await waiter(PREVIOUS_RUNTIME_SHUTDOWN_WAIT_SECONDS)
+        if not shutdown_complete:
+            _LOGGER.warning(
+                "Deferring SI Grid Monitor setup for %s because prior durable shutdown "
+                "is still active",
+                entry.entry_id,
+            )
+            raise ConfigEntryNotReady(
+                "Previous SI Grid Monitor runtime is still closing its archive"
+            )
+        if runtimes.get(entry.entry_id) is existing_runtime:
+            runtimes.pop(entry.entry_id, None)
+        if getattr(entry, "runtime_data", None) is existing_runtime:
+            entry.runtime_data = None
+
     runtime = GridMonitorRuntime(hass, entry)
     entry.runtime_data = runtime
-    runtimes = hass.data[DOMAIN][DATA_RUNTIMES]
     started = False
     panel_created = False
     forwarding_started = False
@@ -131,19 +171,29 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
             except Exception:
                 _LOGGER.exception("Failed to unload platforms after setup failure")
-        runtimes.pop(entry.entry_id, None)
+        cleanup_complete = not started
         if started:
             try:
                 await runtime.async_stop()
+                cleanup_complete = True
             except Exception:
                 _LOGGER.exception("Failed to stop SI Grid Monitor after setup failure")
-        if panel_created and not runtimes:
+                cleanup_complete = bool(getattr(runtime, "shutdown_complete", False))
+        if cleanup_complete and runtimes.get(entry.entry_id) is runtime:
+            runtimes.pop(entry.entry_id, None)
+        if cleanup_complete and panel_created and not runtimes:
             try:
                 async_unregister_panel(hass)
             except Exception:
                 _LOGGER.exception("Failed to remove SI Grid Monitor panel after setup failure")
-        if getattr(entry, "runtime_data", None) is runtime:
+        if cleanup_complete and getattr(entry, "runtime_data", None) is runtime:
             entry.runtime_data = None
+        if not cleanup_complete:
+            _LOGGER.warning(
+                "Keeping failed SI Grid Monitor runtime %s registered until durable "
+                "shutdown completes",
+                entry.entry_id,
+            )
 
     try:
         await runtime.async_start()
@@ -187,7 +237,8 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             cleanup_complete = stopped or bool(getattr(runtime, "shutdown_complete", False))
             if cleanup_complete:
                 runtimes = hass.data.get(DOMAIN, {}).get(DATA_RUNTIMES, {})
-                runtimes.pop(entry.entry_id, None)
+                if runtimes.get(entry.entry_id) is runtime:
+                    runtimes.pop(entry.entry_id, None)
                 if getattr(entry, "runtime_data", None) is runtime:
                     entry.runtime_data = None
                 if not runtimes:

@@ -624,6 +624,24 @@ class GridMonitorRuntime:
 
         return self._shutdown_complete
 
+    async def async_wait_for_shutdown(self, timeout: float) -> bool:
+        """Wait a bounded time for an already-started durable shutdown."""
+
+        if self._shutdown_complete:
+            return True
+        task = self._shutdown_task
+        if task is None:
+            return False
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+        except TimeoutError:
+            return False
+        except Exception:
+            # The teardown reports its own errors. Ownership may transfer only
+            # if it nevertheless drained tasks and closed SQLite.
+            _LOGGER.exception("Prior SI Grid Monitor shutdown completed with errors")
+        return self._shutdown_complete
+
     async def _async_stop_impl(self) -> None:
         """Run one best-effort durable shutdown sequence."""
 

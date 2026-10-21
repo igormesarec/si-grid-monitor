@@ -455,6 +455,11 @@ instance before recommending a beta release. Preserve evidence for:
     runtime remains registered; retry unload, reopen the schema-6 archive and
     compare quarter identities/counts to prove no committed row was lost or
     duplicated.
+11. Immediately request setup/reload again while the prior same-entry shutdown is
+    deliberately held open. Confirm setup defers with a clear diagnostic for no
+    longer than the documented bound, does not replace `runtime_data` or create a
+    second SQLite owner, then succeeds after cleanup completes. Repeat with two
+    meters and confirm one entry's shutdown never blocks or replaces the other.
 
 Automated tests do not satisfy this gate. Record the HA version, HACS version,
 browser/app version, integration commit, source update cadence and database
