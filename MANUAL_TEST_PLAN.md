@@ -1,11 +1,33 @@
-# SI Grid Monitor V0.9.0 Beta - Real Home Assistant Test Plan
+# SI Grid Monitor V0.9.5 Beta - Real Home Assistant Test Plan
+
+## V0.9.5 four-source-mode acceptance
+
+1. Upgrade an existing signed SolarEdge entry. Confirm its entry ID, entity unique
+   IDs, polarity, schema-6 row count and historical source epochs are unchanged.
+2. Create a separate-power entry with nonnegative W/kW import and export sensors.
+   Exercise asynchronous updates, unavailable states and an intentionally
+   conflicting simultaneous reading; invalid input must not create energy.
+3. Create an import-only entry. Confirm import demand works while export power,
+   exported quarter energy and export-dependent surplus claims are unavailable.
+4. Create counter mode with a Wh or kWh imported-energy total and no export total.
+   Confirm the derived import-power entity appears without YAML/helper setup and
+   export stays unknown. Reload and restart twice; no duplicate entity may appear.
+5. Add an optional export counter in a second entry. Confirm derived values are
+   interval averages and imported quarter energy is never reduced by export.
+6. Reset a copied/test counter, pause updates across a quarter boundary, restore
+   it, and temporarily make it unavailable. Confirm a new baseline, incomplete
+   quality where allocation is unsupported, and no false confirmed exceedance.
+7. Rename/remove a test source, reload, restore it and reload again. Confirm clear
+   unavailable diagnostics, safe recovery and no deletion of unrelated helpers.
+8. Repeat with two meters and confirm generated entity IDs and archive namespaces
+   stay isolated.
 
 ## V0.8 HISTORY, reconstruction and platform acceptance
 
 1. Back up Home Assistant. Record the pre-update schema-5 row count, database
    size, oldest/newest quarter, config-entry ID and entity unique IDs.
 2. Update through HACS, restart, and hard-refresh desktop and Android WebViews.
-   Confirm versioned `0.9.0` dashboard modules load and no entry reconfiguration
+   Confirm versioned `0.9.5` dashboard modules load and no entry reconfiguration
    is requested. Verify schema 6 and the exact same historical quarter count.
 3. Open HISTORY and test day/week/month/year/custom ranges, B1–B5, quality and
    exceedance filters, sorting and pagination. A valid measured zero must remain

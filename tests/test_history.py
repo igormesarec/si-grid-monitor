@@ -604,3 +604,26 @@ def test_dense_ten_year_history_uses_bounded_pages_and_indexed_sql(tmp_path) -> 
     assert len(report["items"]) == 50
     assert report["summary"]["total"] == count
     assert any("INDEX" in str(row[3]).upper() for row in plan)
+
+
+def test_history_marks_unmeasured_export_unknown_for_import_only_sources(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "import-only-history.db")
+    archive.open()
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    archive.upsert_quarter(
+        _record(
+            start,
+            source_id=(
+                "mode=import_only|entities=sensor.grid_import|"
+                "positive_means_import=True|export_configured=False"
+            ),
+            export_kwh=0.0,
+        )
+    )
+    report = history_report(
+        archive,
+        "meter-a",
+        HistoryQuery(start, start + timedelta(minutes=15)),
+        now_utc=start + timedelta(minutes=15),
+    )
+    assert report["items"][0]["export_known"] is False

@@ -96,6 +96,16 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Entry identity and the authoritative serialized schedule stay unchanged.
         # Archive migration is independently additive in QuarterArchive.
         hass.config_entries.async_update_entry(entry, version=4, minor_version=0)
+    if entry.version < 5:
+        from .const import CONF_SOURCE_MODE, SOURCE_SIGNED_POWER
+
+        data = dict(entry.data)
+        options = dict(entry.options)
+        destination = options if "power_entity" in options else data
+        destination.setdefault(CONF_SOURCE_MODE, SOURCE_SIGNED_POWER)
+        hass.config_entries.async_update_entry(
+            entry, data=data, options=options, version=5, minor_version=0
+        )
     return True
 
 

@@ -11,6 +11,7 @@ from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
 
+from .adapters import AdapterError, ImportOnlyPowerAdapter, SeparatePowerAdapter, SignedPowerAdapter
 from .const import (
     CONF_ALLOW_PROVISIONAL_TARIFF,
     CONF_ASSIGNMENT_ACTION,
@@ -19,6 +20,10 @@ from .const import (
     CONF_ASSIGNMENT_RECORDED_ON,
     CONF_ASSIGNMENT_START_DATE,
     CONF_CONTRACTED_POWER_PERIODS,
+    CONF_EXPORT_ENERGY_ENTITY,
+    CONF_EXPORT_POWER_ENTITY,
+    CONF_IMPORT_ENERGY_ENTITY,
+    CONF_IMPORT_POWER_ENTITY,
     CONF_POSITIVE_MEANS_IMPORT,
     CONF_POWER_ENTITY,
     CONF_RETENTION,
@@ -37,7 +42,6 @@ from .const import (
     DEFAULT_TARGET_KW,
     DOMAIN,
     SMOOTHING_PRESETS,
-    SOURCE_ALIGNED_QUARTER,
     SOURCE_CUMULATIVE_ENERGY,
     SOURCE_IMPORT_ONLY,
     SOURCE_SEPARATE_POWER,
@@ -58,7 +62,6 @@ SOURCE_MODES = (
     SOURCE_SEPARATE_POWER,
     SOURCE_IMPORT_ONLY,
     SOURCE_CUMULATIVE_ENERGY,
-    SOURCE_ALIGNED_QUARTER,
 )
 
 
@@ -124,7 +127,7 @@ def _period_schema(period: ContractedPowerPeriod | None = None) -> vol.Schema:
 class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Six-step V0.4 installation wizard."""
 
-    VERSION = 4
+    VERSION = 5
     MINOR_VERSION = 0
 
     def __init__(self) -> None:
@@ -132,13 +135,9 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._polarity_preview = "No current numeric W/kW reading is available."
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
-        errors: dict[str, str] = {}
         if user_input is not None:
-            if user_input[CONF_SOURCE_MODE] != SOURCE_SIGNED_POWER:
-                errors["base"] = "mode_not_available_v0_4"
-            else:
-                self._values.update(user_input)
-                return await self.async_step_meter()
+            self._values.update(user_input)
+            return await self.async_step_meter()
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
@@ -154,38 +153,103 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     )
                 }
             ),
-            errors=errors,
         )
 
     async def async_step_meter(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         if user_input is not None:
             self._values.update(user_input)
-            state = self.hass.states.get(user_input[CONF_POWER_ENTITY])
-            if state is not None:
-                try:
-                    raw = float(state.state)
-                    unit = str(state.attributes.get("unit_of_measurement", ""))
-                    source_kw = raw / 1000.0 if unit == "W" else raw
-                    normalized = source_kw if user_input[CONF_POSITIVE_MEANS_IMPORT] else -source_kw
-                    direction = "IMPORT" if normalized >= 0 else "EXPORT"
-                    self._polarity_preview = (
-                        f"{raw:g} {unit} becomes {normalized:+.2f} kW {direction}."
-                    )
-                except (TypeError, ValueError):
-                    pass
+            self._polarity_preview = self._source_preview()
             return await self.async_step_polarity_preview()
+        mode = self._values.get(CONF_SOURCE_MODE, SOURCE_SIGNED_POWER)
+
+        def entity() -> selector.EntitySelector:
+            return selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor"))
+
+        fields: dict[Any, Any]
+        if mode == SOURCE_SIGNED_POWER:
+            fields = {
+                vol.Required(CONF_POWER_ENTITY): entity(),
+                vol.Required(CONF_POSITIVE_MEANS_IMPORT, default=True): selector.BooleanSelector(),
+            }
+        elif mode == SOURCE_SEPARATE_POWER:
+            fields = {
+                vol.Required(CONF_IMPORT_POWER_ENTITY): entity(),
+                vol.Required(CONF_EXPORT_POWER_ENTITY): entity(),
+            }
+        elif mode == SOURCE_IMPORT_ONLY:
+            fields = {vol.Required(CONF_IMPORT_POWER_ENTITY): entity()}
+        else:
+            fields = {
+                vol.Required(CONF_IMPORT_ENERGY_ENTITY): entity(),
+                vol.Optional(CONF_EXPORT_ENERGY_ENTITY): entity(),
+            }
         return self.async_show_form(
             step_id="meter",
-            data_schema=vol.Schema(
-                {
-                    vol.Required(CONF_POWER_ENTITY): selector.EntitySelector(
-                        selector.EntitySelectorConfig(domain="sensor")
-                    ),
-                    vol.Required(
-                        CONF_POSITIVE_MEANS_IMPORT, default=True
-                    ): selector.BooleanSelector(),
-                }
-            ),
+            data_schema=vol.Schema(fields),
+        )
+
+    def _source_preview(self) -> str:
+        mode = str(self._values.get(CONF_SOURCE_MODE, SOURCE_SIGNED_POWER))
+        keys = {
+            SOURCE_SIGNED_POWER: (CONF_POWER_ENTITY,),
+            SOURCE_SEPARATE_POWER: (CONF_IMPORT_POWER_ENTITY, CONF_EXPORT_POWER_ENTITY),
+            SOURCE_IMPORT_ONLY: (CONF_IMPORT_POWER_ENTITY,),
+            SOURCE_CUMULATIVE_ENERGY: (CONF_IMPORT_ENERGY_ENTITY, CONF_EXPORT_ENERGY_ENTITY),
+        }[mode]
+        readings: list[str] = []
+        states: list[Any] = []
+        for key in keys:
+            entity_id = self._values.get(key)
+            if not entity_id:
+                continue
+            state = self.hass.states.get(entity_id)
+            if state is not None:
+                states.append(state)
+                readings.append(
+                    f"{entity_id}: {state.state} "
+                    f"{state.attributes.get('unit_of_measurement', '')}".strip()
+                )
+        kind = "derived interval-average" if mode == SOURCE_CUMULATIVE_ENERGY else "direct power"
+        export_unknown = mode == SOURCE_IMPORT_ONLY or (
+            mode == SOURCE_CUMULATIVE_ENERGY and not self._values.get(CONF_EXPORT_ENERGY_ENTITY)
+        )
+        export = "export unknown" if export_unknown else "export measured"
+        normalized = ""
+        try:
+            if mode == SOURCE_SIGNED_POWER and states:
+                sample = SignedPowerAdapter(
+                    positive_means_import=bool(self._values[CONF_POSITIVE_MEANS_IMPORT])
+                ).normalize(
+                    states[0].state,
+                    str(states[0].attributes.get("unit_of_measurement", "")),
+                )
+            elif mode == SOURCE_SEPARATE_POWER and len(states) == 2:
+                sample = SeparatePowerAdapter().normalize(
+                    states[0].state,
+                    str(states[0].attributes.get("unit_of_measurement", "")),
+                    states[1].state,
+                    str(states[1].attributes.get("unit_of_measurement", "")),
+                )
+            elif mode == SOURCE_IMPORT_ONLY and states:
+                sample = ImportOnlyPowerAdapter().normalize(
+                    states[0].state,
+                    str(states[0].attributes.get("unit_of_measurement", "")),
+                )
+            else:
+                sample = None
+            if sample is not None:
+                direction = (
+                    "IMPORT"
+                    if sample.signed_kw > 0
+                    else "EXPORT"
+                    if sample.signed_kw < 0
+                    else "ZERO"
+                )
+                normalized = f" Normalized: {sample.signed_kw:+.3f} kW {direction}."
+        except (AdapterError, TypeError, ValueError):
+            normalized = " Normalized preview unavailable."
+        return (
+            f"{mode}: {kind}; {export}. " + ("; ".join(readings) or "No live reading.") + normalized
         )
 
     async def async_step_polarity_preview(
@@ -326,8 +390,20 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             ).to_json()
             self._values.setdefault(CONF_SIMULATION_ENABLED, False)
             self._values.setdefault(CONF_SIMULATION_TARGET_KW, self._values[CONF_TARGET_KW])
-            entity_id = str(self._values[CONF_POWER_ENTITY])
-            await self.async_set_unique_id(f"signed:{entity_id}")
+            mode = str(self._values[CONF_SOURCE_MODE])
+            source_ids = [
+                str(self._values[key])
+                for key in (
+                    CONF_POWER_ENTITY,
+                    CONF_IMPORT_POWER_ENTITY,
+                    CONF_EXPORT_POWER_ENTITY,
+                    CONF_IMPORT_ENERGY_ENTITY,
+                    CONF_EXPORT_ENERGY_ENTITY,
+                )
+                if self._values.get(key)
+            ]
+            entity_id = ", ".join(source_ids)
+            await self.async_set_unique_id(f"{mode}:{'|'.join(source_ids)}")
             self._abort_if_unique_id_configured()
             return self.async_create_entry(
                 title=f"SI Grid Monitor ({entity_id})", data=self._values
@@ -338,7 +414,17 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 {vol.Required("confirm", default=True): selector.BooleanSelector()}
             ),
             description_placeholders={
-                "entity": str(self._values.get(CONF_POWER_ENTITY, "")),
+                "entity": ", ".join(
+                    str(self._values[key])
+                    for key in (
+                        CONF_POWER_ENTITY,
+                        CONF_IMPORT_POWER_ENTITY,
+                        CONF_EXPORT_POWER_ENTITY,
+                        CONF_IMPORT_ENERGY_ENTITY,
+                        CONF_EXPORT_ENERGY_ENTITY,
+                    )
+                    if self._values.get(key)
+                ),
                 "dates": (
                     f"{self._values.get(CONF_ASSIGNMENT_START_DATE)} - "
                     f"{self._values.get(CONF_ASSIGNMENT_END_DATE)}"
@@ -415,17 +501,55 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
                 )
             ),
         )
+        mode = str(current.get(CONF_SOURCE_MODE, SOURCE_SIGNED_POWER))
+
+        def entity() -> selector.EntitySelector:
+            return selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor"))
+
+        source_fields: dict[Any, Any]
+        if mode == SOURCE_SIGNED_POWER:
+            source_fields = {
+                vol.Required(CONF_POWER_ENTITY, default=current[CONF_POWER_ENTITY]): entity(),
+                vol.Required(
+                    CONF_POSITIVE_MEANS_IMPORT,
+                    default=bool(current.get(CONF_POSITIVE_MEANS_IMPORT, True)),
+                ): selector.BooleanSelector(),
+            }
+        elif mode == SOURCE_SEPARATE_POWER:
+            source_fields = {
+                vol.Required(
+                    CONF_IMPORT_POWER_ENTITY, default=current[CONF_IMPORT_POWER_ENTITY]
+                ): entity(),
+                vol.Required(
+                    CONF_EXPORT_POWER_ENTITY, default=current[CONF_EXPORT_POWER_ENTITY]
+                ): entity(),
+            }
+        elif mode == SOURCE_IMPORT_ONLY:
+            source_fields = {
+                vol.Required(
+                    CONF_IMPORT_POWER_ENTITY, default=current[CONF_IMPORT_POWER_ENTITY]
+                ): entity()
+            }
+        else:
+            export_energy_key = (
+                vol.Optional(
+                    CONF_EXPORT_ENERGY_ENTITY,
+                    default=current[CONF_EXPORT_ENERGY_ENTITY],
+                )
+                if current.get(CONF_EXPORT_ENERGY_ENTITY)
+                else vol.Optional(CONF_EXPORT_ENERGY_ENTITY)
+            )
+            source_fields = {
+                vol.Required(
+                    CONF_IMPORT_ENERGY_ENTITY, default=current[CONF_IMPORT_ENERGY_ENTITY]
+                ): entity(),
+                export_energy_key: entity(),
+            }
         return self.async_show_form(
             step_id="settings",
             data_schema=vol.Schema(
                 {
-                    vol.Required(
-                        CONF_POWER_ENTITY, default=current[CONF_POWER_ENTITY]
-                    ): selector.EntitySelector(selector.EntitySelectorConfig(domain="sensor")),
-                    vol.Required(
-                        CONF_POSITIVE_MEANS_IMPORT,
-                        default=bool(current[CONF_POSITIVE_MEANS_IMPORT]),
-                    ): selector.BooleanSelector(),
+                    **source_fields,
                     margin: margin_selector,
                     smoothing: smoothing_selector,
                     horizon: horizon_selector,

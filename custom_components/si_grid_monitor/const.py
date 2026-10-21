@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "si_grid_monitor"
-VERSION = "0.9.0"
+VERSION = "0.9.5"
 PANEL_URL_PATH = "si-grid-monitor"
 PANEL_TITLE = "SI Grid Monitor"
 PANEL_ICON = "mdi:transmission-tower"
@@ -11,6 +11,10 @@ FRONTEND_URL = "/si_grid_monitor_frontend"
 
 CONF_SOURCE_MODE = "source_mode"
 CONF_POWER_ENTITY = "power_entity"
+CONF_IMPORT_POWER_ENTITY = "import_power_entity"
+CONF_EXPORT_POWER_ENTITY = "export_power_entity"
+CONF_IMPORT_ENERGY_ENTITY = "import_energy_entity"
+CONF_EXPORT_ENERGY_ENTITY = "export_energy_entity"
 CONF_POSITIVE_MEANS_IMPORT = "positive_means_import"
 CONF_TARGET_KW = "target_kw"
 CONF_TARGET_MODE = "target_mode"
@@ -38,7 +42,6 @@ SOURCE_SIGNED_POWER = "signed_power"
 SOURCE_SEPARATE_POWER = "separate_power"
 SOURCE_IMPORT_ONLY = "import_only"
 SOURCE_CUMULATIVE_ENERGY = "cumulative_energy"
-SOURCE_ALIGNED_QUARTER = "aligned_quarter"
 
 DEFAULT_TARGET_KW = 4.8
 DEFAULT_SAFETY_MARGIN_KW = 0.0

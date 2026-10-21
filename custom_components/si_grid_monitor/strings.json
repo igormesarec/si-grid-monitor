@@ -5,37 +5,44 @@
       "already_configured": "This source is already configured."
     },
     "error": {
-      "mode_not_available_v0_4": "This source mode is not implemented in V0.9. Select one signed live grid-power sensor.",
       "invalid_contracted_power_periods": "Contracted-power assignments are invalid, overlapping, or have an end date before the start date."
     },
     "step": {
       "user": {
         "title": "Meter source",
-        "description": "V0.9 fully supports a signed W or kW grid-power sensor. Other source designs remain visibly unavailable.",
+        "description": "Choose one of the four V0.9.5 source designs. Every mode feeds the same import-only billing engine.",
         "data": {
           "source_mode": "Source mode"
         },
         "data_description": {
-          "source_mode": "Choose the input type. In V0.9 only a single signed power sensor (W or kW) is operational; other modes cannot yet be configured."
+          "source_mode": "Choose signed power, separate import/export power, import-only power, or cumulative energy counters."
         }
       },
       "meter": {
-        "title": "Source polarity",
-        "description": "Choose the W or kW sensor and how its sign works. Internally, positive always means import and negative always means export. You can change this later.",
+        "title": "Measurement source",
+        "description": "Choose the sensor fields shown for this source mode. Power accepts W/kW; cumulative energy accepts Wh/kWh.",
         "data": {
           "power_entity": "Grid power sensor",
-          "positive_means_import": "Positive source values mean IMPORT"
+          "positive_means_import": "Positive source values mean IMPORT",
+          "import_power_entity": "Import power sensor",
+          "export_power_entity": "Export power sensor",
+          "import_energy_entity": "Cumulative imported-energy sensor",
+          "export_energy_entity": "Cumulative exported-energy sensor (optional)"
         },
         "data_description": {
           "power_entity": "Select the grid-connection power sensor (W or kW), not total house consumption or PV production. Current readings will be normalized into import (+) and export (−).",
-          "positive_means_import": "Enable if a positive raw sensor reading means electricity imported from the grid. Disable if positive means grid export, as with some SolarEdge sensors. Review the live polarity preview."
+          "positive_means_import": "Enable if a positive raw sensor reading means electricity imported from the grid. Disable if positive means grid export, as with some SolarEdge sensors. Review the live polarity preview.",
+          "import_power_entity": "A nonnegative W or kW grid-import reading.",
+          "export_power_entity": "A nonnegative W or kW grid-export reading.",
+          "import_energy_entity": "A monotonically increasing Wh or kWh total imported-energy counter.",
+          "export_energy_entity": "Optional monotonically increasing Wh or kWh exported-energy counter. If omitted, export remains unknown."
         }
       },
       "polarity_preview": {
-        "title": "Check normalized direction",
-        "description": "{preview} If the direction is wrong, go back and reverse the polarity choice.",
+        "title": "Check normalized source",
+        "description": "{preview} Review direction, units, measurement type and unavailable capabilities before continuing.",
         "data": {
-          "confirm": "The normalized direction is correct"
+          "confirm": "The normalized source is correct"
         },
         "data_description": {
           "confirm": "Confirm the preview and proceed. If import appears as export, return to the polarity field; the confirmation does not change sensor data."
@@ -145,6 +152,10 @@
         "data": {
           "power_entity": "Grid power sensor",
           "positive_means_import": "Positive source values mean import",
+          "import_power_entity": "Import power sensor",
+          "export_power_entity": "Export power sensor",
+          "import_energy_entity": "Cumulative imported-energy sensor",
+          "export_energy_entity": "Cumulative exported-energy sensor (optional)",
           "allow_provisional_tariff": "Allow provisional continuation for unverified years",
           "safety_margin_kw": "Safety margin",
           "smoothing_seconds": "Forecast smoothing window",
@@ -156,6 +167,10 @@
         "data_description": {
           "power_entity": "Select the grid-connection power sensor (W or kW), not total house consumption or PV production. Current readings will be normalized into import (+) and export (−).",
           "positive_means_import": "Enable if a positive raw sensor reading means electricity imported from the grid. Disable if positive means grid export, as with some SolarEdge sensors. Review the live polarity preview.",
+          "import_power_entity": "Nonnegative W/kW import source for this existing mode.",
+          "export_power_entity": "Nonnegative W/kW export source for this existing mode.",
+          "import_energy_entity": "Wh/kWh total or total-increasing imported-energy counter.",
+          "export_energy_entity": "Optional Wh/kWh total or total-increasing exported-energy counter.",
           "allow_provisional_tariff": "Opt in to explicitly provisional continuation of the 2027 block pattern for unverified years 2028–2030. Without opt-in no future block/limit is claimed as confirmed.",
           "safety_margin_kw": "Optional planning buffer (kW) subtracted from the agreed limit when calculating operational headroom. Default 0.00 kW; does not change the contract.",
           "smoothing_seconds": "Averages recent signed power for the end-of-quarter forecast. 30 s reacts faster; 120 s is steadier but slower to follow changes.",
@@ -242,11 +257,10 @@
   "selector": {
     "source_mode": {
       "options": {
-        "signed_power": "One signed live grid-power sensor (V0.9)",
-        "separate_power": "Separate live import/export sensors (planned)",
-        "import_only": "Live import-only sensor (planned)",
-        "cumulative_energy": "Cumulative energy counters (planned)",
-        "aligned_quarter": "Aligned completed quarter records (planned)"
+        "signed_power": "Signed live power",
+        "separate_power": "Separate import/export power",
+        "import_only": "Import-only power",
+        "cumulative_energy": "Cumulative energy counters"
       }
     },
     "target_mode": {
@@ -258,6 +272,15 @@
   },
   "entity": {
     "sensor": {
+      "source_mode": {
+        "name": "Source mode"
+      },
+      "derived_import_power": {
+        "name": "Counter-derived import power"
+      },
+      "derived_export_power": {
+        "name": "Counter-derived export power"
+      },
       "current_power": {
         "name": "Current signed grid power"
       },

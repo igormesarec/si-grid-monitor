@@ -5,37 +5,44 @@
       "already_configured": "Ta vir je že nastavljen."
     },
     "error": {
-      "mode_not_available_v0_4": "Ta način vira v V0.9 še ni izveden. Izberite en podpisan senzor trenutne moči omrežja.",
       "invalid_contracted_power_periods": "Obdobja dogovorjene moči niso veljavna, se prekrivajo ali imajo končni datum pred začetnim."
     },
     "step": {
       "user": {
         "title": "Vir meritev",
-        "description": "V0.9 v celoti podpira podpisan senzor moči v W ali kW. Drugi načini so še nedostopni.",
+        "description": "Izberite enega od štirih načinov vira V0.9.5. Vsi uporabljajo isti obračunski mehanizem samo za uvoz.",
         "data": {
           "source_mode": "Način vira"
         },
         "data_description": {
-          "source_mode": "Izberite vrsto vira. V0.9 deluje le en senzor podpisane moči (W ali kW); drugi načini še niso na voljo."
+          "source_mode": "Izberite podpisano moč, ločeno moč uvoza/izvoza, samo uvozno moč ali kumulativne števce energije."
         }
       },
       "meter": {
-        "title": "Predznak vira",
-        "description": "Izberite senzor v W ali kW in pomen predznaka. Interno je uvoz vedno pozitiven, izvoz pa negativen.",
+        "title": "Vir meritev",
+        "description": "Izberite senzorje za izbrani način. Moč je lahko v W/kW, kumulativna energija pa v Wh/kWh.",
         "data": {
           "power_entity": "Senzor moči omrežja",
-          "positive_means_import": "Pozitivna vrednost vira pomeni UVOZ"
+          "positive_means_import": "Pozitivna vrednost vira pomeni UVOZ",
+          "import_power_entity": "Senzor uvozne moči",
+          "export_power_entity": "Senzor izvozne moči",
+          "import_energy_entity": "Kumulativni števec uvožene energije",
+          "export_energy_entity": "Kumulativni števec izvožene energije (neobvezno)"
         },
         "data_description": {
           "power_entity": "Izberite senzor moči na priključku v omrežje (W ali kW), ne skupne porabe hiše ali proizvodnje elektrarne. Interno je uvoz pozitiven, izvoz negativen.",
-          "positive_means_import": "Vključite, če pozitivna surova vrednost pomeni uvoz iz omrežja. Izključite, če pozitivna vrednost pomeni izvoz (npr. nekateri senzorji SolarEdge). Preverite prikaz smeri."
+          "positive_means_import": "Vključite, če pozitivna surova vrednost pomeni uvoz iz omrežja. Izključite, če pozitivna vrednost pomeni izvoz (npr. nekateri senzorji SolarEdge). Preverite prikaz smeri.",
+          "import_power_entity": "Nenegativna meritev uvoza iz omrežja v W ali kW.",
+          "export_power_entity": "Nenegativna meritev izvoza v omrežje v W ali kW.",
+          "import_energy_entity": "Monotono naraščajoči števec skupne uvožene energije v Wh ali kWh.",
+          "export_energy_entity": "Neobvezni števec izvožene energije v Wh ali kWh. Brez njega izvoz ostane neznan."
         }
       },
       "polarity_preview": {
-        "title": "Preverite normalizirano smer",
-        "description": "{preview} Če je smer napačna, se vrnite in obrnite izbiro predznaka.",
+        "title": "Preverite normalizirani vir",
+        "description": "{preview} Pred nadaljevanjem preverite smer, enote, vrsto meritve in nedostopne zmožnosti.",
         "data": {
-          "confirm": "Normalizirana smer je pravilna"
+          "confirm": "Normalizirani vir je pravilen"
         },
         "data_description": {
           "confirm": "Potrdite prikaz smeri. Če je uvoz prikazan kot izvoz, se vrnite in popravite predznak; potrditev ne spreminja meritev."
@@ -145,6 +152,10 @@
         "data": {
           "power_entity": "Senzor moči omrežja",
           "positive_means_import": "Pozitivna vrednost vira pomeni uvoz",
+          "import_power_entity": "Senzor uvozne moči",
+          "export_power_entity": "Senzor izvozne moči",
+          "import_energy_entity": "Kumulativni števec uvožene energije",
+          "export_energy_entity": "Kumulativni števec izvožene energije (neobvezno)",
           "allow_provisional_tariff": "Dovoli začasno nadaljevanje za nepotrjena leta",
           "safety_margin_kw": "Varnostna rezerva",
           "smoothing_seconds": "Okno glajenja napovedi",
@@ -156,6 +167,10 @@
         "data_description": {
           "power_entity": "Izberite senzor moči na priključku v omrežje (W ali kW), ne skupne porabe hiše ali proizvodnje elektrarne. Interno je uvoz pozitiven, izvoz negativen.",
           "positive_means_import": "Vključite, če pozitivna surova vrednost pomeni uvoz iz omrežja. Izključite, če pozitivna vrednost pomeni izvoz (npr. nekateri senzorji SolarEdge). Preverite prikaz smeri.",
+          "import_power_entity": "Nenegativni vir uvozne moči v W/kW za ta obstoječi način.",
+          "export_power_entity": "Nenegativni vir izvozne moči v W/kW za ta obstoječi način.",
+          "import_energy_entity": "Števec skupne oziroma naraščajoče uvožene energije v Wh/kWh.",
+          "export_energy_entity": "Neobvezni števec skupne oziroma naraščajoče izvožene energije v Wh/kWh.",
           "allow_provisional_tariff": "Izrecno dovolite začasno nadaljevanje pravil 2027 za še nepotrjena leta 2028–2030. Brez potrditve se bloki ne prikazujejo kot uradni.",
           "safety_margin_kw": "Neobvezna rezerva (kW), odšteta od dogovorjene moči pri načrtovanju porabe. Privzeto 0,00 kW; pogodbe ne spreminja.",
           "smoothing_seconds": "Povprečenje zadnjih meritev za napoved ob koncu 15-minutnega intervala. 30 s se hitreje odziva, 120 s je bolj mirno.",
@@ -242,11 +257,10 @@
   "selector": {
     "source_mode": {
       "options": {
-        "signed_power": "En podpisan senzor trenutne moči (V0.9)",
-        "separate_power": "Ločena senzorja uvoza/izvoza (načrtovano)",
-        "import_only": "Senzor samo uvozne moči (načrtovano)",
-        "cumulative_energy": "Kumulativni števci energije (načrtovano)",
-        "aligned_quarter": "Poravnani zaključeni 15-minutni zapisi (načrtovano)"
+        "signed_power": "Podpisana trenutna moč",
+        "separate_power": "Ločena moč uvoza/izvoza",
+        "import_only": "Samo uvozna moč",
+        "cumulative_energy": "Kumulativni števci energije"
       }
     },
     "target_mode": {
@@ -258,6 +272,15 @@
   },
   "entity": {
     "sensor": {
+      "source_mode": {
+        "name": "Način vira"
+      },
+      "derived_import_power": {
+        "name": "Iz števca izpeljana uvozna moč"
+      },
+      "derived_export_power": {
+        "name": "Iz števca izpeljana izvozna moč"
+      },
       "current_power": {
         "name": "Trenutna podpisana moč omrežja"
       },

@@ -46,11 +46,16 @@ class QuarterBounds:
 class PowerSample:
     timestamp: datetime
     signed_kw: float
+    import_kw: float | None = None
+    export_kw: float | None = None
 
     def __post_init__(self) -> None:
         _require_aware(self.timestamp, "timestamp")
         if not math.isfinite(self.signed_kw):
             raise CalculationError("signed_kw must be finite")
+        for value, label in ((self.import_kw, "import_kw"), (self.export_kw, "export_kw")):
+            if value is not None and (not math.isfinite(value) or value < 0):
+                raise CalculationError(f"{label} must be finite and nonnegative")
 
     @property
     def timestamp_utc(self) -> datetime:
@@ -394,11 +399,18 @@ class TimeWeightedBuffer:
 class FixedQuarterEngine:
     """Integrate signed samples into fixed import/export quarters."""
 
-    def __init__(self, *, stale_after_seconds: float = 60.0, source_id: str = "live") -> None:
+    def __init__(
+        self,
+        *,
+        stale_after_seconds: float = 60.0,
+        source_id: str = "live",
+        completed_quality: DataQuality = DataQuality.RECONSTRUCTED,
+    ) -> None:
         if stale_after_seconds <= 0:
             raise CalculationError("stale_after_seconds must be positive")
         self.stale_after = timedelta(seconds=stale_after_seconds)
         self.source_id = source_id
+        self.completed_quality = completed_quality
         self.buffer = TimeWeightedBuffer(stale_after_seconds=stale_after_seconds)
         self.bounds: QuarterBounds | None = None
         self.cursor_utc: datetime | None = None
@@ -408,6 +420,9 @@ class FixedQuarterEngine:
         self.coverage_seconds = 0.0
         self.gap_seconds = 0.0
         self.completed: list[CompletedQuarter] = []
+        self._force_incomplete = False
+        self._unresolved_interval_active = False
+        self._interval_average_active = False
 
     def checkpoint(self) -> dict[str, object] | None:
         """Serialize durable current-quarter state without smoothing history."""
@@ -425,10 +440,17 @@ class FixedQuarterEngine:
             "last_signed_kw": (
                 self.last_sample.signed_kw if self.last_sample is not None else None
             ),
+            "last_import_kw": (
+                self.last_sample.import_kw if self.last_sample is not None else None
+            ),
+            "last_export_kw": (
+                self.last_sample.export_kw if self.last_sample is not None else None
+            ),
             "import_kwh": self.import_kwh,
             "export_kwh": self.export_kwh,
             "coverage_seconds": self.coverage_seconds,
             "gap_seconds": self.gap_seconds,
+            "force_incomplete": self._force_incomplete,
         }
 
     def restore_checkpoint(self, payload: dict[str, object]) -> bool:
@@ -447,7 +469,20 @@ class FixedQuarterEngine:
             last_utc = payload.get("last_sample_utc")
             last_kw = payload.get("last_signed_kw")
             last_sample = (
-                PowerSample(datetime.fromisoformat(str(last_utc)), float(last_kw))
+                PowerSample(
+                    datetime.fromisoformat(str(last_utc)),
+                    float(last_kw),
+                    (
+                        float(payload["last_import_kw"])
+                        if payload.get("last_import_kw") is not None
+                        else None
+                    ),
+                    (
+                        float(payload["last_export_kw"])
+                        if payload.get("last_export_kw") is not None
+                        else None
+                    ),
+                )
                 if last_utc is not None and last_kw is not None
                 else None
             )
@@ -458,6 +493,7 @@ class FixedQuarterEngine:
             self.export_kwh = float(payload["export_kwh"])
             self.coverage_seconds = float(payload["coverage_seconds"])
             self.gap_seconds = float(payload["gap_seconds"])
+            self._force_incomplete = bool(payload.get("force_incomplete", False))
         except (KeyError, TypeError, ValueError, CalculationError):
             return False
         # Smoothing samples are deliberately not invented after a restart.
@@ -467,7 +503,9 @@ class FixedQuarterEngine:
         return True
 
     def ingest(self, sample: PowerSample) -> tuple[CompletedQuarter, ...]:
-        sample = PowerSample(sample.timestamp_utc, sample.signed_kw)
+        sample = PowerSample(
+            sample.timestamp_utc, sample.signed_kw, sample.import_kw, sample.export_kw
+        )
         before = len(self.completed)
         if self.bounds is None:
             self._initialize(sample.timestamp_utc)
@@ -480,6 +518,49 @@ class FixedQuarterEngine:
         self.buffer.add(sample)
         self.last_sample = sample
         self.cursor_utc = sample.timestamp_utc
+        return tuple(self.completed[before:])
+
+    def ingest_interval_average(
+        self,
+        *,
+        start: datetime,
+        end: datetime,
+        signed_kw: float,
+        import_kw: float,
+        export_kw: float | None,
+    ) -> tuple[CompletedQuarter, ...]:
+        """Integrate one evidenced interval average without holding it into the future."""
+
+        _require_aware(start, "start")
+        _require_aware(end, "end")
+        start_utc = start.astimezone(UTC)
+        end_utc = end.astimezone(UTC)
+        if end_utc <= start_utc:
+            raise CalculationError("counter interval end must be after start")
+        if self.cursor_utc is not None and start_utc < self.cursor_utc:
+            raise CalculationError("counter intervals must not overlap or move backwards")
+        before = len(self.completed)
+        self._unresolved_interval_active = quarter_bounds(start_utc).end_utc < end_utc
+        if self.bounds is None:
+            self._initialize(start_utc)
+            self.gap_seconds = (start_utc - self.bounds.start_utc).total_seconds()
+        elif self.cursor_utc is not None and start_utc > self.cursor_utc:
+            self.last_sample = None
+            self.advance(start_utc)
+        self.cursor_utc = start_utc
+        self.last_sample = PowerSample(
+            start_utc,
+            signed_kw,
+            import_kw=import_kw,
+            export_kw=export_kw,
+        )
+        self._interval_average_active = True
+        self.advance(end_utc)
+        # A counter delta describes the interval that just ended. It is not an
+        # instantaneous reading that may safely be held after ``end``.
+        self.last_sample = None
+        self._interval_average_active = False
+        self._unresolved_interval_active = False
         return tuple(self.completed[before:])
 
     def advance(self, instant: datetime) -> tuple[CompletedQuarter, ...]:
@@ -539,7 +620,9 @@ class FixedQuarterEngine:
         )
         elapsed_hours = elapsed_seconds / 3600.0
         quality = (
-            DataQuality.RECONSTRUCTED if self.gap_seconds <= EPSILON else DataQuality.INCOMPLETE
+            self.completed_quality
+            if self.gap_seconds <= EPSILON and not self._force_incomplete
+            else DataQuality.INCOMPLETE
         )
         return EngineSnapshot(
             bounds=self.bounds,
@@ -574,6 +657,7 @@ class FixedQuarterEngine:
         self.export_kwh = 0.0
         self.coverage_seconds = 0.0
         self.gap_seconds = 0.0
+        self._force_incomplete = self._unresolved_interval_active
 
     def _integrate_segment(self, start: datetime, end: datetime) -> None:
         if end <= start:
@@ -581,13 +665,27 @@ class FixedQuarterEngine:
         if self.last_sample is None:
             self.gap_seconds += (end - start).total_seconds()
             return
-        valid_until = self.last_sample.timestamp_utc + self.stale_after
+        valid_until = (
+            end
+            if self._interval_average_active
+            else self.last_sample.timestamp_utc + self.stale_after
+        )
         covered_end = min(end, valid_until)
         if covered_end > start:
             seconds = (covered_end - start).total_seconds()
             hours = seconds / 3600.0
-            self.import_kwh += max(0.0, self.last_sample.signed_kw) * hours
-            self.export_kwh += max(0.0, -self.last_sample.signed_kw) * hours
+            import_kw = (
+                self.last_sample.import_kw
+                if self.last_sample.import_kw is not None
+                else max(0.0, self.last_sample.signed_kw)
+            )
+            export_kw = (
+                self.last_sample.export_kw
+                if self.last_sample.export_kw is not None
+                else max(0.0, -self.last_sample.signed_kw)
+            )
+            self.import_kwh += import_kw * hours
+            self.export_kwh += export_kw * hours
             self.coverage_seconds += seconds
         gap_start = max(start, covered_end)
         if end > gap_start:
@@ -597,8 +695,10 @@ class FixedQuarterEngine:
         if self.bounds is None:
             raise CalculationError("cannot finalize an uninitialized quarter")
         quality = (
-            DataQuality.RECONSTRUCTED
-            if self.coverage_seconds >= QUARTER_SECONDS - EPSILON and self.gap_seconds <= EPSILON
+            self.completed_quality
+            if self.coverage_seconds >= QUARTER_SECONDS - EPSILON
+            and self.gap_seconds <= EPSILON
+            and not self._force_incomplete
             else DataQuality.INCOMPLETE
         )
         signed_net_kwh = self.import_kwh - self.export_kwh

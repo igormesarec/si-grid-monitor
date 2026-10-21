@@ -118,6 +118,10 @@ def history_report(
         item["detailed_trace_available"] = False
         item["measured_peak_kw"] = None
         item["measured_peak_evidence"] = "not_archived"
+        source_id = str(item.get("source_id") or "")
+        item["export_known"] = not (
+            "mode=import_only" in source_id or "export_configured=False" in source_id
+        )
         items.append(item)
     return {
         "range": {"start_utc": start, "end_utc": end},

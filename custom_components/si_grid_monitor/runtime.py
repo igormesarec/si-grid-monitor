@@ -19,7 +19,12 @@ from homeassistant.helpers.event import (
 )
 from homeassistant.util import dt as dt_util
 
-from .adapters import AdapterError, SignedPowerAdapter
+from .adapters import (
+    AdapterError,
+    ImportOnlyPowerAdapter,
+    SeparatePowerAdapter,
+    SignedPowerAdapter,
+)
 from .archive import (
     ArchivedQuarterSnapshot,
     ConfigurationEpoch,
@@ -37,6 +42,10 @@ from .backfill import (
 from .const import (
     CONF_ALLOW_PROVISIONAL_TARIFF,
     CONF_CONTRACTED_POWER_PERIODS,
+    CONF_EXPORT_ENERGY_ENTITY,
+    CONF_EXPORT_POWER_ENTITY,
+    CONF_IMPORT_ENERGY_ENTITY,
+    CONF_IMPORT_POWER_ENTITY,
     CONF_POSITIVE_MEANS_IMPORT,
     CONF_POWER_ENTITY,
     CONF_RETENTION,
@@ -44,6 +53,7 @@ from .const import (
     CONF_SIMULATION_ENABLED,
     CONF_SIMULATION_TARGET_KW,
     CONF_SMOOTHING_SECONDS,
+    CONF_SOURCE_MODE,
     CONF_SUSTAINED_HORIZON_MINUTES,
     CONF_TARGET_B1_KW,
     CONF_TARGET_B2_KW,
@@ -56,6 +66,10 @@ from .const import (
     DEFAULT_SMOOTHING_SECONDS,
     DEFAULT_STALE_AFTER_SECONDS,
     DEFAULT_SUSTAINED_HORIZON_MINUTES,
+    SOURCE_CUMULATIVE_ENERGY,
+    SOURCE_IMPORT_ONLY,
+    SOURCE_SEPARATE_POWER,
+    SOURCE_SIGNED_POWER,
 )
 from .contracted_power import (
     ContractedPowerPeriod,
@@ -73,6 +87,7 @@ from .engine import (
     quarter_bounds,
 )
 from .reconstruction import audit_summary, plan_reconstruction
+from .sources import CAPABILITIES, CounterPowerConverter, CounterReading
 from .sustained import SustainedForecast, calculate_sustained_forecast
 from .tariffs import SlovenianTariffCalendar, TariffClassification
 from .tariffs.models import RuleStatus
@@ -90,15 +105,45 @@ class GridMonitorRuntime:
         self.hass = hass
         self.entry = entry
         configured = {**entry.data, **entry.options}
-        self.power_entity = str(configured[CONF_POWER_ENTITY])
-        self.positive_means_import = bool(configured[CONF_POSITIVE_MEANS_IMPORT])
+        self.source_mode = str(configured.get(CONF_SOURCE_MODE, SOURCE_SIGNED_POWER))
+        if self.source_mode not in CAPABILITIES:
+            self.source_mode = SOURCE_SIGNED_POWER
+        self.power_entity = str(
+            configured.get(CONF_POWER_ENTITY)
+            or configured.get(CONF_IMPORT_POWER_ENTITY)
+            or configured.get(CONF_IMPORT_ENERGY_ENTITY)
+            or ""
+        )
+        self.import_power_entity = _optional_entity(configured.get(CONF_IMPORT_POWER_ENTITY))
+        self.export_power_entity = _optional_entity(configured.get(CONF_EXPORT_POWER_ENTITY))
+        self.import_energy_entity = _optional_entity(configured.get(CONF_IMPORT_ENERGY_ENTITY))
+        self.export_energy_entity = _optional_entity(configured.get(CONF_EXPORT_ENERGY_ENTITY))
+        self.positive_means_import = bool(configured.get(CONF_POSITIVE_MEANS_IMPORT, True))
         self.adapter = SignedPowerAdapter(positive_means_import=self.positive_means_import)
+        if self.source_mode == SOURCE_SEPARATE_POWER:
+            self.adapter = SeparatePowerAdapter()
+        elif self.source_mode == SOURCE_IMPORT_ONLY:
+            self.adapter = ImportOnlyPowerAdapter()
+        self.counter_converter = CounterPowerConverter()
+        self.derived_import_power_kw: float | None = None
+        self.derived_export_power_kw: float | None = None
+        self.derived_timestamp_utc: datetime | None = None
+        self.source_available = False
+        self.source_status_reason: str | None = "waiting_for_valid_measurement"
+        source_entities = ",".join(self.source_entities)
         self.source_semantics_id = (
-            f"{self.power_entity}|positive_means_import={self.positive_means_import}"
+            f"mode={self.source_mode}|entities={source_entities}|"
+            f"positive_means_import={self.positive_means_import}|"
+            f"export_configured={self.export_known_by_design}"
         )
         self.engine = FixedQuarterEngine(
             stale_after_seconds=DEFAULT_STALE_AFTER_SECONDS,
             source_id=self.source_semantics_id,
+            completed_quality=(
+                DataQuality.COUNTER_DERIVED
+                if self.source_mode == SOURCE_CUMULATIVE_ENERGY
+                else DataQuality.RECONSTRUCTED
+            ),
         )
         self.snapshot: EngineSnapshot | None = None
         self.sustained_forecast: SustainedForecast | None = None
@@ -138,6 +183,54 @@ class GridMonitorRuntime:
         self._reconstruction_plans: dict[str, dict[str, object]] = {}
         self._shutdown_task: asyncio.Task[None] | None = None
         self._shutdown_complete = False
+
+    @property
+    def source_entities(self) -> tuple[str, ...]:
+        """Return every configured HA source entity in stable order."""
+
+        if self.source_mode == SOURCE_SIGNED_POWER:
+            values = (self.power_entity,)
+        elif self.source_mode == SOURCE_SEPARATE_POWER:
+            values = (self.import_power_entity, self.export_power_entity)
+        elif self.source_mode == SOURCE_IMPORT_ONLY:
+            values = (self.import_power_entity,)
+        else:
+            values = (self.import_energy_entity, self.export_energy_entity)
+        return tuple(value for value in values if value)
+
+    @property
+    def export_known(self) -> bool:
+        """Return whether export is measured by this source design."""
+
+        if self.source_mode == SOURCE_IMPORT_ONLY:
+            return False
+        if self.source_mode == SOURCE_CUMULATIVE_ENERGY:
+            return (
+                self.export_energy_entity is not None and self.derived_export_power_kw is not None
+            )
+        return True
+
+    @property
+    def export_known_by_design(self) -> bool:
+        """Return whether this configuration contains an export channel."""
+
+        if self.source_mode == SOURCE_IMPORT_ONLY:
+            return False
+        if self.source_mode == SOURCE_CUMULATIVE_ENERGY:
+            return self.export_energy_entity is not None
+        return True
+
+    @property
+    def instantaneous_power_known(self) -> bool:
+        return self.source_mode != SOURCE_CUMULATIVE_ENERGY
+
+    @property
+    def source_measurement_timestamp_utc(self) -> datetime | None:
+        if self.source_mode == SOURCE_CUMULATIVE_ENERGY:
+            return self.derived_timestamp_utc
+        return (
+            self.engine.last_sample.timestamp_utc if self.engine.last_sample is not None else None
+        )
 
     @property
     def settings(self) -> dict[str, float | int | bool | str]:
@@ -266,12 +359,17 @@ class GridMonitorRuntime:
             for sample in self.engine.buffer.samples
             if sample.timestamp_utc >= quarter_start
         ]
+        age_reference = (
+            snapshot.now_utc if self.instantaneous_power_known else dt_util.utcnow().astimezone(UTC)
+        )
         source_age_seconds = (
             max(
                 0.0,
-                (snapshot.now_utc - self.engine.buffer.samples[-1].timestamp_utc).total_seconds(),
+                (age_reference - self.engine.buffer.samples[-1].timestamp_utc).total_seconds(),
             )
             if self.engine.buffer.samples
+            else max(0.0, (age_reference - self.derived_timestamp_utc).total_seconds())
+            if self.derived_timestamp_utc is not None
             else None
         )
         return {
@@ -296,19 +394,47 @@ class GridMonitorRuntime:
                 "quality": snapshot.quality.value,
             },
             "power": {
-                "signed_kw": snapshot.current_signed_power_kw,
+                "signed_kw": (
+                    snapshot.current_signed_power_kw
+                    if self.instantaneous_power_known
+                    else (
+                        self.derived_import_power_kw - (self.derived_export_power_kw or 0.0)
+                        if self.derived_import_power_kw is not None
+                        else None
+                    )
+                ),
                 "import_kw": (
-                    max(0.0, snapshot.current_signed_power_kw)
+                    self.derived_import_power_kw
+                    if not self.instantaneous_power_known
+                    else max(0.0, snapshot.current_signed_power_kw)
                     if snapshot.current_signed_power_kw is not None
                     else None
                 ),
                 "export_kw": (
-                    max(0.0, -snapshot.current_signed_power_kw)
-                    if snapshot.current_signed_power_kw is not None
+                    self.derived_export_power_kw
+                    if not self.instantaneous_power_known
+                    else max(0.0, -snapshot.current_signed_power_kw)
+                    if snapshot.current_signed_power_kw is not None and self.export_known
                     else None
                 ),
                 "input_stale": snapshot.input_stale,
                 "source_age_seconds": source_age_seconds,
+                "source_mode": self.source_mode,
+                "source_entities": list(self.source_entities),
+                "source_available": self.source_available,
+                "source_status_reason": self.source_status_reason,
+                "source_measurement_timestamp_utc": (
+                    self.source_measurement_timestamp_utc.isoformat()
+                    if self.source_measurement_timestamp_utc is not None
+                    else None
+                ),
+                "instantaneous_power_known": self.instantaneous_power_known,
+                "export_known": self.export_known,
+                "measurement_kind": (
+                    "direct"
+                    if self.instantaneous_power_known
+                    else "counter_derived_interval_average"
+                ),
             },
             "tariff": {
                 "block": tariff.block if tariff else None,
@@ -520,7 +646,7 @@ class GridMonitorRuntime:
                 partial(
                     self.archive.register_configuration_epoch,
                     namespace=self.namespace,
-                    source_id=self.power_entity,
+                    source_id=self.source_semantics_id,
                     positive_means_import=self.positive_means_import,
                     contractual_target_kw=targets[0],
                     safety_margin_kw=float(startup_settings[CONF_SAFETY_MARGIN_KW]),
@@ -542,25 +668,24 @@ class GridMonitorRuntime:
             if checkpoint is not None:
                 self.engine.restore_checkpoint(checkpoint)
 
-            current = self.hass.states.get(self.power_entity)
-            if current is not None:
-                self._ingest_state(current)
+            self._ingest_current_sources()
 
             self._unsubscribers.append(
                 async_track_state_change_event(
-                    self.hass, [self.power_entity], self._async_state_changed
+                    self.hass, list(self.source_entities), self._async_state_changed
                 )
             )
             self._unsubscribers.append(
                 async_track_state_report_event(
-                    self.hass, [self.power_entity], self._async_state_changed
+                    self.hass, list(self.source_entities), self._async_state_changed
                 )
             )
-            self._backfill_task = self._archive_tasks.track(
-                self.hass.async_create_task(
-                    self._async_backfill_recorder(), "SI Grid Monitor recorder backfill"
+            if self.source_mode == SOURCE_SIGNED_POWER:
+                self._backfill_task = self._archive_tasks.track(
+                    self.hass.async_create_task(
+                        self._async_backfill_recorder(), "SI Grid Monitor recorder backfill"
+                    )
                 )
-            )
             self._unsubscribers.append(
                 async_track_time_interval(self.hass, self._async_tick, timedelta(seconds=1))
             )
@@ -708,30 +833,144 @@ class GridMonitorRuntime:
 
     @callback
     def _async_state_changed(self, event: Event) -> None:
-        new_state = event.data.get("new_state")
-        if isinstance(new_state, State):
-            self._ingest_state(new_state)
+        self._ingest_current_sources()
 
     @callback
     def _async_tick(self, now) -> None:
+        if self.source_mode == SOURCE_CUMULATIVE_ENERGY:
+            # Counter evidence ends at its own timestamp. Advancing the engine
+            # every second would manufacture a gap and make the next evidenced
+            # counter interval overlap that synthetic cursor.
+            now_utc = now.astimezone(UTC)
+            if (
+                self.derived_timestamp_utc is not None
+                and now_utc - self.derived_timestamp_utc
+                > timedelta(seconds=DEFAULT_STALE_AFTER_SECONDS)
+            ):
+                self.source_available = False
+                self.source_status_reason = "latest counter-derived interval is stale"
+            for listener in tuple(self._listeners):
+                listener()
+            return
         self._refresh(now)
 
     @callback
     def _ingest_state(self, state: State) -> None:
-        if state.state in {"unknown", "unavailable", "none", ""}:
+        """Backward-compatible Mode A ingestion entry point."""
+
+        self._ingest_power_states(state, None)
+
+    @callback
+    def _ingest_current_sources(self) -> None:
+        if self.source_mode == SOURCE_SIGNED_POWER:
+            state = self.hass.states.get(self.power_entity)
+            if state is not None:
+                self._ingest_power_states(state, None)
+        elif self.source_mode == SOURCE_IMPORT_ONLY:
+            state = self.hass.states.get(self.import_power_entity)
+            if state is not None:
+                self._ingest_power_states(state, None)
+        elif self.source_mode == SOURCE_SEPARATE_POWER:
+            import_state = self.hass.states.get(self.import_power_entity)
+            export_state = self.hass.states.get(self.export_power_entity)
+            if import_state is not None and export_state is not None:
+                self._ingest_power_states(import_state, export_state)
+        else:
+            self._ingest_counter_states()
+
+    @callback
+    def _ingest_power_states(self, primary: State, secondary: State | None) -> None:
+        states = (primary,) if secondary is None else (primary, secondary)
+        if any(state.state in {"unknown", "unavailable", "none", ""} for state in states):
+            self.source_available = False
+            self.source_status_reason = "one or more source readings are unavailable"
             return
-        unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
-        if not isinstance(unit, str):
-            _LOGGER.warning("Power source %s has no W/kW unit", self.power_entity)
+        units = [state.attributes.get(ATTR_UNIT_OF_MEASUREMENT) for state in states]
+        if any(not isinstance(unit, str) for unit in units):
+            self.source_available = False
+            self.source_status_reason = "source has no W/kW unit"
+            return
+        timestamps = [
+            (state.last_reported or state.last_updated).astimezone(UTC) for state in states
+        ]
+        if max(timestamps) - min(timestamps) > timedelta(seconds=DEFAULT_STALE_AFTER_SECONDS):
+            self.source_available = False
+            self.source_status_reason = "source timestamps are too far apart"
             return
         try:
-            normalized = self.adapter.normalize(state.state, unit)
-            timestamp = state.last_reported or state.last_updated
-            self.engine.ingest(PowerSample(timestamp, normalized.signed_kw))
+            if self.source_mode == SOURCE_SEPARATE_POWER and secondary is not None:
+                normalized = self.adapter.normalize(
+                    primary.state, units[0], secondary.state, units[1]
+                )
+            else:
+                normalized = self.adapter.normalize(primary.state, units[0])
+            timestamp = max(timestamps)
+            self.engine.ingest(
+                PowerSample(
+                    timestamp,
+                    normalized.signed_kw,
+                    import_kw=normalized.import_kw,
+                    export_kw=normalized.export_kw,
+                )
+            )
         except (AdapterError, CalculationError) as err:
-            _LOGGER.warning("Rejected power sample from %s: %s", self.power_entity, err)
+            # State-change and state-report listeners may report the same source
+            # timestamp. It is safe to ignore that duplicate without degrading
+            # the last accepted sample.
+            if "strictly" not in str(err):
+                self.source_available = False
+                self.source_status_reason = str(err)
+                _LOGGER.warning("Rejected source sample from %s: %s", self.source_entities, err)
             return
+        self.source_available = True
+        self.source_status_reason = None
         self._refresh(dt_util.utcnow())
+
+    @callback
+    def _ingest_counter_states(self) -> None:
+        import_state = self.hass.states.get(self.import_energy_entity)
+        export_state = (
+            self.hass.states.get(self.export_energy_entity)
+            if self.export_energy_entity is not None
+            else None
+        )
+        if import_state is None or import_state.state in {"unknown", "unavailable", "none", ""}:
+            self.source_available = False
+            self.source_status_reason = "cumulative import counter is unavailable"
+            return
+        try:
+            import_reading = _counter_reading(import_state)
+            export_reading = (
+                _counter_reading(export_state)
+                if export_state is not None
+                and export_state.state not in {"unknown", "unavailable", "none", ""}
+                else None
+            )
+            interval = self.counter_converter.update(import_reading, export_reading)
+            if interval is None:
+                self.source_available = False
+                self.source_status_reason = "waiting for the next counter reading"
+                return
+            self.engine.ingest_interval_average(
+                start=interval.start,
+                end=interval.end,
+                signed_kw=interval.normalized.signed_kw,
+                import_kw=interval.normalized.import_kw,
+                export_kw=interval.normalized.export_kw,
+            )
+            self.derived_import_power_kw = interval.normalized.import_kw
+            self.derived_export_power_kw = interval.normalized.export_kw
+            self.derived_timestamp_utc = interval.end
+        except (AdapterError, CalculationError, TypeError, ValueError) as err:
+            self.source_available = False
+            self.source_status_reason = str(err)
+            _LOGGER.warning("Rejected cumulative counter update: %s", err)
+            return
+        self.source_available = True
+        self.source_status_reason = (
+            "counter-derived interval average; instantaneous forecasts unavailable"
+        )
+        self._refresh(interval.end)
 
     @callback
     def _refresh(self, now) -> None:
@@ -756,7 +995,7 @@ class GridMonitorRuntime:
             if self.next_tariff is not None
             else None
         )
-        if self.engine.last_sample is None:
+        if self.engine.bounds is None:
             for listener in tuple(self._listeners):
                 listener()
             return
@@ -859,7 +1098,14 @@ class GridMonitorRuntime:
 
         while self._stored_completed < len(self.engine.completed):
             quarter = self.engine.completed[self._stored_completed]
-            await self._async_store_quarter(quarter)
+            await self._async_store_quarter(
+                quarter,
+                provenance=(
+                    "counter_derived_live"
+                    if self.source_mode == SOURCE_CUMULATIVE_ENERGY
+                    else "live_reconstructed"
+                ),
+            )
             self._stored_completed += 1
 
     async def _async_store_quarter(
@@ -1259,4 +1505,23 @@ def _resolution_for_epoch(epoch: ConfigurationEpoch) -> ConfigurationResolution:
         block_targets_kw=epoch.block_targets_kw,
         allow_provisional_tariff=epoch.allow_provisional_tariff,
         contracted_power_periods=epoch.contracted_power_periods,
+    )
+
+
+def _optional_entity(value: object) -> str | None:
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
+def _counter_reading(state: State) -> CounterReading:
+    unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
+    if not isinstance(unit, str):
+        raise AdapterError("energy counter has no Wh/kWh unit")
+    state_class = state.attributes.get("state_class")
+    if state_class not in {"total", "total_increasing"}:
+        raise AdapterError("energy counter must use total or total_increasing state class")
+    return CounterReading(
+        value=float(state.state),
+        unit=unit,
+        timestamp=(state.last_reported or state.last_updated).astimezone(UTC),
     )

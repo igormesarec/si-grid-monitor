@@ -21,7 +21,7 @@ globalThis.HTMLElement = FakeElement;
 globalThis.customElements = {define() {}};
 
 const {SIGridMonitorPanel} = await import(
-  "../custom_components/si_grid_monitor/frontend/dashboard.js?panel-tests=0.9.0"
+  "../custom_components/si_grid_monitor/frontend/dashboard.js?panel-tests=0.9.5"
 );
 
 const START_A = "2026-10-19T08:00:00+00:00";

@@ -4,6 +4,17 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+- Added V0.9.5's four supported input designs: signed live power, separate
+  nonnegative import/export power, import-only power, and cumulative Wh/kWh
+  counters with integration-owned derived-power entities.
+- Removed aligned quarter records (former Mode E) from the setup choices and
+  active product roadmap without changing or deleting historical archive rows.
+- Preserved import-only billing by carrying separate import/export quantities
+  through the shared engine; export never offsets imported quarter energy.
+- Added conservative counter quality handling for first readings, resets,
+  duplicates, gaps and cross-quarter intervals. Counter derivatives remain
+  interval averages and do not masquerade as verified instantaneous forecasts.
+
 - Started the V0.9.0 beta-readiness milestone with a complete V1 acceptance
   matrix, safe V0.8 upgrade/rollback guidance and a clean-HA test procedure.
 - Made config-entry setup transactional: failed platform forwarding now stops

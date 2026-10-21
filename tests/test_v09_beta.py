@@ -15,20 +15,32 @@ from typing import Any, ClassVar
 
 import pytest
 
-from custom_components.si_grid_monitor import async_setup_entry, async_unload_entry
+from custom_components.si_grid_monitor import (
+    async_migrate_entry,
+    async_setup_entry,
+    async_unload_entry,
+)
 from custom_components.si_grid_monitor.archive import ArchiveRecord, QuarterArchive
 from custom_components.si_grid_monitor.const import (
     CONF_ALLOW_PROVISIONAL_TARIFF,
     CONF_CONTRACTED_POWER_PERIODS,
+    CONF_EXPORT_ENERGY_ENTITY,
+    CONF_EXPORT_POWER_ENTITY,
+    CONF_IMPORT_ENERGY_ENTITY,
+    CONF_IMPORT_POWER_ENTITY,
     CONF_POSITIVE_MEANS_IMPORT,
     CONF_POWER_ENTITY,
     CONF_SAFETY_MARGIN_KW,
     CONF_SIMULATION_ENABLED,
     CONF_SIMULATION_TARGET_KW,
     CONF_SMOOTHING_SECONDS,
+    CONF_SOURCE_MODE,
     CONF_SUSTAINED_HORIZON_MINUTES,
     CONF_TARGET_KW,
     DOMAIN,
+    SOURCE_CUMULATIVE_ENERGY,
+    SOURCE_IMPORT_ONLY,
+    SOURCE_SEPARATE_POWER,
     VERSION,
 )
 from custom_components.si_grid_monitor.contracted_power import (
@@ -661,9 +673,9 @@ def test_beta_version_frontend_and_hacs_package_are_consistent() -> None:
         encoding="utf-8"
     )
     hacs = json.loads((ROOT / "hacs.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == VERSION == "0.9.0"
-    assert "dashboard-model.mjs?v=0.9.0" in dashboard
-    assert "dashboard-i18n.mjs?v=0.9.0" in dashboard
+    assert manifest["version"] == VERSION == "0.9.5"
+    assert "dashboard-model.mjs?v=0.9.5" in dashboard
+    assert "dashboard-i18n.mjs?v=0.9.5" in dashboard
     assert hacs["name"] == "SI Grid Monitor"
     assert not any(ROOT.joinpath(name).exists() for name in ("release.zip", "dist.zip"))
 
@@ -676,14 +688,111 @@ def test_entity_unique_id_formulas_remain_entry_scoped_and_version_independent()
         assert 'f"{entry.entry_id}_{description.key}"' in source
 
 
-def test_signed_mode_is_only_implemented_source_mode_and_is_documented_truthfully() -> None:
+def test_four_source_modes_are_wired_and_mode_e_is_removed() -> None:
     config_flow = (ROOT / "custom_components/si_grid_monitor/config_flow.py").read_text(
         encoding="utf-8"
     )
-    acceptance = (ROOT / "V0.9_BETA_ACCEPTANCE.md").read_text(encoding="utf-8")
-    assert 'errors["base"] = "mode_not_available_v0_4"' in config_flow
-    assert "Modes B-E" in acceptance
-    assert "Unsupported" in acceptance
+    assert "SOURCE_MODES = (" in config_flow
+    assert "SOURCE_ALIGNED_QUARTER" not in config_flow
+    assert 'errors["base"] = "mode_not_available_v0_4"' not in config_flow
+
+
+def test_runtime_modes_expose_stable_sources_and_truthful_capabilities(tmp_path: Path) -> None:
+    _ensure_homeassistant_stubs()
+    from custom_components.si_grid_monitor.runtime import GridMonitorRuntime
+
+    class Config:
+        def path(self, *parts: str) -> str:
+            return str(tmp_path.joinpath(*parts))
+
+    class States:
+        @staticmethod
+        def get(_entity_id: str) -> None:
+            return None
+
+    hass = SimpleNamespace(config=Config(), states=States())
+    common = {
+        CONF_TARGET_KW: 4.8,
+        CONF_CONTRACTED_POWER_PERIODS: "[]",
+        CONF_ALLOW_PROVISIONAL_TARIFF: False,
+        CONF_SAFETY_MARGIN_KW: 0.0,
+        CONF_SMOOTHING_SECONDS: 120,
+        CONF_SUSTAINED_HORIZON_MINUTES: 60,
+        CONF_SIMULATION_ENABLED: False,
+        CONF_SIMULATION_TARGET_KW: 4.8,
+    }
+
+    separate = GridMonitorRuntime(
+        hass,
+        SimpleNamespace(
+            entry_id="b",
+            data={
+                **common,
+                CONF_SOURCE_MODE: SOURCE_SEPARATE_POWER,
+                CONF_IMPORT_POWER_ENTITY: "sensor.import",
+                CONF_EXPORT_POWER_ENTITY: "sensor.export",
+            },
+            options={},
+        ),
+    )
+    assert separate.source_entities == ("sensor.import", "sensor.export")
+    assert separate.export_known and separate.instantaneous_power_known
+
+    import_only = GridMonitorRuntime(
+        hass,
+        SimpleNamespace(
+            entry_id="c",
+            data={
+                **common,
+                CONF_SOURCE_MODE: SOURCE_IMPORT_ONLY,
+                CONF_IMPORT_POWER_ENTITY: "sensor.import_only",
+            },
+            options={},
+        ),
+    )
+    assert import_only.source_entities == ("sensor.import_only",)
+    assert not import_only.export_known
+    assert import_only.instantaneous_power_known
+
+    counters = GridMonitorRuntime(
+        hass,
+        SimpleNamespace(
+            entry_id="d",
+            data={
+                **common,
+                CONF_SOURCE_MODE: SOURCE_CUMULATIVE_ENERGY,
+                CONF_IMPORT_ENERGY_ENTITY: "sensor.import_total",
+                CONF_EXPORT_ENERGY_ENTITY: "sensor.export_total",
+            },
+            options={},
+        ),
+    )
+    assert counters.source_entities == ("sensor.import_total", "sensor.export_total")
+    assert not counters.instantaneous_power_known
+    assert not counters.export_known  # Unknown until an aligned export delta exists.
+
+
+def test_v09_entry_migrates_to_mode_a_without_changing_identity() -> None:
+    entry = SimpleNamespace(
+        version=4,
+        minor_version=0,
+        entry_id="existing-mode-a",
+        data={CONF_POWER_ENTITY: "sensor.solaredge_m1_ac_power", CONF_TARGET_KW: 4.8},
+        options={},
+    )
+
+    class Entries:
+        @staticmethod
+        def async_update_entry(target: Any, **changes: Any) -> None:
+            for key, value in changes.items():
+                setattr(target, key, value)
+
+    hass = SimpleNamespace(config_entries=Entries())
+    assert _run(async_migrate_entry(hass, entry))
+    assert entry.version == 5
+    assert entry.entry_id == "existing-mode-a"
+    assert entry.data[CONF_SOURCE_MODE] == "signed_power"
+    assert entry.data[CONF_POWER_ENTITY] == "sensor.solaredge_m1_ac_power"
 
 
 def test_runtime_startup_failure_closes_open_archive(
