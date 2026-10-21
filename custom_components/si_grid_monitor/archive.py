@@ -855,16 +855,24 @@ class QuarterArchive:
         return rows, total
 
     def history_facets(
-        self, namespace: str, start_utc: datetime, end_utc: datetime
+        self,
+        namespace: str,
+        start_utc: datetime,
+        end_utc: datetime,
+        *,
+        completed_before_utc: datetime | None = None,
     ) -> dict[str, object]:
         """Return bounded archive metadata and diagnostic distributions."""
 
         parameters = (namespace, _utc_iso(start_utc), _utc_iso(end_utc))
+        completed_before = _utc_iso(completed_before_utc or end_utc)
         where = "namespace=? AND start_utc>=? AND start_utc<? AND simulation=0"
         with self._lock:
             bounds = self._db.execute(
                 f"""SELECT COUNT(*) AS total, MIN(start_utc) AS oldest,
                            MAX(start_utc) AS newest,
+                           SUM(CASE WHEN start_utc<? THEN 1 ELSE 0 END)
+                               AS completed_total,
                            SUM(CASE WHEN quality IN ('measured_aligned','counter_derived',
                                'reconstructed') AND configuration_status IN
                                ('known','target_unknown','target_mixed')
@@ -888,7 +896,7 @@ class QuarterArchive:
                                ('known','target_unknown','target_mixed'))
                                THEN export_kwh ELSE 0 END) AS partial_export_kwh
                     FROM quarters WHERE {where}""",
-                parameters,
+                (completed_before, *parameters),
             ).fetchone()
             quality_rows = self._db.execute(
                 f"SELECT quality, COUNT(*) AS count FROM quarters WHERE {where} GROUP BY quality",
@@ -918,6 +926,7 @@ class QuarterArchive:
             "total": int(bounds["total"] or 0),
             "oldest": bounds["oldest"],
             "newest": bounds["newest"],
+            "completed_total": int(bounds["completed_total"] or 0),
             "valid_count": int(bounds["valid_count"] or 0),
             "incomplete_count": int(bounds["incomplete_count"] or 0),
             "import_kwh": float(bounds["import_kwh"] or 0.0),

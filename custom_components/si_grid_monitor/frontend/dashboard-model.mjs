@@ -627,7 +627,7 @@ export function blockChartModel(blocks) {
   };
 }
 
-export function historyQuarterChartModel(rows) {
+export function historyQuarterChartModel(rows, {preserveOrder = false} = {}) {
   const normalized = rows.map(row => {
     const numericDemand = Number(row.import_demand_kw);
     const measurementState = row.archive_present === false || row.status === "missing"
@@ -644,7 +644,9 @@ export function historyQuarterChartModel(rows) {
       && Number.isFinite(Number(row.measured_peak_kw))
       ? Number(row.measured_peak_kw) : null;
     return {...row, measurementState, demandKw, measuredPeakKw};
-  }).sort((left, right) => String(right.start_utc || "").localeCompare(String(left.start_utc || "")));
+  });
+  if (!preserveOrder) normalized.sort((left, right) =>
+    new Date(right.start_utc).getTime() - new Date(left.start_utc).getTime());
   const values = normalized.flatMap(row => [
     row.demandKw,
     row.measuredPeakKw,

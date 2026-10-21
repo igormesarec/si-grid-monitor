@@ -26,6 +26,33 @@ All notable changes to SI Grid Monitor will be documented here.
   for a prior durable shutdown, defers without overwriting registry/runtime data
   while SQLite ownership remains active, and transfers ownership only after the
   prior task confirms archive closure. Failed rollback uses the same rule.
+
+## [0.8.2] - 2026-10-21
+
+- Corrected HISTORY completeness statistics so only already completed fixed
+  quarters can be missing. The current in-progress quarter and later quarters
+  are reported separately as future/uncompleted.
+- Added explicit completed-expected, completed-archived, incomplete,
+  unavailable and future/uncompleted counts. Local-day ranges retain their
+  true 92/96/100-quarter Europe/Ljubljana DST lengths.
+- Added regression coverage for current and future dates, local midnight,
+  exact quarter transitions, real gaps and both 2026 DST transition days.
+
+## [0.8.1] - 2026-10-21
+
+- Aligned HISTORY axis ticks and quarter grids inside a shared scroll area,
+  including phone layouts and desktop scrollbars. Partial measurement status
+  wraps outside the bar, with no partial contractual-demand bar.
+- Restored optional date/energy/demand/utilization/quality sorting for All-block
+  HISTORY while keeping newest-first defaults and chronological block reports.
+- Added headless browser geometry tests across 320/360/390/430/768/1280 px,
+  light/dark themes, enlarged text, scrolling and keyboard card expansion.
+- Added the V0.8.1 mobile HISTORY hotfix: narrow headers and filter controls now
+  stack without overlap, the quarter chart no longer requires a 760 px canvas,
+  and phones use expandable quarter cards instead of a repeatedly scrolled table.
+- HISTORY now shows a bounded newest-first chronological record list when all
+  tariff blocks are selected, with B1-B5 identity chips and unchanged
+  measurement-validity semantics. Frontend modules use the `0.8.1` cache key.
 - Made the schema-5 to schema-6 archive upgrade explicitly transactional and
   restart-safe, including validation/recovery of partial development objects.
 - Made each reconstruction update and its revision entry one atomic operation;

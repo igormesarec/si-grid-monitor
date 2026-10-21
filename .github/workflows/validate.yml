@@ -28,6 +28,9 @@ jobs:
       - run: node --check custom_components/si_grid_monitor/frontend/dashboard.js
       - run: node --check custom_components/si_grid_monitor/frontend/dashboard-model.mjs
       - run: node --test frontend_tests/*.test.mjs
+      - run: npm install --ignore-scripts
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:layout
 
   hassfest:
     name: hassfest

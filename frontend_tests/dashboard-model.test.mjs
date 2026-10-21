@@ -47,6 +47,17 @@ test("shared period selector serializes standard and custom filters", () => {
   });
 });
 
+test("All-block model preserves backend sort while block model keeps UTC chronology", () => {
+  const records = [
+    {start_utc: "2026-10-25T01:00:00Z", measured_valid: true, import_demand_kw: 1},
+    {start_utc: "2026-10-25T00:00:00Z", measured_valid: true, import_demand_kw: 3},
+  ];
+  for (const items of [records, [...records].reverse()]) {
+    assert.deepEqual(historyQuarterChartModel(items, {preserveOrder: true}).rows.map(row => row.start_utc), items.map(row => row.start_utc));
+    assert.deepEqual(historyQuarterChartModel(items).rows.map(row => row.start_utc), records.map(row => row.start_utc));
+  }
+});
+
 test("exceedance requests preserve shared filters and bounded page state", () => {
   assert.deepEqual(exceedanceRequest({
     periodType: "year", periodAnchor: "2026-01-01", selectedDate: "2026-01-01",

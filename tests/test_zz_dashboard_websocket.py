@@ -487,7 +487,9 @@ def test_history_command_pages_real_rows_and_serializes_storage(tmp_path: Path) 
     assert connection.error is None
     assert len(connection.result["items"]) == 3
     assert connection.result["pagination"]["total"] == 7
-    assert connection.result["summary"]["missing_count"] == 89
+    assert connection.result["summary"]["completed_expected_count"] == 52
+    assert connection.result["summary"]["future_or_uncompleted_count"] == 44
+    assert connection.result["summary"]["missing_count"] == 45
     assert connection.result["storage"]["schema_version"] == 6
     json.dumps(connection.result)
     archive.close()

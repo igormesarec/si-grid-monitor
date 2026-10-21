@@ -422,7 +422,7 @@ test("HISTORY block report synchronizes chart and table without inventing peaks"
   ];
   const html = panel._historyQuarterReport({items: rows});
   assert.equal((html.match(/class="history-chart-row state-valid"/g) || []).length, 2);
-  assert.equal((html.match(/data-history-quarter=/g) || []).length, 4);
+  assert.equal((html.match(/data-history-quarter=/g) || []).length, 6);
   assert.equal((html.match(/class="history-peak"/g) || []).length, 0);
   assert.match(html, /Not archived; not inferred/);
   assert.ok(html.indexOf(START_B) < html.indexOf(START_A));
@@ -459,7 +459,7 @@ test("HISTORY chart, labels, table and accessibility agree on measurement validi
   assert.match(html, /state-missing/);
 });
 
-test("HISTORY long chart uses one contained scroll layout with aligned axis track", () => {
+test("HISTORY long chart is responsive with aligned axis track and no fixed mobile width", () => {
   const panel = new SIGridMonitorPanel();
   panel._historyBlock = "1";
   const items = Array.from({length: 120}, (_unused, index) => ({
@@ -476,8 +476,60 @@ test("HISTORY long chart uses one contained scroll layout with aligned axis trac
   assert.match(html, /class="history-axis-track"/);
   assert.match(css, /history-axis-track\{position:relative/);
   assert.match(css, /history-demand\{position:absolute;inset-block:4px;inset-inline-start:0/);
-  assert.match(css, /history-report-scroll\{max-width:100%;overflow-x:auto/);
-  assert.match(css, /@media\(max-width:700px\).*history-chart-row/s);
+  assert.match(css, /history-report-scroll\{max-width:100%;min-width:0;overflow:hidden/);
+  assert.match(css, /history-chart-row\{width:100%;min-width:0/);
+  assert.match(html, /class="history-quarter-chart"[^>]*><div class="history-axis">/);
+  assert.doesNotMatch(css, /min-width:760px/);
+});
+
+test("HISTORY all-block mode renders chronological B1-B5 records instead of summary only", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._historyBlock = "all";
+  const older = {...quarter(START_A), tariff_block: 1, measured_valid: true,
+    import_demand_kw: 1.5, contractual_target_kw: 3.5, coverage_pct: 100,
+    import_kwh: .375, export_kwh: 0, quality: "measured_aligned"};
+  const newer = {...quarter(START_B), tariff_block: 5, measured_valid: true,
+    import_demand_kw: 2.5, contractual_target_kw: 4.2, coverage_pct: 100,
+    import_kwh: .625, export_kwh: 0, quality: "measured_aligned"};
+  const html = panel._historyQuarterReport({items: [newer, older]});
+  assert.match(html, /history-quarter-report all-blocks/);
+  assert.match(html, /All archived quarters/);
+  assert.match(html, /class="chip b1">B1/);
+  assert.match(html, /class="chip b5">B5/);
+  assert.ok(html.indexOf(START_B) < html.indexOf(START_A));
+  assert.doesNotMatch(html, /history-quarter-chart/);
+  assert.match(html, /history-desktop-table/);
+  assert.match(html, /history-mobile-cards/);
+});
+
+test("HISTORY mobile cards expose a complete quarter without horizontal table dependence", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._historyBlock = "2";
+  const html = panel._historyQuarterReport({items: [{
+    ...quarter(START_B), tariff_block: 2, measured_valid: true,
+    import_demand_kw: 3.4, contractual_target_kw: 3.9, confirmed_exceeded: false,
+    import_kwh: .85, export_kwh: .1, coverage_pct: 100, source_id: "sensor.long_entity_id",
+    source_epoch: 7, quality: "measured_aligned", tariff_rule_version: "si-2026-v1",
+    tariff_rule_status: "official",
+  }]});
+  assert.match(html, /<details class="history-mobile-card state-valid">/);
+  assert.match(html, /Quarter-average import demand/);
+  assert.match(html, /Historical contracted-power limit/);
+  assert.match(html, /Import \/ export/);
+  assert.match(html, /Quality \/ coverage/);
+  assert.match(html, /sensor\.long_entity_id \/ 7/);
+  assert.match(html, /si-2026-v1 · official/);
+  assert.match(html, /Open quarter details/);
+});
+
+test("mobile HISTORY CSS stacks header and controls at Android widths", () => {
+  const panel = new SIGridMonitorPanel();
+  const css = panel._mobileHistoryStyles();
+  assert.match(css, /header\{min-width:0\}/);
+  assert.match(css, /overflow-wrap:anywhere/);
+  assert.match(css, /history-controls\{display:grid/);
+  assert.match(css, /@media\(max-width:700px\)\{header\{align-items:flex-start;flex-direction:column\}/);
+  assert.match(css, /history-controls\{grid-template-columns:minmax\(0,1fr\)\}/);
 });
 
 test("BLOCKS uses measurement colors independent of B1-B5 identity colors", () => {
@@ -533,6 +585,11 @@ test("HISTORY distinguishes range totals and exposes source epoch filtering", ()
     summary: {
       total: 20,
       matching_filtered_count: 3,
+      completed_expected_count: 16,
+      future_or_uncompleted_count: 4,
+      missing_count: 2,
+      incomplete_measurement_count: 1,
+      unavailable_measurement_count: 1,
       source_epochs: [{source_epoch: 4, source_id: "sensor.grid", count: 12}],
       quality_distribution: {},
       provenance_distribution: {},
@@ -543,6 +600,11 @@ test("HISTORY distinguishes range totals and exposes source epoch filtering", ()
   assert.match(html, /data-history-source-epoch/);
   assert.match(html, /sensor\.grid · obdobje 4 \(12\)/);
   assert.match(html, /celotno izbrano časovno obdobje/);
+  assert.match(html, /Pričakovani zaključeni intervali/);
+  assert.match(html, /Manjkajoči zaključeni intervali/);
+  assert.match(html, /Prihodnji \/ nezaključeni intervali/);
+  assert.match(html, /Nepopolne arhivirane meritve/);
+  assert.match(html, /Nedostopne arhivirane meritve/);
   assert.match(html, /Stran 1 od 1 · 3 ustreznih četrtin/);
 });
 
@@ -584,6 +646,28 @@ test("HISTORY block requests lock chronology across alternative sort and paginat
   assert.equal(captured.sort_by, "start_utc");
   assert.equal(captured.direction, "desc");
   assert.equal(captured.page, 4);
+});
+
+test("HISTORY all-block requests preserve optional server sorting across pagination", async () => {
+  const panel = new SIGridMonitorPanel();
+  panel._render = () => {};
+  panel._entryId = "meter-a";
+  panel._gate.switchEntry("meter-a");
+  panel._tab = "history";
+  panel._historyBlock = "all";
+  panel._historySort = "import_kwh";
+  panel._historyDirection = "asc";
+  panel._historyPageNumber = 2;
+  let captured;
+  panel._call = async (_type, request) => {
+    captured = request;
+    return {items: [], pagination: {page: 2, pages: 3, total: 120}, summary: {}};
+  };
+  await panel._loadTab();
+  assert.equal(captured.tariff_block, undefined);
+  assert.equal(captured.sort_by, "import_kwh");
+  assert.equal(captured.direction, "asc");
+  assert.equal(captured.page, 2);
 });
 
 test("Home Assistant language switching preserves meter and HISTORY selection", () => {
