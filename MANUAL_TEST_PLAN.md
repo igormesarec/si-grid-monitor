@@ -1,11 +1,11 @@
-# SI Grid Monitor V0.8.0 - Real Home Assistant Test Plan
+# SI Grid Monitor V0.8.1 - Real Home Assistant Test Plan
 
 ## V0.8 HISTORY, reconstruction and platform acceptance
 
 1. Back up Home Assistant. Record the pre-update schema-5 row count, database
    size, oldest/newest quarter, config-entry ID and entity unique IDs.
 2. Update through HACS, restart, and hard-refresh desktop and Android WebViews.
-   Confirm versioned `0.8.0` dashboard modules load and no entry reconfiguration
+   Confirm versioned `0.8.1` dashboard modules load and no entry reconfiguration
    is requested. Verify schema 6 and the exact same historical quarter count.
 3. Open HISTORY and test day/week/month/year/custom ranges, B1–B5, quality and
    exceedance filters, sorting and pagination. A valid measured zero must remain
@@ -33,6 +33,46 @@
 
 The Recorder audit uses detailed timestamped states only. It must never claim
 that long-term hourly statistics can reconstruct import/export quarters.
+
+## V0.8.1 Android and narrow-screen HISTORY acceptance
+
+Automated Playwright layout tests now measure the real rendered axis/bar origin,
+width, tick/grid positions, proportional bar length and unclipped partial status
+at 320/360/390/430/768/1280 px in light/dark themes. They also exercise desktop
+chart scrolling, mobile keyboard card expansion and enlarged text. These run
+against fixtures in a desktop browser; Android Companion App acceptance remains
+pending. Run locally with `npm install`, `npx playwright install chromium` and
+`npm run test:layout`.
+
+1. In the Android Companion App, test HISTORY at effective widths 320, 360, 390
+   and 430 px; also test a 768 px tablet and desktop. Repeat with light/dark
+   themes, browser zoom and enlarged accessibility text.
+2. Confirm the product heading and active meter stack vertically on phones and
+   that a long meter/entity title wraps without collision or whole-page
+   horizontal scrolling.
+3. Confirm date, block, quality, exceedance and source-epoch filters form a
+   single readable column on phones. Every label must remain beside its control;
+   Apply and the newest-first notice must not overlap another field.
+4. Select B1-B5 individually. Verify the demand chart fits the card without a
+   mandatory 760 px viewport, preserves the red valid-demand bar, gold historical
+   target, practical 1 kW grid, newest-first order and explicit partial states.
+   A genuine peak must appear only for a row that actually archives peak evidence.
+5. Select All blocks. Verify a paginated chronological record list is visible
+   with B1-B5 chips. On phones, expand cards and verify timestamp, block, demand,
+   target, exceedance, import/export, quality/coverage, source epoch and tariff
+   rule without repeated horizontal scrolling.
+6. Exercise touch selection, keyboard focus, vertical scrolling and pagination.
+   Confirm the exact UTC quarter opens and no archived values, epochs or targets
+   change. These visual checks require a real Home Assistant/Android instance;
+   the automated suite validates markup, breakpoints, chart semantics and order.
+7. For All blocks, confirm the default date order is newest first, then select
+   date, energy, demand, utilization and quality in both directions. Chart/list
+   and card/table rows must follow the same server page. Select B1-B5 and confirm
+   those reports remain newest first even after an alternative All-block sort.
+8. Inspect a partial quarter with enlarged text. Its complete observation/status
+   sentence must wrap beside the bar and remain readable. The bar must not plot
+   partial imported energy as valid quarter demand. Compare several kW ticks
+   with their vertical grid lines before and after desktop chart scrolling.
 
 Use a disposable or backed-up Home Assistant instance. Never infer physical
 connection capacity from CAN ADD values.

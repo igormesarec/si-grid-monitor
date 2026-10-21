@@ -14,7 +14,7 @@ def test_v04_manifest_packages_supported_panel_dependencies() -> None:
     manifest = json.loads(
         (ROOT / "custom_components/si_grid_monitor/manifest.json").read_text(encoding="utf-8")
     )
-    assert manifest["version"] == VERSION == "0.8.0"
+    assert manifest["version"] == VERSION == "0.8.1"
     assert {"frontend", "http", "websocket_api"} <= set(manifest["dependencies"])
     assert PANEL_URL_PATH == "si-grid-monitor"
 
@@ -144,8 +144,8 @@ def test_v042_dashboard_assets_and_acceptance_controls_are_cache_busted() -> Non
     model = (ROOT / "custom_components/si_grid_monitor/frontend/dashboard-model.mjs").read_text(
         encoding="utf-8"
     )
-    assert "dashboard-model.mjs?v=0.8.0" in bundle
-    assert "dashboard-i18n.mjs?v=0.8.0" in bundle
+    assert "dashboard-model.mjs?v=0.8.1" in bundle
+    assert "dashboard-i18n.mjs?v=0.8.1" in bundle
     assert 'energyProjection: {color: "#8b5cf6", dash: "7 4"}' in model
     assert (
         ".legend-line .energy-projection{stroke:${CHART_SERIES.energyProjection.color};"
