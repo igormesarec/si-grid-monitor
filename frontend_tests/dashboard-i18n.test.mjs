@@ -61,3 +61,22 @@ test("Slovenian dictionary covers every navigation and safety workflow", () => {
     assert.ok(sl[key], `missing Slovenian dashboard translation for ${key}`);
   }
 });
+
+test("Slovenian localization covers static content and accessibility on every tab", () => {
+  const sl = DASHBOARD_TRANSLATIONS.sl;
+  for (const text of [
+    "CURRENT FIXED 15-MINUTE INTERVAL",
+    "Live and projected values are separate from completed-quarter statistics.",
+    "Average valid demand is the arithmetic mean of import-only demand across the contributing valid completed 15-minute quarters, not a whole-day or instantaneous average. Partial observed and live energy are excluded from valid totals. Confirmed exceedances use eligible completed quarters only; zero confirmed exceedances does not prove incomplete quarters stayed below their limits.",
+    "Open this range in HISTORY",
+    "All five blocks remain visible. Values use each archived quarter's original target and provenance; provisional and simulation results never enter confirmed exceedances.",
+    "No confirmed exceeded quarters were found. This does not prove incomplete or missing intervals stayed below their limits.",
+    "Home Assistant Recorder audit",
+    "Tariff-rule status",
+    "Scrollable live power chart",
+    "Scrollable quarter energy chart",
+  ]) {
+    assert.ok(sl[text], `missing Slovenian dashboard translation for ${text}`);
+    assert.notEqual(sl[text], text);
+  }
+});

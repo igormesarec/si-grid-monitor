@@ -173,11 +173,41 @@ test("period labels use Ljubljana local time and distinguish the repeated DST ho
 test("HISTORY quarter chart uses one-kilowatt grid and never invents a peak", () => {
   const model = historyQuarterChartModel([{
     start_utc: "2027-01-01T00:00:00+00:00", import_demand_kw: 3.4,
-    contractual_target_kw: 4.2, measured_peak_kw: null,
+    contractual_target_kw: 4.2, measured_peak_kw: null, measured_valid: true,
   }]);
   assert.deepEqual(model.ticks, [0, 1, 2, 3, 4, 5]);
   assert.equal(model.rows[0].peakPct, null);
   assert.equal(model.rows[0].targetPct, 84);
+});
+
+test("HISTORY measurement states keep invalid demand out of every plotted value", () => {
+  const model = historyQuarterChartModel([
+    {start_utc: "2027-01-01T01:00:00Z", measured_valid: true, import_demand_kw: 0,
+      coverage_seconds: 900, quality: "measured_aligned"},
+    {start_utc: "2027-01-01T00:45:00Z", measured_valid: false, import_demand_kw: 7.8,
+      import_kwh: .1, coverage_seconds: 300, quality: "incomplete"},
+    {start_utc: "2027-01-01T00:30:00Z", measured_valid: false, import_demand_kw: 9.2,
+      coverage_seconds: 0, quality: "unavailable"},
+    {start_utc: "2027-01-01T00:15:00Z", archive_present: false, status: "missing",
+      import_demand_kw: 12},
+  ]);
+  assert.deepEqual(model.rows.map(row => row.measurementState), [
+    "valid_zero", "partial", "unavailable", "missing",
+  ]);
+  assert.deepEqual(model.rows.map(row => row.demandPct), [0, null, null, null]);
+  assert.deepEqual(model.rows.map(row => row.demandKw), [0, null, null, null]);
+  assert.equal(model.maximum, 1);
+});
+
+test("HISTORY model synchronizes newest-first order regardless of input order", () => {
+  const model = historyQuarterChartModel([
+    {start_utc: "2027-01-01T00:00:00Z", measured_valid: true, import_demand_kw: 1},
+    {start_utc: "2027-01-01T00:30:00Z", measured_valid: true, import_demand_kw: 2},
+    {start_utc: "2027-01-01T00:15:00Z", measured_valid: true, import_demand_kw: 3},
+  ]);
+  assert.deepEqual(model.rows.map(row => row.start_utc), [
+    "2027-01-01T00:30:00Z", "2027-01-01T00:15:00Z", "2027-01-01T00:00:00Z",
+  ]);
 });
 
 test("period bins distinguish missing data, incomplete data, and measured zero", () => {

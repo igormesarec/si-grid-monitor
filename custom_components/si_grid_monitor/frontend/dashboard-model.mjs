@@ -628,9 +628,26 @@ export function blockChartModel(blocks) {
 }
 
 export function historyQuarterChartModel(rows) {
-  const values = rows.flatMap(row => [
-    row.import_demand_kw,
-    row.measured_peak_kw,
+  const normalized = rows.map(row => {
+    const numericDemand = Number(row.import_demand_kw);
+    const measurementState = row.archive_present === false || row.status === "missing"
+      ? "missing"
+      : row.measured_valid && Number.isFinite(numericDemand)
+        ? numericDemand === 0 ? "valid_zero" : "valid"
+        : Number(row.coverage_seconds || 0) > 0 || row.quality === "incomplete"
+          ? "partial"
+          : "unavailable";
+    const demandKw = ["valid", "valid_zero"].includes(measurementState)
+      ? numericDemand : null;
+    const measuredPeakKw = demandKw != null
+      && row.measured_peak_kw != null
+      && Number.isFinite(Number(row.measured_peak_kw))
+      ? Number(row.measured_peak_kw) : null;
+    return {...row, measurementState, demandKw, measuredPeakKw};
+  }).sort((left, right) => String(right.start_utc || "").localeCompare(String(left.start_utc || "")));
+  const values = normalized.flatMap(row => [
+    row.demandKw,
+    row.measuredPeakKw,
     row.contractual_target_kw,
   ]).filter(value => value != null && Number.isFinite(Number(value))).map(Number);
   const rawMaximum = Math.max(1, ...values);
@@ -640,10 +657,10 @@ export function historyQuarterChartModel(rows) {
     maximum,
     step,
     ticks: Array.from({length: Math.floor(maximum / step) + 1}, (_, index) => index * step),
-    rows: rows.map(row => ({
+    rows: normalized.map(row => ({
       ...row,
-      demandPct: row.import_demand_kw == null ? null : 100 * Number(row.import_demand_kw) / maximum,
-      peakPct: row.measured_peak_kw == null ? null : 100 * Number(row.measured_peak_kw) / maximum,
+      demandPct: row.demandKw == null ? null : 100 * row.demandKw / maximum,
+      peakPct: row.measuredPeakKw == null ? null : 100 * row.measuredPeakKw / maximum,
       targetPct: row.contractual_target_kw == null ? null : 100 * Number(row.contractual_target_kw) / maximum,
     })),
   };

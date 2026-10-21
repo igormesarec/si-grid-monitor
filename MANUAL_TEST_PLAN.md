@@ -399,3 +399,26 @@ rendering and live SolarEdge cadence still require the real-instance checks.
     distinct GMT offsets. Verify energy and demand have separate visual legends,
     a one-quarter demand bin draws one red bar, and aggregated bins draw red
     maximum plus light-blue average with the gold historical-limit reference.
+13. In a HISTORY block report, compare four quarters: a valid measured zero, an
+    incomplete row with partial imported energy, an unavailable measurement,
+    and a missing archive row. Only the valid zero may show a contractual-demand
+    bar/value (`0.00 kW`). Confirm the adjacent label, table value, tooltip or
+    screen-reader description uses the same state and never exposes a stored
+    partial value as confirmed demand.
+14. Request the same populated B1-B5 report after previously selecting demand,
+    energy, quality, ascending, and descending sorts. Confirm every block report
+    remains newest UTC quarter first across page boundaries and that the chart
+    and table have identical row order.
+15. In BLOCKS, confirm maximum demand is red, average demand is light blue and
+    historical targets are gold dashed. B1-B5 identity chips may retain their
+    block colors, but those colors must not replace or contradict measurement
+    series colors. Check both light and dark themes.
+16. On a long HISTORY report, verify the bars begin at the zero tick, vertical
+    reference lines align with their axis numbers, and chart/table remain inside
+    the panel. Repeat at Android widths (320, 360 and 390 px), at 768 px, in light
+    and dark themes, and with browser/text scaling enabled. Check that labels do
+    not overlap and horizontal/vertical scrolling remains usable.
+17. Visit all seven tabs in English and Slovenian. Check metric descriptions,
+    warnings, errors, chart legends, table headings, pagination, controls and
+    accessibility labels. Units and stored technical values (quality/provenance
+    codes, entity IDs and UTC identities) must remain unchanged.

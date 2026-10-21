@@ -54,6 +54,9 @@ def history_report(archive: QuarterArchive, namespace: str, query: HistoryQuery)
 
     start = query.start_utc.astimezone(UTC)
     end = query.end_utc.astimezone(UTC)
+    chronological_block_report = query.tariff_block is not None
+    effective_sort = "start_utc" if chronological_block_report else query.sort_by
+    effective_direction = "desc" if chronological_block_report else query.direction
     rows, total = archive.query_history(
         namespace,
         start,
@@ -64,8 +67,8 @@ def history_report(archive: QuarterArchive, namespace: str, query: HistoryQuery)
         source_epoch=query.source_epoch,
         page=query.page,
         page_size=query.page_size,
-        sort_by=query.sort_by,
-        direction=query.direction,
+        sort_by=effective_sort,
+        direction=effective_direction,
     )
     facets = archive.history_facets(namespace, start, end)
     expected_count = max(0, math.ceil((end - start).total_seconds() / 900))
@@ -103,6 +106,11 @@ def history_report(archive: QuarterArchive, namespace: str, query: HistoryQuery)
             "total": total,
             "pages": math.ceil(total / query.page_size) if total else 0,
             "scope": "active_filters",
+        },
+        "ordering": {
+            "sort_by": effective_sort,
+            "direction": effective_direction,
+            "locked_for_block_report": chronological_block_report,
         },
         "summary": {
             **facets,

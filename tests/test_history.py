@@ -168,6 +168,71 @@ def test_history_rejects_ambiguous_exceedance_filter() -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("requested_sort", "requested_direction"),
+    [
+        ("import_kwh", "asc"),
+        ("import_demand_kw", "asc"),
+        ("quality", "asc"),
+        ("utilization_pct", "asc"),
+    ],
+)
+def test_block_quarter_report_is_always_newest_first_across_pages(
+    tmp_path, requested_sort: str, requested_direction: str
+) -> None:
+    archive = QuarterArchive(tmp_path / f"{requested_sort}.db")
+    archive.open()
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    for index in range(6):
+        archive.upsert_quarter(
+            _record(
+                start + timedelta(minutes=15 * index),
+                index,
+                tariff_block=2,
+                quality="reconstructed" if index % 2 else "measured_aligned",
+            )
+        )
+    first = history_report(
+        archive,
+        "meter-a",
+        HistoryQuery(
+            start,
+            start + timedelta(hours=2),
+            tariff_block=2,
+            page=1,
+            page_size=2,
+            sort_by=requested_sort,
+            direction=requested_direction,
+        ),
+    )
+    second = history_report(
+        archive,
+        "meter-a",
+        HistoryQuery(
+            start,
+            start + timedelta(hours=2),
+            tariff_block=2,
+            page=2,
+            page_size=2,
+            sort_by=requested_sort,
+            direction=requested_direction,
+        ),
+    )
+    assert first["ordering"] == {
+        "sort_by": "start_utc",
+        "direction": "desc",
+        "locked_for_block_report": True,
+    }
+    assert [item["start_utc"] for item in first["items"]] == [
+        (start + timedelta(minutes=75)).isoformat(),
+        (start + timedelta(minutes=60)).isoformat(),
+    ]
+    assert [item["start_utc"] for item in second["items"]] == [
+        (start + timedelta(minutes=45)).isoformat(),
+        (start + timedelta(minutes=30)).isoformat(),
+    ]
+
+
 def test_repeated_dst_hour_retains_two_utc_identities(tmp_path) -> None:
     archive = QuarterArchive(tmp_path / "archive.db")
     archive.open()
