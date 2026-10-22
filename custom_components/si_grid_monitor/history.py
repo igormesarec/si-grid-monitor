@@ -15,6 +15,18 @@ SUPPORTED_QUALITIES = frozenset(
 )
 
 
+def _export_provenance(source_id: str) -> str:
+    """Classify archived export without changing schema-6 measurements."""
+
+    if not source_id:
+        return "unknown"
+    if "counter_behavior=net" in source_id:
+        return "inferred_from_net"
+    if "mode=import_only" in source_id or "export_configured=False" in source_id:
+        return "unknown"
+    return "directly_measured"
+
+
 @dataclass(frozen=True, slots=True)
 class HistoryQuery:
     """Validated HISTORY query supplied by the authenticated dashboard."""
@@ -143,9 +155,9 @@ def history_report(
         item["measured_peak_kw"] = None
         item["measured_peak_evidence"] = "not_archived"
         source_id = str(item.get("source_id") or "")
-        item["export_known"] = not (
-            "mode=import_only" in source_id or "export_configured=False" in source_id
-        )
+        export_provenance = _export_provenance(source_id)
+        item["export_provenance"] = export_provenance
+        item["export_known"] = export_provenance != "unknown"
         items.append(item)
     return {
         "range": {"start_utc": start, "end_utc": end},

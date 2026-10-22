@@ -33,7 +33,10 @@ only where both channels evidence the same time span.
 A bidirectional net delta may hide import/export reversals between readings, so
 it is not sufficient evidence for confirmed import-only contractual demand.
 Reverse polarity is explicitly configurable and defaults to counter increase =
-grid import.
+grid import. Genuine reverse flow and an unmarked counter reset cannot always be
+distinguished from the numeric delta alone. Explicit `last_reset` changes and
+implausibly large interval discontinuities are rejected conservatively and start
+a new baseline; ordinary negative deltas remain valid reverse-flow evidence.
 
 Existing V0.9 signed-power entries retain their config-entry IDs, entity unique
 IDs, raw source identity and schema-6 archive namespace. A code upgrade alone
@@ -41,8 +44,12 @@ must not create a new configuration epoch.
 
 Multiple entries share one sidebar panel but retain separate databases and
 friendly names. Entry removal keeps its database by default. Permanent deletion
-must be armed separately, may create a SQLite backup, and may remove only the
+requires an entry-scoped confirmation that expires after 10 minutes, may create a SQLite backup, and may remove only the
 selected entry-owned database plus its WAL/SHM sidecars after durable shutdown.
+
+Historical export presentation distinguishes directly measured export,
+bidirectional-net inferred export, and unknown export. Unknown export must never
+be presented as a measured zero.
 
 Unavailable or delayed readings remain explicit.
 An interval that cannot be allocated across a fixed quarter from source evidence

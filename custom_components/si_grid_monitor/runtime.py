@@ -1560,8 +1560,23 @@ def _counter_reading(state: State) -> CounterReading:
     state_class = state.attributes.get("state_class")
     if state_class not in {"total", "total_increasing"}:
         raise AdapterError("energy counter must use total or total_increasing state class")
+    reset_value = state.attributes.get("last_reset")
+    reset_utc: datetime | None = None
+    if reset_value is not None and reset_value != "":
+        try:
+            reset_utc = (
+                reset_value
+                if isinstance(reset_value, datetime)
+                else datetime.fromisoformat(str(reset_value).replace("Z", "+00:00"))
+            )
+        except ValueError as err:
+            raise AdapterError("energy counter has an invalid last_reset timestamp") from err
+        if reset_utc.tzinfo is None:
+            raise AdapterError("energy counter last_reset timestamp must be timezone-aware")
+        reset_utc = reset_utc.astimezone(UTC)
     return CounterReading(
         value=float(state.state),
         unit=unit,
         timestamp=(state.last_reported or state.last_updated).astimezone(UTC),
+        last_reset_utc=reset_utc,
     )

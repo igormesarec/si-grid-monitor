@@ -53,6 +53,15 @@
     entry. Confirm pending writes finish, its database/WAL/SHM files disappear,
     the backup reopens, and every other meter/database remains unchanged. Repeat a
     restart, reload and HACS update without removal; none may delete an archive.
+16. Arm deletion on a disposable meter, wait more than 10 minutes, and then use
+    native Home Assistant removal. Confirm the expired authorization retains the
+    database. Reconfigure and reconfirm before deliberately deleting it.
+17. In HISTORY compare a signed-power quarter, a bidirectional-net counter quarter,
+    and an import-only quarter. Confirm export is labelled directly measured,
+    inferred from net, and unknown respectively; unknown must not appear as 0 kWh.
+18. On a copied net counter, verify an ordinary negative delta remains reverse
+    flow, an explicit `last_reset` change is rejected, and an implausibly large
+    discontinuity becomes unavailable until a fresh baseline is established.
 
 ## V0.8 HISTORY, reconstruction and platform acceptance
 

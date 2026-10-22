@@ -134,8 +134,12 @@ instantaneous measurement; unsupported forecasts remain unavailable.
   counters. SI Grid Monitor creates stable entry-owned derived-power entities;
   no YAML, Template Sensor or Derivative helper is required.
 
-Monotonic counter resets establish a new baseline. Negative net-counter changes
-are valid export/import direction changes, not resets. Independent counters keep
+Monotonic counter resets establish a new baseline. Ordinary negative net-counter
+changes are valid export/import direction changes, not automatically resets.
+Genuine net-counter reversals and unmarked resets cannot always be distinguished;
+explicit Home Assistant `last_reset` changes and physically implausible interval
+discontinuities are rejected conservatively and establish a new baseline.
+Independent counters keep
 independent timestamps and are combined only over jointly evidenced time spans.
 A net delta can hide reversals between readings and therefore never proves a
 confirmed import-only contractual result. Gaps and intervals that cross a fixed
@@ -147,14 +151,20 @@ incomplete rather than confirmed billing measurements.
 Removing an SI Grid Monitor config entry keeps its schema-6 database by default.
 To delete it permanently, first open that meter's integration Options, choose
 **Archive retention or permanent deletion**, select Delete, optionally request a
-SQLite backup, and type the exact displayed confirmation. Only then remove that
-same config entry. Shutdown completes pending writes and closes SQLite before the
+SQLite backup, and type the exact displayed confirmation. That entry-scoped
+authorization expires after 10 minutes; remove the same config entry inside that
+window or native removal keeps the archive. Shutdown completes pending writes and closes SQLite before the
 entry-owned database and WAL/SHM sidecars are removed. Other meters are untouched.
 
 Preserved databases are not automatically attached to a newly created entry,
 because a new entry has a different namespace. Recovery is currently a manual
 backup/restore operation: stop Home Assistant, retain an untouched copy, and
 restore only to the original entry-specific filename. Test recovery on a copy.
+
+HISTORY labels export provenance per archived quarter. Signed or separate export
+measurements are shown as directly measured, bidirectional net-counter export is
+shown as inferred from net change, and sources without export evidence show
+export as unknown rather than measured zero.
 
 ## Current entities
 

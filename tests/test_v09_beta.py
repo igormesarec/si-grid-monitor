@@ -16,6 +16,7 @@ from typing import Any, ClassVar
 import pytest
 
 from custom_components.si_grid_monitor import (
+    _archive_deletion_authorized,
     _remove_meter_archive,
     async_migrate_entry,
     async_remove_entry,
@@ -24,7 +25,9 @@ from custom_components.si_grid_monitor import (
 )
 from custom_components.si_grid_monitor.archive import ArchiveRecord, QuarterArchive
 from custom_components.si_grid_monitor.const import (
+    ARCHIVE_REMOVAL_CONFIRMATION_TTL_SECONDS,
     CONF_ALLOW_PROVISIONAL_TARIFF,
+    CONF_ARCHIVE_REMOVAL_CONFIRMED_AT,
     CONF_CONTRACTED_POWER_PERIODS,
     CONF_COUNTER_BEHAVIOR,
     CONF_EXPORT_ENERGY_ENTITY,
@@ -957,12 +960,72 @@ def test_remove_entry_deletes_only_the_armed_meter_after_shutdown(tmp_path: Path
     entry = SimpleNamespace(
         entry_id="delete-meter",
         title="Delete meter",
-        options={"delete_archive_on_remove": True, "backup_archive_on_remove": False},
+        options={
+            "delete_archive_on_remove": True,
+            "backup_archive_on_remove": False,
+            CONF_ARCHIVE_REMOVAL_CONFIRMED_AT: datetime.now(UTC).isoformat(),
+        },
         runtime_data=None,
     )
     _run(async_remove_entry(Hass(), entry))
     assert not selected.exists()
     assert other.exists()
+
+
+def test_archive_deletion_confirmation_expires_and_cannot_remain_armed() -> None:
+    confirmed = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
+    options = {
+        "delete_archive_on_remove": True,
+        CONF_ARCHIVE_REMOVAL_CONFIRMED_AT: confirmed.isoformat(),
+    }
+    assert _archive_deletion_authorized(
+        options,
+        now_utc=confirmed + timedelta(minutes=9, seconds=59),
+        ttl_seconds=ARCHIVE_REMOVAL_CONFIRMATION_TTL_SECONDS,
+    )
+    assert not _archive_deletion_authorized(
+        options,
+        now_utc=confirmed + timedelta(minutes=10, seconds=1),
+        ttl_seconds=ARCHIVE_REMOVAL_CONFIRMATION_TTL_SECONDS,
+    )
+    assert not _archive_deletion_authorized(
+        {"delete_archive_on_remove": True},
+        now_utc=confirmed,
+        ttl_seconds=ARCHIVE_REMOVAL_CONFIRMATION_TTL_SECONDS,
+    )
+
+
+def test_remove_entry_keeps_database_after_deletion_confirmation_expires(tmp_path: Path) -> None:
+    storage = tmp_path / ".storage"
+    storage.mkdir()
+    archive_path = storage / "si_grid_monitor_expired-meter.db"
+    archive = QuarterArchive(archive_path)
+    archive.open()
+    archive.close()
+
+    class Config:
+        @staticmethod
+        def path(*parts: str) -> str:
+            return str(tmp_path.joinpath(*parts))
+
+    class Hass:
+        config = Config()
+
+        @staticmethod
+        async def async_add_executor_job(function: Any, *args: Any) -> Any:
+            return function(*args)
+
+    entry = SimpleNamespace(
+        entry_id="expired-meter",
+        title="Expired meter",
+        options={
+            "delete_archive_on_remove": True,
+            CONF_ARCHIVE_REMOVAL_CONFIRMED_AT: "2020-01-01T00:00:00+00:00",
+        },
+        runtime_data=None,
+    )
+    _run(async_remove_entry(Hass(), entry))
+    assert archive_path.exists()
 
 
 def test_setup_translations_cover_all_counter_and_removal_choices() -> None:

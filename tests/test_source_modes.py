@@ -147,6 +147,45 @@ def test_mode_d_bidirectional_net_counter_reverses_polarity() -> None:
     assert imported.normalized.signed_kw == pytest.approx(1.0)
 
 
+def test_mode_d_net_counter_rejects_explicit_reset_but_accepts_normal_reversal() -> None:
+    reset_at = datetime(2026, 10, 21, 10, 15, tzinfo=UTC)
+    converter = CounterPowerConverter(behavior=COUNTER_NET)
+    assert converter.update(reading(10.0, "kWh", 0)) is None
+    reversal = converter.update(reading(9.75, "kWh", 15))
+    assert reversal is not None
+    assert reversal.normalized.signed_kw == pytest.approx(-1.0)
+    with pytest.raises(AdapterError, match="reported a reset"):
+        converter.update(
+            CounterReading(
+                1.0,
+                "kWh",
+                datetime(2026, 10, 21, 10, 30, tzinfo=UTC),
+                last_reset_utc=reset_at,
+            )
+        )
+    recovered = converter.update(
+        CounterReading(
+            1.25,
+            "kWh",
+            datetime(2026, 10, 21, 10, 45, tzinfo=UTC),
+            last_reset_utc=reset_at,
+        )
+    )
+    assert recovered is not None
+    assert recovered.normalized.signed_kw == pytest.approx(1.0)
+
+
+def test_mode_d_net_counter_rejects_suspicious_discontinuity_conservatively() -> None:
+    converter = CounterPowerConverter(behavior=COUNTER_NET)
+    assert converter.update(reading(10.0, "kWh", 0)) is None
+    with pytest.raises(AdapterError, match="suspicious cumulative import discontinuity"):
+        converter.update(reading(-5000.0, "kWh", 1))
+    # The rejected reading becomes a safety baseline; no discontinuity is emitted.
+    recovered = converter.update(reading(-4999.75, "kWh", 16))
+    assert recovered is not None
+    assert recovered.normalized.signed_kw == pytest.approx(1.0)
+
+
 def test_mode_d_separate_counters_join_asynchronous_cadences_once() -> None:
     converter = CounterPowerConverter(behavior=COUNTER_SEPARATE, export_expected=True)
     assert converter.update_intervals(reading(0, "kWh", 0), reading(0, "kWh", 0)) == ()

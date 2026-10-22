@@ -4,6 +4,13 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+- Made archive deletion authorization entry-scoped and valid for only 10 minutes;
+  an expired or missing confirmation always falls back to retaining schema-6 data.
+- Added explicit HISTORY export provenance for directly measured, net-inferred,
+  and unknown export so an unsupported export channel never appears as measured zero.
+- Added conservative bidirectional-net discontinuity handling using explicit
+  `last_reset` metadata and an implausible interval-rate guard while preserving
+  ordinary negative reverse-flow deltas.
 - Added V0.9.5's four supported input designs: signed live power, separate
   nonnegative import/export power, import-only power, and cumulative Wh/kWh
   counters with integration-owned derived-power entities.

@@ -654,3 +654,43 @@ def test_history_marks_unmeasured_export_unknown_for_import_only_sources(tmp_pat
         now_utc=start + timedelta(minutes=15),
     )
     assert report["items"][0]["export_known"] is False
+    assert report["items"][0]["export_provenance"] == "unknown"
+
+
+def test_history_distinguishes_measured_inferred_and_unknown_export(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "export-provenance.db")
+    archive.open()
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    records = (
+        _record(start, source_id="sensor.legacy_signed_grid", export_kwh=0.1),
+        _record(
+            start + timedelta(minutes=15),
+            source_id=(
+                "mode=cumulative_energy|entities=sensor.net|"
+                "positive_means_import=True|export_configured=True|counter_behavior=net"
+            ),
+            export_kwh=0.2,
+        ),
+        _record(
+            start + timedelta(minutes=30),
+            source_id=(
+                "mode=import_only|entities=sensor.import|"
+                "positive_means_import=True|export_configured=False"
+            ),
+            export_kwh=0.0,
+        ),
+    )
+    for record in records:
+        archive.upsert_quarter(record)
+    report = history_report(
+        archive,
+        "meter-a",
+        HistoryQuery(start, start + timedelta(minutes=45), direction="asc"),
+        now_utc=start + timedelta(minutes=45),
+    )
+    assert [item["export_provenance"] for item in report["items"]] == [
+        "directly_measured",
+        "inferred_from_net",
+        "unknown",
+    ]
+    assert [item["export_known"] for item in report["items"]] == [True, True, False]

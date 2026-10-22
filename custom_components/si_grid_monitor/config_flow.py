@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import UTC, date, datetime
 from typing import Any
 
 import voluptuous as vol
@@ -18,6 +18,7 @@ from .const import (
     CONF_ARCHIVE_REMOVAL_ACTION,
     CONF_ARCHIVE_REMOVAL_BACKUP,
     CONF_ARCHIVE_REMOVAL_CONFIRMATION,
+    CONF_ARCHIVE_REMOVAL_CONFIRMED_AT,
     CONF_ASSIGNMENT_ACTION,
     CONF_ASSIGNMENT_END_DATE,
     CONF_ASSIGNMENT_PROVENANCE,
@@ -604,6 +605,7 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
                     {
                         CONF_DELETE_ARCHIVE_ON_REMOVE: False,
                         CONF_BACKUP_ARCHIVE_ON_REMOVE: False,
+                        CONF_ARCHIVE_REMOVAL_CONFIRMED_AT: "",
                     }
                 )
             self._pending_archive_backup = bool(user_input.get(CONF_ARCHIVE_REMOVAL_BACKUP, True))
@@ -643,6 +645,7 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
                     {
                         CONF_DELETE_ARCHIVE_ON_REMOVE: True,
                         CONF_BACKUP_ARCHIVE_ON_REMOVE: self._pending_archive_backup,
+                        CONF_ARCHIVE_REMOVAL_CONFIRMED_AT: datetime.now(UTC).isoformat(),
                     }
                 )
         return self.async_show_form(

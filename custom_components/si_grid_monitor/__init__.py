@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -264,17 +264,22 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Remove an entry while retaining its archive unless deletion was armed."""
+    """Remove an entry, retaining its archive unless deletion was freshly confirmed."""
 
     from .const import (
+        ARCHIVE_REMOVAL_CONFIRMATION_TTL_SECONDS,
         CONF_BACKUP_ARCHIVE_ON_REMOVE,
-        CONF_DELETE_ARCHIVE_ON_REMOVE,
     )
 
     options = dict(entry.options)
-    if not bool(options.get(CONF_DELETE_ARCHIVE_ON_REMOVE, False)):
+    if not _archive_deletion_authorized(
+        options,
+        now_utc=datetime.now(UTC),
+        ttl_seconds=ARCHIVE_REMOVAL_CONFIRMATION_TTL_SECONDS,
+    ):
         _LOGGER.info(
-            "Keeping SI Grid Monitor archive for removed meter %s (%s)",
+            "Keeping SI Grid Monitor archive for removed meter %s (%s); "
+            "permanent deletion was not freshly confirmed",
             entry.title,
             entry.entry_id,
         )
@@ -299,6 +304,31 @@ async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
         entry.entry_id,
         backup,
     )
+
+
+def _archive_deletion_authorized(
+    options: dict[str, Any],
+    *,
+    now_utc: datetime,
+    ttl_seconds: int,
+) -> bool:
+    """Return whether explicit archive deletion confirmation is still fresh."""
+
+    from .const import CONF_ARCHIVE_REMOVAL_CONFIRMED_AT, CONF_DELETE_ARCHIVE_ON_REMOVE
+
+    if not bool(options.get(CONF_DELETE_ARCHIVE_ON_REMOVE, False)):
+        return False
+    raw = options.get(CONF_ARCHIVE_REMOVAL_CONFIRMED_AT)
+    if not isinstance(raw, str) or not raw:
+        return False
+    try:
+        confirmed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if confirmed.tzinfo is None or now_utc.tzinfo is None:
+        return False
+    age = now_utc.astimezone(UTC) - confirmed.astimezone(UTC)
+    return -timedelta(seconds=60) <= age <= timedelta(seconds=ttl_seconds)
 
 
 def _remove_meter_archive(

@@ -636,6 +636,26 @@ test("HISTORY mobile cards expose a complete quarter without horizontal table de
   assert.match(html, /Open quarter details/);
 });
 
+test("HISTORY labels measured, net-inferred, and unknown export without zero fabrication", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._historyBlock = "all";
+  const base = {...quarter(START_A), measured_valid: true, import_demand_kw: 1,
+    contractual_target_kw: 3.5, import_kwh: .25, coverage_pct: 100,
+    quality: "counter_derived"};
+  const html = panel._historyQuarterReport({items: [
+    {...base, start_utc: START_A, export_kwh: .1,
+      export_provenance: "directly_measured", export_known: true},
+    {...base, start_utc: START_B, export_kwh: .2,
+      export_provenance: "inferred_from_net", export_known: true},
+    {...base, start_utc: "2026-10-19T10:30:00+00:00", export_kwh: 0,
+      export_provenance: "unknown", export_known: false},
+  ]});
+  assert.match(html, /0\.100 kWh · directly measured export/);
+  assert.match(html, /0\.200 kWh · export inferred from net counter/);
+  assert.match(html, /export unknown/);
+  assert.doesNotMatch(html, /0\.000 kWh · directly measured export/);
+});
+
 test("mobile HISTORY CSS stacks header and controls at Android widths", () => {
   const panel = new SIGridMonitorPanel();
   const css = panel._mobileHistoryStyles();

@@ -209,7 +209,7 @@
       },
       "archive_removal": {
         "title": "Ravnanje z arhivom ob odstranitvi merilnika",
-        "description": "Merilnik: {meter}. Varna privzeta izbira ohrani arhiv SQLite sheme 6. Trajni izbris se tukaj samo omogoči in se izvede šele ob odstranitvi te konfiguracije.",
+        "description": "Merilnik: {meter}. Običajna odstranitev varno ohrani arhiv SQLite sheme 6. Potrditev trajnega izbrisa poteče po 10 minutah; v tem času odstranite natanko to konfiguracijo, sicer se arhiv ohrani.",
         "data": {
           "archive_removal_action": "Ravnanje ob odstranitvi",
           "archive_removal_backup": "Pred trajnim izbrisom ustvari varnostno kopijo SQLite"
@@ -221,12 +221,12 @@
       },
       "confirm_archive_deletion": {
         "title": "Potrditev trajnega izbrisa arhiva",
-        "description": "Tega v SI Grid Monitor ni mogoče razveljaviti. Za omogočanje izbrisa merilnika {meter} vnesite natanko: {confirmation}",
+        "description": "Tega v SI Grid Monitor ni mogoče razveljaviti. Vnesite natanko {confirmation} in nato v 10 minutah odstranite merilnik {meter}. Po tem dovoljenje poteče in arhiv se ohrani.",
         "data": {
           "archive_removal_confirmation": "Natančna potrditev"
         },
         "data_description": {
-          "archive_removal_confirmation": "Potrditev varuje druge nastavljene merilnike in njihove arhive pred nenamernim izbrisom."
+          "archive_removal_confirmation": "Dovoljenje velja samo za ta vnos in poteče po 10 minutah; druge merilnike in njihove arhive varuje pred nenamernim izbrisom."
         }
       },
       "assignments": {

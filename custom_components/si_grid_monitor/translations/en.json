@@ -209,7 +209,7 @@
       },
       "archive_removal": {
         "title": "Archive behavior when this meter is removed",
-        "description": "Meter: {meter}. The safe default keeps its schema-6 SQLite archive. Permanent deletion is armed here but happens only if you then remove this exact config entry.",
+        "description": "Meter: {meter}. Native removal safely keeps its schema-6 SQLite archive. A permanent-deletion confirmation expires after 10 minutes; remove this exact config entry within that window or the archive is retained.",
         "data": {
           "archive_removal_action": "Removal behavior",
           "archive_removal_backup": "Create a SQLite backup before permanent deletion"
@@ -221,12 +221,12 @@
       },
       "confirm_archive_deletion": {
         "title": "Confirm permanent archive deletion",
-        "description": "This cannot be undone from SI Grid Monitor. To arm deletion for {meter}, type exactly: {confirmation}",
+        "description": "This cannot be undone from SI Grid Monitor. Type exactly {confirmation}, then remove {meter} within 10 minutes. After that, authorization expires and removal keeps the archive.",
         "data": {
           "archive_removal_confirmation": "Exact confirmation"
         },
         "data_description": {
-          "archive_removal_confirmation": "The confirmation protects other configured meters and their archives from accidental deletion."
+          "archive_removal_confirmation": "This entry-scoped authorization expires after 10 minutes and protects other configured meters and their archives from accidental deletion."
         }
       },
       "assignments": {

@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import math
 from collections import deque
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 
 from .adapters import AdapterError, NormalizedPower, energy_to_kwh
 from .const import COUNTER_BEHAVIORS, COUNTER_IMPORT_ONLY, COUNTER_NET
+
+MAX_COUNTER_DERIVED_ABS_KW = 10_000.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,6 +29,7 @@ class CounterReading:
     value: float
     unit: str
     timestamp: datetime
+    last_reset_utc: datetime | None = None
 
     @property
     def kwh(self) -> float:
@@ -82,6 +86,12 @@ class CounterPowerConverter:
     def _validate(reading: CounterReading) -> None:
         if reading.timestamp.tzinfo is None or reading.timestamp.utcoffset() is None:
             raise AdapterError("counter timestamp must be timezone-aware")
+        if not math.isfinite(reading.kwh):
+            raise AdapterError("cumulative counter value must be finite")
+        if reading.last_reset_utc is not None and (
+            reading.last_reset_utc.tzinfo is None or reading.last_reset_utc.utcoffset() is None
+        ):
+            raise AdapterError("counter reset timestamp must be timezone-aware")
 
     def _channel_delta(
         self,
@@ -104,12 +114,24 @@ class CounterPowerConverter:
                 return None
             raise AdapterError(f"conflicting duplicate-timestamp cumulative {channel} reading")
         self._previous[channel] = reading
+        if previous.last_reset_utc != reading.last_reset_utc and (
+            previous.last_reset_utc is not None or reading.last_reset_utc is not None
+        ):
+            self._queues[channel].clear()
+            raise AdapterError(f"cumulative {channel} counter reported a reset")
         delta = reading.kwh - previous.kwh
         if delta < 0 and not allow_negative:
             self._queues[channel].clear()
             raise AdapterError(f"cumulative {channel} counter reset or rolled over")
         hours = (end - start).total_seconds() / 3600.0
-        return _ChannelInterval(start, end, delta / hours)
+        average_kw = delta / hours
+        if abs(average_kw) > MAX_COUNTER_DERIVED_ABS_KW:
+            self._queues[channel].clear()
+            raise AdapterError(
+                f"suspicious cumulative {channel} discontinuity "
+                f"({average_kw:.1f} kW interval average)"
+            )
+        return _ChannelInterval(start, end, average_kw)
 
     @staticmethod
     def _derived(
