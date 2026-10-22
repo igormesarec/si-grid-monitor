@@ -14,6 +14,10 @@ All notable changes to SI Grid Monitor will be documented here.
 - Added conservative counter quality handling for first readings, resets,
   duplicates, gaps and cross-quarter intervals. Counter derivatives remain
   interval averages and do not masquerade as verified instantaneous forecasts.
+- Added a responsive sticky active-meter control shared by every dashboard tab.
+  It displays the friendly name, remembers the last selection locally when
+  browser storage is available, safely falls back with a notice when that entry
+  disappears, and retains entry-scoped request gates across every view.
 
 - Started the V0.9.0 beta-readiness milestone with a complete V1 acceptance
   matrix, safe V0.8 upgrade/rollback guidance and a clean-HA test procedure.

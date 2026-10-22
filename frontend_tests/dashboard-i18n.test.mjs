@@ -25,6 +25,15 @@ test("parameterized translations keep values and use English fallback", () => {
   assert.equal(translateDashboard("unknown.explicit.key", "sl"), "unknown.explicit.key");
 });
 
+test("meter persistence and fallback messages are localized", () => {
+  assert.equal(translateDashboard("meter.active", "en"), "Active meter");
+  assert.equal(translateDashboard("meter.select", "sl"), "Izberite merilnik");
+  assert.equal(
+    translateDashboard("meter.fallback", "sl", {meter: "Hiša"}),
+    "Prej izbrani merilnik ni dostopen. Izbran je merilnik Hiša.",
+  );
+});
+
 test("language switching translates dynamic audit and all navigation keys", () => {
   for (const page of ["overview", "today", "period", "blocks", "exceedances", "history", "calendar"]) {
     assert.notEqual(translateDashboard(`nav.${page}`, "sl"), `nav.${page}`);

@@ -43,6 +43,7 @@ const esc = value => String(value ?? "").replace(/[&<>"']/g, character => ({
 })[character]);
 const localDate = value => ljubljanaDate(value);
 const localTime = value => ljubljanaTimeLabel(value);
+export const ACTIVE_METER_STORAGE_KEY = "si_grid_monitor.active_meter.v1";
 
 export class SIGridMonitorPanel extends HTMLElement {
   constructor() {
@@ -166,6 +167,61 @@ export class SIGridMonitorPanel extends HTMLElement {
     });
   }
 
+  _storedEntryId() {
+    try {
+      const value = globalThis.localStorage?.getItem(ACTIVE_METER_STORAGE_KEY);
+      return value?.trim() || null;
+    } catch {
+      return null;
+    }
+  }
+
+  _rememberEntry(entryId) {
+    if (!entryId) return;
+    try {
+      globalThis.localStorage?.setItem(ACTIVE_METER_STORAGE_KEY, entryId);
+    } catch {
+      // Storage can be disabled in embedded/private browser contexts. Selection
+      // remains valid for the lifetime of this panel instance.
+    }
+  }
+
+  _activateEntry(entryId, {remember = true} = {}) {
+    const nextEntryId = entryId || null;
+    if (nextEntryId === this._entryId) {
+      if (remember) this._rememberEntry(nextEntryId);
+      return false;
+    }
+    this._entryId = nextEntryId;
+    this._gate.switchEntry(nextEntryId);
+    this._historyGate.switchEntry(nextEntryId);
+    this._resetEntryState();
+    if (remember) this._rememberEntry(nextEntryId);
+    return true;
+  }
+
+  _reconcileEntries(entries, {notifyFallback = true} = {}) {
+    const normalized = Array.isArray(entries)
+      ? entries.filter(item => item?.entry_id).map(item => ({
+        entry_id: String(item.entry_id),
+        title: String(item.title || item.entry_id),
+      })) : [];
+    const storedEntryId = this._storedEntryId();
+    const preferredEntryId = this._entryId || storedEntryId;
+    const preferredAvailable = normalized.some(item => item.entry_id === preferredEntryId);
+    const nextEntryId = preferredAvailable ? preferredEntryId : normalized[0]?.entry_id || null;
+    const fellBack = Boolean(preferredEntryId && !preferredAvailable);
+    this._entries = normalized;
+    const changed = this._activateEntry(nextEntryId, {remember: Boolean(nextEntryId)});
+    if (fellBack && notifyFallback) {
+      const active = normalized.find(item => item.entry_id === nextEntryId);
+      this._meterNotice = active
+        ? this._t("meter.fallback", {meter: active.title})
+        : this._t("meter.none_available");
+    }
+    return changed;
+  }
+
   async _load() {
     if (!this._hass || this._loading) return;
     this._loading = true;
@@ -173,15 +229,7 @@ export class SIGridMonitorPanel extends HTMLElement {
       const result = await this._hass.connection.sendMessagePromise({
         type: "si_grid_monitor/entries",
       });
-      this._entries = result.entries || [];
-      const entryId = this._entries.some(item => item.entry_id === this._entryId)
-        ? this._entryId : this._entries[0]?.entry_id;
-      if (entryId !== this._entryId) {
-        this._entryId = entryId;
-        this._gate.switchEntry(entryId);
-        this._historyGate.switchEntry(entryId);
-        this._resetEntryState();
-      }
+      this._reconcileEntries(result.entries || []);
       await this._loadTab();
       this._loaded = true;
       this._error = null;
@@ -194,11 +242,14 @@ export class SIGridMonitorPanel extends HTMLElement {
   }
 
   async _selectEntry(entryId) {
+    if (!this._entries.some(item => item.entry_id === entryId)) {
+      this._reconcileEntries(this._entries);
+      this._render();
+      return;
+    }
     if (entryId === this._entryId) return;
-    this._entryId = entryId;
-    this._gate.switchEntry(entryId);
-    this._historyGate.switchEntry(entryId);
-    this._resetEntryState();
+    this._meterNotice = null;
+    this._activateEntry(entryId);
     this._render();
     await this._loadTab();
   }
@@ -351,13 +402,36 @@ export class SIGridMonitorPanel extends HTMLElement {
     this._render();
   }
 
-  _refreshVisible() {
-    if (!this.isConnected || !this._entryId) return;
-    if (this._tab === "overview" ||
-        (this._tab === "today" && this._selectedDate === localDate()) ||
-        (["period", "blocks", "exceedances"].includes(this._tab)
-          && (this._period || this._blocks || this._exceedances)?.period?.partial)) {
-      this._loadTab();
+  async _refreshVisible() {
+    if (!this.isConnected || this._refreshing) return;
+    this._refreshing = true;
+    try {
+      try {
+        const result = await this._hass.connection.sendMessagePromise({
+          type: "si_grid_monitor/entries",
+        });
+        const changed = this._reconcileEntries(result.entries || []);
+        if (changed) {
+          this._render();
+          if (this._entryId) await this._loadTab();
+          return;
+        }
+      } catch {
+        // A temporary entries-list failure must not discard the selected meter.
+        // The tab request below retains the normal user-visible retry behavior.
+      }
+      if (!this._entryId) {
+        this._render();
+        return;
+      }
+      if (this._tab === "overview" ||
+          (this._tab === "today" && this._selectedDate === localDate()) ||
+          (["period", "blocks", "exceedances"].includes(this._tab)
+            && (this._period || this._blocks || this._exceedances)?.period?.partial)) {
+        await this._loadTab();
+      }
+    } finally {
+      this._refreshing = false;
     }
   }
 
@@ -1428,6 +1502,7 @@ export class SIGridMonitorPanel extends HTMLElement {
   _render() {
     if (!this.shadowRoot) return;
     const activeElement = this.shadowRoot.activeElement;
+    const meterFocused = activeElement?.dataset?.entry !== undefined;
     const analysisKey = [
       "periodType", "periodBlock", "periodMove", "periodCurrent",
       "customStart", "customEnd", "chartMode", "exceedanceSort",
@@ -1445,7 +1520,9 @@ export class SIGridMonitorPanel extends HTMLElement {
               ? {type: "exceedance", value: activeElement.dataset.exceedanceQuarter}
               : analysisKey
                 ? {type: "analysis", key: analysisKey, value: activeElement.dataset[analysisKey]}
-                : null;
+                : meterFocused
+                  ? {type: "meter"}
+                  : null;
     const priorTimelineScroll = this.shadowRoot.querySelector(".timeline")?.scrollLeft;
     if (priorTimelineScroll != null) this._calendarScrollLeft = priorTimelineScroll;
     const priorTodayScroll = this.shadowRoot.querySelector("[data-today-scroll]")?.scrollLeft;
@@ -1465,6 +1542,7 @@ export class SIGridMonitorPanel extends HTMLElement {
     if (nextChartDataKey) this._chartDataKey = nextChartDataKey;
     this._resetChartScrollOnRender = false;
     const active = this._entries.find(entry => entry.entry_id === this._entryId);
+    const activeMeterName = active?.title || this._t("common.unavailable");
     const tabs = ["overview", "today", "period", "blocks", "exceedances", "history", "calendar"];
     const content = !this._entries.length
       ? `<section class="card"><h2>${esc(this._t("setup.no_meter"))}</h2><p>${esc(this._t("setup.no_meter_help"))}</p></section>`
@@ -1475,7 +1553,12 @@ export class SIGridMonitorPanel extends HTMLElement {
               : this._tab === "exceedances" ? this._exceedancesView()
                 : this._tab === "history" ? this._historyView()
                   : `${this._calendarView()}${this._tariffStatusView()}`;
-    this.shadowRoot.innerHTML = `<style>${this._styles()}</style><style>${this._legendStyles()}</style><style>${this._mobileHistoryStyles()}</style><main><header><div class="brand"><span>SI</span><div><h1>SI Grid Monitor</h1><p>Import-only contractual demand intelligence</p></div></div><div class="meter"><small>Active meter</small>${this._entries.length > 1 ? `<select data-entry>${this._entries.map(entry => `<option value="${esc(entry.entry_id)}" ${entry.entry_id === this._entryId ? "selected" : ""}>${esc(entry.title)}</option>`).join("")}</select>` : `<strong>${esc(active?.title || "None")}</strong>`}</div></header><nav>${tabs.map(id => `<button data-tab="${id}" class="${this._tab === id ? "active" : ""}">${esc(this._t(`nav.${id}`))}</button>`).join("")}</nav>${this._error ? `<div class="error">${esc(this._t("error.connection", {message: this._error}))}</div>` : ""}${content}</main>`;
+    const meterSelector = this._entries.length > 1
+      ? `<label class="meter-selector"><span>${esc(this._t("meter.select"))}</span><select data-entry aria-label="${esc(this._t("meter.select"))}">${this._entries.map(entry => `<option value="${esc(entry.entry_id)}" ${entry.entry_id === this._entryId ? "selected" : ""}>${esc(entry.title)}</option>`).join("")}</select></label>`
+      : "";
+    const meterNotice = this._meterNotice
+      ? `<div class="notice meter-notice" role="status" aria-live="polite">${esc(this._meterNotice)}</div>` : "";
+    this.shadowRoot.innerHTML = `<style>${this._styles()}</style><style>${this._legendStyles()}</style><style>${this._mobileHistoryStyles()}</style><main><header><div class="brand"><span>SI</span><div><h1>SI Grid Monitor</h1><p>Import-only contractual demand intelligence</p></div></div></header><nav>${tabs.map(id => `<button data-tab="${id}" class="${this._tab === id ? "active" : ""}">${esc(this._t(`nav.${id}`))}</button>`).join("")}</nav><section class="meter meter-toolbar" aria-label="${esc(this._t("meter.active"))}"><div class="meter-identity"><small>${esc(this._t("meter.active"))}</small><strong data-active-meter-name>${esc(activeMeterName)}</strong></div>${meterSelector}</section>${meterNotice}${this._error ? `<div class="error">${esc(this._t("error.connection", {message: this._error}))}</div>` : ""}${content}</main>`;
     if (this._tab === "history" && this._historyPage) {
       this.shadowRoot.querySelector("main > section.card:last-of-type")?.insertAdjacentHTML(
         "beforeend", this._historyAuditPanel(),
@@ -1520,6 +1603,8 @@ export class SIGridMonitorPanel extends HTMLElement {
               : focusState?.type === "analysis"
                 ? [...this.shadowRoot.querySelectorAll("button,select,input")]
                   .find(element => element.dataset[focusState.key] === focusState.value)
+                : focusState?.type === "meter"
+                  ? this.shadowRoot.querySelector("select[data-entry]")
                 : null;
     focusTarget?.focus({preventScroll: true});
     this._tick();
@@ -1530,7 +1615,7 @@ export class SIGridMonitorPanel extends HTMLElement {
   }
 
   _mobileHistoryStyles() {
-    return `header{min-width:0}.brand,.brand>div,.meter{min-width:0}.brand>span{min-width:48px;flex:none}.brand h1,.meter strong,.meter select{max-width:100%;overflow-wrap:anywhere;word-break:break-word}.meter{max-width:50%}.history-controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:12px;align-items:end}.history-controls label{display:flex;min-width:0;flex-direction:column;gap:5px;font-size:.78rem;color:var(--secondary-text-color)}.history-controls input,.history-controls select,.history-controls button{width:100%;min-width:0}.history-order-lock{grid-column:1/-1;margin:0}@media(max-width:700px){header{align-items:flex-start;flex-direction:column}.brand,.meter{width:100%;max-width:none}.meter{align-items:flex-start}.meter strong,.meter select{width:100%}.history-controls{grid-template-columns:minmax(0,1fr)}.history-controls button{min-height:44px}.history-quarter-report h3,.history-quarter-report>p{overflow-wrap:anywhere}}`;
+    return `header{min-width:0}.brand,.brand>div,.meter,.meter-identity,.meter-selector{min-width:0}.brand>span{min-width:48px;flex:none}.brand h1,.meter strong,.meter select{max-width:100%;overflow-wrap:anywhere;word-break:break-word}.history-controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:12px;align-items:end}.history-controls label{display:flex;min-width:0;flex-direction:column;gap:5px;font-size:.78rem;color:var(--secondary-text-color)}.history-controls input,.history-controls select,.history-controls button{width:100%;min-width:0}.history-order-lock{grid-column:1/-1;margin:0}@media(max-width:700px){header{align-items:flex-start;flex-direction:column}.brand,.meter{width:100%;max-width:none}.meter{align-items:stretch;flex-direction:column}.meter strong,.meter select,.meter-selector{width:100%}.history-controls{grid-template-columns:minmax(0,1fr)}.history-controls button{min-height:44px}.history-quarter-report h3,.history-quarter-report>p{overflow-wrap:anywhere}}`;
   }
 
   _historyStyles() {
@@ -1588,7 +1673,7 @@ export class SIGridMonitorPanel extends HTMLElement {
   }
 
   _styles() {
-    return `:host{display:block;min-height:100%;font-family:var(--paper-font-body1_-_font-family,system-ui);background:var(--primary-background-color);color:var(--primary-text-color);--line:var(--divider-color,#d6d9de);--card:var(--card-background-color,#fff)}*{box-sizing:border-box}main{max-width:1450px;margin:auto;padding:18px;overflow-x:hidden}header,.row,.herohead,.direction,nav{display:flex;align-items:center;gap:12px}header{justify-content:space-between}.brand{display:flex;align-items:center;gap:12px}.brand>span{display:grid;place-items:center;width:48px;height:48px;border:4px solid #15803d;border-left-color:#e11d48;border-radius:50%;font-weight:800}.brand h1{margin:0;font-size:1.45rem}.brand p,.eyebrow,.meter small{margin:2px 0;color:var(--secondary-text-color);font-size:.78rem}.meter{display:flex;flex-direction:column;align-items:flex-end;gap:3px}nav{margin:18px 0;border-bottom:1px solid var(--line)}button,select,input{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:8px;padding:9px 12px;cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}nav button{border:0;border-radius:0;font-weight:700}nav .active{border-bottom:3px solid var(--primary-color,#03a9f4);color:var(--primary-color,#03a9f4)}.card{background:var(--card);border-radius:14px;padding:18px;margin:14px 0;box-shadow:var(--ha-card-box-shadow,0 2px 8px #0002)}.herohead{justify-content:space-between}.hero h2{margin:4px 0}.count{font:700 2.2rem ui-monospace}.direction>div{flex:1;padding:14px;border-radius:10px}.import{background:#ef444418;color:#c62828}.export{background:#22c55e18;color:#15803d}.direction b{display:block;font-size:1.7rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:10px;margin:14px 0}.metric{padding:12px;background:color-mix(in srgb,var(--card),var(--primary-text-color) 5%);border-radius:9px}.metric span{display:block;color:var(--secondary-text-color);font-size:.78rem}.metric strong{font-size:1.2rem;overflow-wrap:anywhere}.metric small{font-size:.75rem}.metric.good{border-left:4px solid #16a34a}.metric.bad{border-left:4px solid #dc2626}.metric.accent{border-left:4px solid #0284c7}.notice,.empty,.error,.safety{padding:12px;border-radius:8px;background:#0284c715}.error{background:#f59e0b22}.safety{font-size:.85rem;background:#64748b18}svg{width:100%;height:auto;background:color-mix(in srgb,var(--card),var(--primary-text-color) 3%);border-radius:10px}svg .zero{stroke:var(--primary-text-color);stroke-width:1.8}.contractual-target,.energy-contractual-limit,.target-step{stroke:${CHART_SERIES.contract.color};stroke-width:2;stroke-dasharray:${CHART_SERIES.contract.dash}}.contractual-safety-target,.energy-contractual-safety-target{stroke:${CHART_SERIES.contractSafety.color};stroke-width:2;stroke-dasharray:${CHART_SERIES.contractSafety.dash}}.operational-target,.energy-operational-target{stroke:${CHART_SERIES.operational.color};stroke-width:2.4;stroke-dasharray:${CHART_SERIES.operational.dash}}.simulation-target,.energy-simulation-target{stroke:${CHART_SERIES.simulation.color};stroke-width:2;stroke-dasharray:${CHART_SERIES.simulation.dash}}.power-grid{stroke:var(--divider-color,#d6d9de);stroke-width:.7}.import-trace{fill:none;stroke:${CHART_SERIES.import.color};stroke-width:3}.export-trace{fill:none;stroke:${CHART_SERIES.export.color};stroke-width:3}.smoothed-trace{fill:none;stroke:${CHART_SERIES.smooth.color};stroke-width:2.5}.forecast-continuation{fill:none;stroke:${CHART_SERIES.future.color};stroke-width:2.5;stroke-dasharray:${CHART_SERIES.future.dash}}.energy-actual{fill:none;stroke:${CHART_SERIES.energyActual.color};stroke-width:3}.energy-projection{fill:none;stroke:${CHART_SERIES.energyProjection.color};stroke-width:2.5;stroke-dasharray:${CHART_SERIES.energyProjection.dash}}.energy-current{fill:${CHART_SERIES.energyActual.color};stroke:var(--card);stroke-width:2}.reference-label{paint-order:stroke;stroke:var(--card);stroke-width:4px;stroke-linejoin:round}svg text{fill:var(--secondary-text-color);font-size:12px}.transition-list>div{display:grid;grid-template-columns:1fr 1.4fr 1.2fr;padding:8px;border-bottom:1px solid var(--line)}.daychart{width:100%;max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain}.daychart svg{min-width:1000px}.gridline{stroke:var(--divider-color,#d6d9de);stroke-width:1}.import-bar{fill:#e5484d}.export-bar{fill:#2f9e67}.target-step{stroke:#e6a700}.projection{fill:#8b5cf6;stroke:var(--card);stroke-width:1.5}.exceeded{fill:none;stroke:#dc2626;stroke-width:2}.state{fill:transparent;stroke:#94a3b8;stroke-dasharray:3 3}.state.missing,.state.incomplete,.state.unavailable{fill:url(#hatch);stroke:#f59e0b}.state.upcoming{stroke-opacity:.35}.state.provisional_estimate{stroke:#8b5cf6;stroke-width:2}.quarter-selection{fill:none;stroke:var(--primary-color,#03a9f4);stroke-width:3}.axis-title{font-weight:700}.quarter-slot{cursor:pointer}.quarter-slot:focus{outline:none}.quarter-selector{display:grid;grid-template-columns:auto minmax(220px,1fr) auto;gap:8px;margin:12px 0}.chart-key{font-size:.78rem;color:var(--secondary-text-color);margin:8px 0}.selected-quarter{border:1px solid var(--line);padding:12px;border-radius:10px;margin-top:12px}table{width:100%;border-collapse:collapse;overflow:auto;display:block}th,td{padding:9px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}.chip{display:inline-block;padding:4px 8px;border-radius:12px;color:white}.b1{background:${BLOCK_COLORS[1]}}.b2{background:${BLOCK_COLORS[2]}}.b3{background:${BLOCK_COLORS[3]}}.b4{background:${BLOCK_COLORS[4]}}.b5{background:${BLOCK_COLORS[5]}}.b0{background:#64748b}.timeline{display:flex;overflow-x:auto;gap:3px}.hour{min-width:72px;padding:10px 6px;color:white;display:flex;flex-direction:column;border-radius:7px;text-align:left;border:0}.hour.selected{outline:3px solid var(--primary-color,#03a9f4);outline-offset:-3px}.hour small{font-size:.67rem}.legend{display:flex;gap:8px;margin:15px 0}.chart-scroll{width:100%;max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain;-webkit-overflow-scrolling:touch}.chart-scroll svg{display:block;width:max(100%,1120px);min-width:1120px}.chart-legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin:8px 0;font-size:.78rem;color:var(--secondary-text-color)}.chart-legend span{display:inline-flex;align-items:center;gap:6px}.swatch{display:inline-block;width:24px;height:0;border-top:3px solid}.swatch.import,.swatch.energy-actual{border-color:${CHART_SERIES.import.color}}.swatch.export{border-color:${CHART_SERIES.export.color}}.swatch.smooth{border-color:${CHART_SERIES.smooth.color}}.swatch.future{border-color:${CHART_SERIES.future.color};border-top-style:dashed}.swatch.energy-projection{border-color:${CHART_SERIES.energyProjection.color};border-top-style:dashed}.swatch.contract{border-color:${CHART_SERIES.contract.color};border-top-style:dashed}.swatch.contract-safety{border-color:${CHART_SERIES.contractSafety.color};border-top-style:dotted}.swatch.simulation{border-color:${CHART_SERIES.simulation.color};border-top-style:dashed}.swatch.operational{border-color:${CHART_SERIES.operational.color};border-top-style:dashed}.forecast-anchor{fill:var(--card);stroke:${CHART_SERIES.future.color};stroke-width:4}.time-label{font-size:12px}.axis-title{font-size:13px}@media(max-width:700px){main{padding:8px}.brand p{display:none}.herohead{align-items:flex-start}.count{font-size:1.6rem}.direction{flex-direction:column}.direction>div{width:100%}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.transition-list>div{grid-template-columns:1fr}.card{padding:12px}nav{overflow-x:auto}nav button{white-space:nowrap}.meter{max-width:45%}.reference-label{font-size:10px}.quarter-selector{grid-template-columns:1fr 1fr}.quarter-selector select{grid-column:1/-1;grid-row:1}.chart-legend{font-size:.78rem;gap:8px 12px}.chart-key{font-size:.78rem;line-height:1.4}.time-label{font-size:13px}.axis-title{font-size:14px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}`;
+    return `:host{display:block;min-height:100%;font-family:var(--paper-font-body1_-_font-family,system-ui);background:var(--primary-background-color);color:var(--primary-text-color);--line:var(--divider-color,#d6d9de);--card:var(--card-background-color,#fff)}*{box-sizing:border-box}main{max-width:1450px;margin:auto;padding:18px;overflow-x:hidden}header,.row,.herohead,.direction,nav{display:flex;align-items:center;gap:12px}header{justify-content:space-between}.brand{display:flex;align-items:center;gap:12px}.brand>span{display:grid;place-items:center;width:48px;height:48px;border:4px solid #15803d;border-left-color:#e11d48;border-radius:50%;font-weight:800}.brand h1{margin:0;font-size:1.45rem}.brand p,.eyebrow,.meter small,.meter-selector span{margin:2px 0;color:var(--secondary-text-color);font-size:.78rem}.meter-toolbar{position:sticky;top:0;z-index:20;display:flex;align-items:center;justify-content:space-between;gap:16px;width:100%;margin:0 0 18px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--card);box-shadow:var(--ha-card-box-shadow,0 2px 8px #0002)}.meter-identity,.meter-selector{display:flex;flex-direction:column;gap:3px}.meter-identity strong{font-size:1rem}.meter-selector{align-items:stretch;min-width:min(360px,50%)}nav{margin:18px 0 0;border-bottom:1px solid var(--line)}button,select,input{font:inherit;color:inherit;background:transparent;border:1px solid var(--line);border-radius:8px;padding:9px 12px;cursor:pointer}button:disabled{opacity:.45;cursor:not-allowed}nav button{border:0;border-radius:0;font-weight:700}nav .active{border-bottom:3px solid var(--primary-color,#03a9f4);color:var(--primary-color,#03a9f4)}.card{background:var(--card);border-radius:14px;padding:18px;margin:14px 0;box-shadow:var(--ha-card-box-shadow,0 2px 8px #0002)}.herohead{justify-content:space-between}.hero h2{margin:4px 0}.count{font:700 2.2rem ui-monospace}.direction>div{flex:1;padding:14px;border-radius:10px}.import{background:#ef444418;color:#c62828}.export{background:#22c55e18;color:#15803d}.direction b{display:block;font-size:1.7rem}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(175px,1fr));gap:10px;margin:14px 0}.metric{padding:12px;background:color-mix(in srgb,var(--card),var(--primary-text-color) 5%);border-radius:9px}.metric span{display:block;color:var(--secondary-text-color);font-size:.78rem}.metric strong{font-size:1.2rem;overflow-wrap:anywhere}.metric small{font-size:.75rem}.metric.good{border-left:4px solid #16a34a}.metric.bad{border-left:4px solid #dc2626}.metric.accent{border-left:4px solid #0284c7}.notice,.empty,.error,.safety{padding:12px;border-radius:8px;background:#0284c715}.error{background:#f59e0b22}.safety{font-size:.85rem;background:#64748b18}svg{width:100%;height:auto;background:color-mix(in srgb,var(--card),var(--primary-text-color) 3%);border-radius:10px}svg .zero{stroke:var(--primary-text-color);stroke-width:1.8}.contractual-target,.energy-contractual-limit,.target-step{stroke:${CHART_SERIES.contract.color};stroke-width:2;stroke-dasharray:${CHART_SERIES.contract.dash}}.contractual-safety-target,.energy-contractual-safety-target{stroke:${CHART_SERIES.contractSafety.color};stroke-width:2;stroke-dasharray:${CHART_SERIES.contractSafety.dash}}.operational-target,.energy-operational-target{stroke:${CHART_SERIES.operational.color};stroke-width:2.4;stroke-dasharray:${CHART_SERIES.operational.dash}}.simulation-target,.energy-simulation-target{stroke:${CHART_SERIES.simulation.color};stroke-width:2;stroke-dasharray:${CHART_SERIES.simulation.dash}}.power-grid{stroke:var(--divider-color,#d6d9de);stroke-width:.7}.import-trace{fill:none;stroke:${CHART_SERIES.import.color};stroke-width:3}.export-trace{fill:none;stroke:${CHART_SERIES.export.color};stroke-width:3}.smoothed-trace{fill:none;stroke:${CHART_SERIES.smooth.color};stroke-width:2.5}.forecast-continuation{fill:none;stroke:${CHART_SERIES.future.color};stroke-width:2.5;stroke-dasharray:${CHART_SERIES.future.dash}}.energy-actual{fill:none;stroke:${CHART_SERIES.energyActual.color};stroke-width:3}.energy-projection{fill:none;stroke:${CHART_SERIES.energyProjection.color};stroke-width:2.5;stroke-dasharray:${CHART_SERIES.energyProjection.dash}}.energy-current{fill:${CHART_SERIES.energyActual.color};stroke:var(--card);stroke-width:2}.reference-label{paint-order:stroke;stroke:var(--card);stroke-width:4px;stroke-linejoin:round}svg text{fill:var(--secondary-text-color);font-size:12px}.transition-list>div{display:grid;grid-template-columns:1fr 1.4fr 1.2fr;padding:8px;border-bottom:1px solid var(--line)}.daychart{width:100%;max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain}.daychart svg{min-width:1000px}.gridline{stroke:var(--divider-color,#d6d9de);stroke-width:1}.import-bar{fill:#e5484d}.export-bar{fill:#2f9e67}.target-step{stroke:#e6a700}.projection{fill:#8b5cf6;stroke:var(--card);stroke-width:1.5}.exceeded{fill:none;stroke:#dc2626;stroke-width:2}.state{fill:transparent;stroke:#94a3b8;stroke-dasharray:3 3}.state.missing,.state.incomplete,.state.unavailable{fill:url(#hatch);stroke:#f59e0b}.state.upcoming{stroke-opacity:.35}.state.provisional_estimate{stroke:#8b5cf6;stroke-width:2}.quarter-selection{fill:none;stroke:var(--primary-color,#03a9f4);stroke-width:3}.axis-title{font-weight:700}.quarter-slot{cursor:pointer}.quarter-slot:focus{outline:none}.quarter-selector{display:grid;grid-template-columns:auto minmax(220px,1fr) auto;gap:8px;margin:12px 0}.chart-key{font-size:.78rem;color:var(--secondary-text-color);margin:8px 0}.selected-quarter{border:1px solid var(--line);padding:12px;border-radius:10px;margin-top:12px}table{width:100%;border-collapse:collapse;overflow:auto;display:block}th,td{padding:9px;border-bottom:1px solid var(--line);text-align:left;white-space:nowrap}.chip{display:inline-block;padding:4px 8px;border-radius:12px;color:white}.b1{background:${BLOCK_COLORS[1]}}.b2{background:${BLOCK_COLORS[2]}}.b3{background:${BLOCK_COLORS[3]}}.b4{background:${BLOCK_COLORS[4]}}.b5{background:${BLOCK_COLORS[5]}}.b0{background:#64748b}.timeline{display:flex;overflow-x:auto;gap:3px}.hour{min-width:72px;padding:10px 6px;color:white;display:flex;flex-direction:column;border-radius:7px;text-align:left;border:0}.hour.selected{outline:3px solid var(--primary-color,#03a9f4);outline-offset:-3px}.hour small{font-size:.67rem}.legend{display:flex;gap:8px;margin:15px 0}.chart-scroll{width:100%;max-width:100%;overflow-x:auto;overscroll-behavior-inline:contain;-webkit-overflow-scrolling:touch}.chart-scroll svg{display:block;width:max(100%,1120px);min-width:1120px}.chart-legend{display:flex;flex-wrap:wrap;gap:8px 16px;margin:8px 0;font-size:.78rem;color:var(--secondary-text-color)}.chart-legend span{display:inline-flex;align-items:center;gap:6px}.swatch{display:inline-block;width:24px;height:0;border-top:3px solid}.swatch.import,.swatch.energy-actual{border-color:${CHART_SERIES.import.color}}.swatch.export{border-color:${CHART_SERIES.export.color}}.swatch.smooth{border-color:${CHART_SERIES.smooth.color}}.swatch.future{border-color:${CHART_SERIES.future.color};border-top-style:dashed}.swatch.energy-projection{border-color:${CHART_SERIES.energyProjection.color};border-top-style:dashed}.swatch.contract{border-color:${CHART_SERIES.contract.color};border-top-style:dashed}.swatch.contract-safety{border-color:${CHART_SERIES.contractSafety.color};border-top-style:dotted}.swatch.simulation{border-color:${CHART_SERIES.simulation.color};border-top-style:dashed}.swatch.operational{border-color:${CHART_SERIES.operational.color};border-top-style:dashed}.forecast-anchor{fill:var(--card);stroke:${CHART_SERIES.future.color};stroke-width:4}.time-label{font-size:12px}.axis-title{font-size:13px}@media(max-width:700px){main{padding:8px}.brand p{display:none}.herohead{align-items:flex-start}.count{font-size:1.6rem}.direction{flex-direction:column}.direction>div{width:100%}.grid{grid-template-columns:repeat(2,minmax(0,1fr))}.transition-list>div{grid-template-columns:1fr}.card{padding:12px}nav{overflow-x:auto}nav button{white-space:nowrap}.meter-toolbar{position:sticky;top:0;max-width:none}.reference-label{font-size:10px}.quarter-selector{grid-template-columns:1fr 1fr}.quarter-selector select{grid-column:1/-1;grid-row:1}.chart-legend{font-size:.78rem;gap:8px 12px}.chart-key{font-size:.78rem;line-height:1.4}.time-label{font-size:13px}.axis-title{font-size:14px}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}`;
   }
 }
 

@@ -108,6 +108,32 @@ def _run(coroutine: Any) -> Any:
         return completed.value
 
 
+def test_multiple_meters_share_one_sidebar_panel(monkeypatch: Any) -> None:
+    """Panel registration remains global rather than one panel per meter entry."""
+
+    exists = False
+    registrations: list[dict[str, Any]] = []
+
+    def panel_exists(_hass: Any, _path: str) -> bool:
+        return exists
+
+    async def register(_hass: Any, **kwargs: Any) -> None:
+        nonlocal exists
+        registrations.append(kwargs)
+        exists = True
+
+    monkeypatch.setattr(dashboard.frontend, "async_panel_exists", panel_exists)
+    monkeypatch.setattr(dashboard.panel_custom, "async_register_panel", register)
+    hass = SimpleNamespace(
+        data={DOMAIN: {dashboard.DATA_RUNTIMES: {"meter-a": object(), "meter-b": object()}}}
+    )
+
+    assert _run(dashboard.async_register_panel(hass)) is True
+    assert _run(dashboard.async_register_panel(hass)) is False
+    assert len(registrations) == 1
+    assert registrations[0]["frontend_url_path"] == "si-grid-monitor"
+
+
 def _record(start: datetime, index: int, *, incomplete: bool = False) -> ArchiveRecord:
     target = 3.5
     import_kwh = 0.2 + index * 0.01

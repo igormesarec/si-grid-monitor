@@ -37,6 +37,15 @@ function deferred() {
   return {promise, reject, resolve};
 }
 
+function memoryStorage(initial = {}) {
+  const values = new Map(Object.entries(initial));
+  return {
+    getItem: key => values.has(key) ? values.get(key) : null,
+    setItem: (key, value) => values.set(key, String(value)),
+    values,
+  };
+}
+
 function quarter(startUtc, displayStatus = "completed", overrides = {}) {
   return {
     start_utc: startUtc,
@@ -186,6 +195,10 @@ test("a stale quarter result cannot replace a newer selected quarter", async () 
 
 test("a delayed archive result cannot cross a meter switch", async () => {
   const panel = panelForToday();
+  panel._entries = [
+    {entry_id: "meter-a", title: "Meter A"},
+    {entry_id: "meter-b", title: "Meter B"},
+  ];
   const oldMeter = deferred();
   panel._call = async () => oldMeter.promise;
 
@@ -199,6 +212,102 @@ test("a delayed archive result cannot cross a meter switch", async () => {
   assert.equal(panel._entryId, "meter-b");
   assert.equal(panel._historical, null);
   assert.equal(panel._historicalLoading, false);
+});
+
+test("active meter persists across panel instances and removed meters fall back visibly", () => {
+  const originalStorage = globalThis.localStorage;
+  const storage = memoryStorage({"si_grid_monitor.active_meter.v1": "meter-b"});
+  globalThis.localStorage = storage;
+  try {
+    const restored = new SIGridMonitorPanel();
+    restored._hass = {language: "en"};
+    restored._reconcileEntries([
+      {entry_id: "meter-a", title: "Garage meter"},
+      {entry_id: "meter-b", title: "House meter"},
+    ]);
+    assert.equal(restored._entryId, "meter-b");
+    assert.equal(restored._meterNotice, undefined);
+
+    const afterRemoval = new SIGridMonitorPanel();
+    afterRemoval._hass = {language: "en"};
+    afterRemoval._reconcileEntries([{entry_id: "meter-a", title: "Garage meter"}]);
+    assert.equal(afterRemoval._entryId, "meter-a");
+    assert.match(afterRemoval._meterNotice, /previously selected meter is unavailable/i);
+    assert.match(afterRemoval._meterNotice, /Garage meter/);
+    assert.equal(storage.getItem("si_grid_monitor.active_meter.v1"), "meter-a");
+  } finally {
+    globalThis.localStorage = originalStorage;
+  }
+});
+
+test("meter persistence failure is non-fatal", () => {
+  const originalStorage = globalThis.localStorage;
+  globalThis.localStorage = {
+    getItem() { throw new Error("blocked"); },
+    setItem() { throw new Error("blocked"); },
+  };
+  try {
+    const panel = new SIGridMonitorPanel();
+    panel._hass = {language: "en"};
+    panel._reconcileEntries([{entry_id: "meter-a", title: "House meter"}]);
+    assert.equal(panel._entryId, "meter-a");
+  } finally {
+    globalThis.localStorage = originalStorage;
+  }
+});
+
+test("every dashboard tab renders the active friendly name and selector", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._loaded = true;
+  panel._hass = {language: "en"};
+  panel._entries = [
+    {entry_id: "meter-a", title: "Garage meter"},
+    {entry_id: "meter-b", title: "House main meter"},
+  ];
+  panel._entryId = "meter-b";
+  panel._gate.switchEntry("meter-b");
+  panel._historyGate.switchEntry("meter-b");
+  for (const tab of ["overview", "today", "period", "blocks", "exceedances", "history", "calendar"]) {
+    panel._tab = tab;
+    panel._render();
+    assert.match(panel.shadowRoot.innerHTML, /data-active-meter-name>House main meter/);
+    assert.match(panel.shadowRoot.innerHTML, /data-entry/);
+    assert.match(panel.shadowRoot.innerHTML, /class="meter meter-toolbar"/);
+  }
+});
+
+test("all dashboard requests remain entry-namespaced after a meter switch", async () => {
+  const panel = new SIGridMonitorPanel();
+  panel._render = () => {};
+  panel._entries = [
+    {entry_id: "meter-a", title: "Meter A"},
+    {entry_id: "meter-b", title: "Meter B"},
+  ];
+  panel._entryId = "meter-a";
+  panel._gate.switchEntry("meter-a");
+  panel._historyGate.switchEntry("meter-a");
+  panel._loadTab = async () => {};
+  await panel._selectEntry("meter-b");
+
+  const requests = [];
+  panel._loadTab = SIGridMonitorPanel.prototype._loadTab.bind(panel);
+  panel._call = async (type, _request, entryId) => {
+    requests.push({type, entryId});
+    if (type === "day") return {quarters: [], blocks: [], summary: {}};
+    if (type === "history") return {items: [], pagination: {}, summary: {}};
+    if (type === "calendar") return {hours: []};
+    return {};
+  };
+  for (const tab of ["overview", "today", "period", "blocks", "exceedances", "history", "calendar"]) {
+    panel._tab = tab;
+    await panel._loadTab();
+  }
+  assert.ok(requests.length >= 9);
+  assert.deepEqual(new Set(requests.map(request => request.entryId)), new Set(["meter-b"]));
+  assert.deepEqual(new Set(requests.map(request => request.type)), new Set([
+    "current", "transitions", "day", "period", "blocks", "exceedances",
+    "history", "calendar", "tariff_status",
+  ]));
 });
 
 test("archive failure clears loading and a forced retry succeeds", async () => {
@@ -315,6 +424,10 @@ test("EXCEEDANCES renders one row per quarter with safe pagination state", () =>
 test("delayed PERIOD-family response cannot cross a meter switch", async () => {
   const panel = new SIGridMonitorPanel();
   panel._render = () => {};
+  panel._entries = [
+    {entry_id: "meter-a", title: "Meter A"},
+    {entry_id: "meter-b", title: "Meter B"},
+  ];
   panel._entryId = "meter-a";
   panel._gate.switchEntry("meter-a");
   panel._tab = "blocks";

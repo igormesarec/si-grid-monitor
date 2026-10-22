@@ -39,6 +39,12 @@ documented without changing the master specification in
 No Lovelace dashboard, YAML, pasted JavaScript, or resource registration is
 required. One idempotent custom panel safely supports multiple config entries
 with separate archive namespaces and is removed only after the final entry unloads.
+Every tab displays the active meter's friendly name in a compact sticky control.
+When multiple meters exist, the selector stays reachable while scrolling and the
+last choice is remembered in local browser storage when supported. If that meter
+is later removed or unavailable, the dashboard selects another available entry
+and reports the fallback. Changing meters clears entry-specific live, chart,
+statistics, calendar and HISTORY state before loading the new namespace.
 
 - **Overview** shows the current quarter, measured trace, import/export, budgets,
   forecasts, advice, prior-quarter summary, and upcoming limits.

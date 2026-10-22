@@ -27,7 +27,9 @@ def test_dashboard_bundle_is_self_contained_and_uses_authenticated_websocket() -
     assert "hass.connection.sendMessagePromise" in bundle
     assert "si_grid_monitor/entries" in bundle
     assert "https://" not in bundle
-    assert "localStorage" not in bundle
+    assert 'ACTIVE_METER_STORAGE_KEY = "si_grid_monitor.active_meter.v1"' in bundle
+    assert "globalThis.localStorage?.getItem(ACTIVE_METER_STORAGE_KEY)" in bundle
+    assert "globalThis.localStorage?.setItem(ACTIVE_METER_STORAGE_KEY, entryId)" in bundle
     assert "setInterval(() => this._tick(), 1000)" in bundle
     assert "RequestGate" in bundle
 

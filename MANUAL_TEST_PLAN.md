@@ -21,6 +21,16 @@
    unavailable diagnostics, safe recovery and no deletion of unrelated helpers.
 8. Repeat with two meters and confirm generated entity IDs and archive namespaces
    stay isolated.
+9. Give both entries long, distinct friendly names. On every dashboard tab verify
+   the active friendly name and selector remain readable and reachable while
+   scrolling on Android and desktop without covering content.
+10. Select the second meter, reload/reopen the dashboard and confirm it is restored
+    where browser storage is allowed. Remove or unload it and confirm the panel
+    selects another available meter with a visible notice.
+11. Switch meters with requests pending on OVERVIEW, TODAY, PERIOD, BLOCKS,
+    EXCEEDANCES, HISTORY and TARIFF CALENDAR. No chart, statistic, detail or archive
+    row from the previous entry may appear. Confirm there is still one shared
+    SI Grid Monitor sidebar item.
 
 ## V0.8 HISTORY, reconstruction and platform acceptance
 

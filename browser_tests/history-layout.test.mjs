@@ -40,17 +40,21 @@ after(async () => {
   if (server) await new Promise(resolve => server.close(resolve));
 });
 
-async function fixture(page, {width, dark = false, enlarged = false, all = false}) {
+async function fixture(page, {width, dark = false, enlarged = false, all = false, multiple = false}) {
   await page.setViewportSize({width, height: 900});
   await page.goto(origin);
-  await page.evaluate(async ({dark, enlarged, all}) => {
+  await page.evaluate(async ({dark, enlarged, all, multiple}) => {
     await import("/custom_components/si_grid_monitor/frontend/dashboard.js");
     document.documentElement.style.cssText = `font-size:${enlarged ? 24 : 16}px;--primary-text-color:${dark ? "#eee" : "#222"};--secondary-text-color:${dark ? "#ccc" : "#555"};--card-background-color:${dark ? "#222" : "#fff"};--primary-background-color:${dark ? "#111" : "#fafafa"}`;
     const panel = document.createElement("si-grid-monitor-panel");
     panel._loaded = true;
     panel._hass = {language: "en"};
-    panel._entries = [{entry_id: "meter", title: "sensor.solaredge_m1_ac_power_with_a_very_long_meter_name"}];
+    panel._entries = multiple ? [
+      {entry_id: "meter", title: "House main meter with a very long friendly name"},
+      {entry_id: "garage", title: "Garage photovoltaic meter"},
+    ] : [{entry_id: "meter", title: "sensor.solaredge_m1_ac_power_with_a_very_long_meter_name"}];
     panel._entryId = "meter";
+    if (multiple) panel._loadTab = async () => {};
     panel._tab = "history";
     panel._historyBlock = all ? "all" : "2";
     const items = Array.from({length: 80}, (_, index) => ({
@@ -64,7 +68,7 @@ async function fixture(page, {width, dark = false, enlarged = false, all = false
     panel._historyPage = {items, pagination: {page: 1, pages: 2, total: 100}, summary: {}, storage: {schema_version: 6}};
     document.body.append(panel);
     window.testPanel = panel;
-  }, {dark, enlarged, all});
+  }, {dark, enlarged, all, multiple});
 }
 
 for (const width of [320, 360, 390, 430, 768, 1280]) {
@@ -166,3 +170,33 @@ test("partial status wraps fully with enlarged phone text", async () => {
     assert.ok(status.page <= status.viewport);
   } finally { await page.close(); }
 });
+
+for (const {width, dark} of [{width: 360, dark: true}, {width: 1280, dark: false}]) {
+  test(`multi-meter toolbar remains accessible at ${width}px`, async () => {
+    const page = await browser.newPage();
+    try {
+      await fixture(page, {width, dark, multiple: true});
+      const selector = page.locator("si-grid-monitor-panel select[data-entry]");
+      assert.equal(await selector.isVisible(), true);
+      await selector.selectOption("garage");
+      const state = await page.evaluate(() => {
+        window.scrollTo(0, 700);
+        const root = window.testPanel.shadowRoot;
+        const toolbar = root.querySelector(".meter-toolbar").getBoundingClientRect();
+        return {
+          active: root.querySelector("[data-active-meter-name]").textContent,
+          selected: root.querySelector("select[data-entry]").value,
+          stickyTop: toolbar.top,
+          toolbarWidth: toolbar.width,
+          pageWidth: document.documentElement.scrollWidth,
+          viewport: innerWidth,
+        };
+      });
+      assert.equal(state.active, "Garage photovoltaic meter");
+      assert.equal(state.selected, "garage");
+      assert.ok(state.stickyTop >= -1);
+      assert.ok(state.toolbarWidth <= state.viewport);
+      assert.ok(state.pageWidth <= state.viewport);
+    } finally { await page.close(); }
+  });
+}
