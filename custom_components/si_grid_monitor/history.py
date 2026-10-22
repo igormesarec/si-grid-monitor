@@ -90,6 +90,27 @@ def history_report(
     range_expected_count = max(0, math.ceil((end - start).total_seconds() / 900))
     completed_expected_count = max(0, math.ceil((completed_end - start).total_seconds() / 900))
     uncompleted_count = max(0, range_expected_count - completed_expected_count)
+    monitoring_raw = facets.get("monitoring_started_utc")
+    monitoring_start = (
+        quarter_bounds(datetime.fromisoformat(str(monitoring_raw))).start_utc
+        if monitoring_raw
+        else start
+    )
+    monitored_start = min(completed_end, max(start, monitoring_start))
+    pre_monitoring_count = max(0, math.ceil((monitored_start - start).total_seconds() / 900))
+    monitored_completed_expected_count = max(
+        0, math.ceil((completed_end - monitored_start).total_seconds() / 900)
+    )
+    monitored_facets = (
+        facets
+        if monitored_start == start
+        else archive.history_facets(
+            namespace,
+            monitored_start,
+            end,
+            completed_before_utc=completed_end,
+        )
+    )
     # Missing is meaningful only for the unfiltered range. Filtered views cannot
     # infer what a missing row's block, quality, or epoch would have been.
     filters_active = any(
@@ -103,7 +124,10 @@ def history_report(
     missing_count = (
         None
         if filters_active
-        else max(0, completed_expected_count - int(facets["completed_total"]))
+        else max(
+            0,
+            monitored_completed_expected_count - int(monitored_facets["completed_total"]),
+        )
     )
     items = []
     for row in rows:
@@ -148,6 +172,8 @@ def history_report(
             # boundary has passed at ``now_utc``.
             "expected_count": range_expected_count,
             "completed_expected_count": completed_expected_count,
+            "pre_monitoring_completed_count": pre_monitoring_count,
+            "monitored_completed_expected_count": monitored_completed_expected_count,
             "completed_archived_count": int(facets["completed_total"]),
             "future_or_uncompleted_count": uncompleted_count,
             "missing_count": missing_count,

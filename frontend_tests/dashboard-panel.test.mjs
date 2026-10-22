@@ -629,7 +629,8 @@ test("HISTORY mobile cards expose a complete quarter without horizontal table de
   assert.match(html, /Quarter-average import demand/);
   assert.match(html, /Historical contracted-power limit/);
   assert.match(html, /Import \/ export/);
-  assert.match(html, /Quality \/ coverage/);
+  assert.match(html, /Quality \/ measurement coverage \(%\)/);
+  assert.match(html, /Measurement coverage: 100\.00%/);
   assert.match(html, /sensor\.long_entity_id \/ 7/);
   assert.match(html, /si-2026-v1 · official/);
   assert.match(html, /Open quarter details/);

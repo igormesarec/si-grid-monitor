@@ -18,6 +18,18 @@ All notable changes to SI Grid Monitor will be documented here.
   It displays the friendly name, remembers the last selection locally when
   browser storage is available, safely falls back with a notice when that entry
   disappears, and retains entry-scoped request gates across every view.
+- Expanded cumulative-counter setup into import-only, bidirectional net and
+  separate import/export behaviors. Net polarity is configurable; separate
+  channels retain independent baselines and asynchronous update cadence.
+- Kept bidirectional net-derived contractual results unconfirmed because a net
+  delta can hide import/export reversals between readings.
+- Preserved the V0.9 Mode A source identity so upgrading does not create a false
+  configuration epoch or duplicate signed-source configuration.
+- Added explicit archive-removal policy: keep is the default; permanent deletion
+  requires exact confirmation, can create a consistent backup, waits for durable
+  shutdown, and removes only the selected meter's database and sidecars.
+- HISTORY now separates completed time before archive monitoring began from
+  genuinely missing completed intervals during a known source epoch.
 
 - Started the V0.9.0 beta-readiness milestone with a complete V1 acceptance
   matrix, safe V0.8 upgrade/rollback guidance and a clean-HA test procedure.

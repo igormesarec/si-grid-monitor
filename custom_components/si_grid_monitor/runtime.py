@@ -42,6 +42,7 @@ from .backfill import (
 from .const import (
     CONF_ALLOW_PROVISIONAL_TARIFF,
     CONF_CONTRACTED_POWER_PERIODS,
+    CONF_COUNTER_BEHAVIOR,
     CONF_EXPORT_ENERGY_ENTITY,
     CONF_EXPORT_POWER_ENTITY,
     CONF_IMPORT_ENERGY_ENTITY,
@@ -61,6 +62,9 @@ from .const import (
     CONF_TARGET_B4_KW,
     CONF_TARGET_B5_KW,
     CONF_TARGET_KW,
+    COUNTER_IMPORT_ONLY,
+    COUNTER_NET,
+    COUNTER_SEPARATE,
     DEFAULT_RETENTION,
     DEFAULT_SAFETY_MARGIN_KW,
     DEFAULT_SMOOTHING_SECONDS,
@@ -118,13 +122,25 @@ class GridMonitorRuntime:
         self.export_power_entity = _optional_entity(configured.get(CONF_EXPORT_POWER_ENTITY))
         self.import_energy_entity = _optional_entity(configured.get(CONF_IMPORT_ENERGY_ENTITY))
         self.export_energy_entity = _optional_entity(configured.get(CONF_EXPORT_ENERGY_ENTITY))
+        default_counter_behavior = (
+            COUNTER_SEPARATE if self.export_energy_entity else COUNTER_IMPORT_ONLY
+        )
+        self.counter_behavior = str(configured.get(CONF_COUNTER_BEHAVIOR, default_counter_behavior))
+        if self.counter_behavior not in {COUNTER_IMPORT_ONLY, COUNTER_NET, COUNTER_SEPARATE}:
+            self.counter_behavior = default_counter_behavior
         self.positive_means_import = bool(configured.get(CONF_POSITIVE_MEANS_IMPORT, True))
         self.adapter = SignedPowerAdapter(positive_means_import=self.positive_means_import)
         if self.source_mode == SOURCE_SEPARATE_POWER:
             self.adapter = SeparatePowerAdapter()
         elif self.source_mode == SOURCE_IMPORT_ONLY:
             self.adapter = ImportOnlyPowerAdapter()
-        self.counter_converter = CounterPowerConverter()
+        self.counter_converter = CounterPowerConverter(
+            behavior=self.counter_behavior,
+            positive_means_import=self.positive_means_import,
+            export_expected=(
+                self.counter_behavior == COUNTER_SEPARATE and self.export_energy_entity is not None
+            ),
+        )
         self.derived_import_power_kw: float | None = None
         self.derived_export_power_kw: float | None = None
         self.derived_timestamp_utc: datetime | None = None
@@ -132,15 +148,29 @@ class GridMonitorRuntime:
         self.source_status_reason: str | None = "waiting_for_valid_measurement"
         source_entities = ",".join(self.source_entities)
         self.source_semantics_id = (
-            f"mode={self.source_mode}|entities={source_entities}|"
+            f"{self.power_entity}|positive_means_import={self.positive_means_import}"
+            if self.source_mode == SOURCE_SIGNED_POWER
+            else f"mode={self.source_mode}|entities={source_entities}|"
             f"positive_means_import={self.positive_means_import}|"
-            f"export_configured={self.export_known_by_design}"
+            f"export_configured={self.export_known_by_design}|"
+            f"counter_behavior={self.counter_behavior}"
+        )
+        # V0.9 Mode A configuration epochs used the raw entity id. Keeping that
+        # exact identity prevents a code-only upgrade from creating a false
+        # historical source/configuration boundary.
+        self.configuration_source_id = (
+            self.power_entity
+            if self.source_mode == SOURCE_SIGNED_POWER
+            else self.source_semantics_id
         )
         self.engine = FixedQuarterEngine(
             stale_after_seconds=DEFAULT_STALE_AFTER_SECONDS,
             source_id=self.source_semantics_id,
             completed_quality=(
-                DataQuality.COUNTER_DERIVED
+                DataQuality.INCOMPLETE
+                if self.source_mode == SOURCE_CUMULATIVE_ENERGY
+                and self.counter_behavior == COUNTER_NET
+                else DataQuality.COUNTER_DERIVED
                 if self.source_mode == SOURCE_CUMULATIVE_ENERGY
                 else DataQuality.RECONSTRUCTED
             ),
@@ -205,9 +235,7 @@ class GridMonitorRuntime:
         if self.source_mode == SOURCE_IMPORT_ONLY:
             return False
         if self.source_mode == SOURCE_CUMULATIVE_ENERGY:
-            return (
-                self.export_energy_entity is not None and self.derived_export_power_kw is not None
-            )
+            return self.export_known_by_design and self.derived_export_power_kw is not None
         return True
 
     @property
@@ -217,7 +245,9 @@ class GridMonitorRuntime:
         if self.source_mode == SOURCE_IMPORT_ONLY:
             return False
         if self.source_mode == SOURCE_CUMULATIVE_ENERGY:
-            return self.export_energy_entity is not None
+            return self.counter_behavior == COUNTER_NET or (
+                self.counter_behavior == COUNTER_SEPARATE and self.export_energy_entity is not None
+            )
         return True
 
     @property
@@ -420,6 +450,9 @@ class GridMonitorRuntime:
                 "input_stale": snapshot.input_stale,
                 "source_age_seconds": source_age_seconds,
                 "source_mode": self.source_mode,
+                "counter_behavior": (
+                    self.counter_behavior if self.source_mode == SOURCE_CUMULATIVE_ENERGY else None
+                ),
                 "source_entities": list(self.source_entities),
                 "source_available": self.source_available,
                 "source_status_reason": self.source_status_reason,
@@ -646,7 +679,7 @@ class GridMonitorRuntime:
                 partial(
                     self.archive.register_configuration_epoch,
                     namespace=self.namespace,
-                    source_id=self.source_semantics_id,
+                    source_id=self.configuration_source_id,
                     positive_means_import=self.positive_means_import,
                     contractual_target_kw=targets[0],
                     safety_margin_kw=float(startup_settings[CONF_SAFETY_MARGIN_KW]),
@@ -931,7 +964,7 @@ class GridMonitorRuntime:
         import_state = self.hass.states.get(self.import_energy_entity)
         export_state = (
             self.hass.states.get(self.export_energy_entity)
-            if self.export_energy_entity is not None
+            if self.counter_behavior == COUNTER_SEPARATE and self.export_energy_entity is not None
             else None
         )
         if import_state is None or import_state.state in {"unknown", "unavailable", "none", ""}:
@@ -946,21 +979,26 @@ class GridMonitorRuntime:
                 and export_state.state not in {"unknown", "unavailable", "none", ""}
                 else None
             )
-            interval = self.counter_converter.update(import_reading, export_reading)
-            if interval is None:
+            intervals = self.counter_converter.update_intervals(import_reading, export_reading)
+            if not intervals:
                 self.source_available = False
-                self.source_status_reason = "waiting for the next counter reading"
+                self.source_status_reason = (
+                    self.counter_converter.last_warnings[-1]
+                    if self.counter_converter.last_warnings
+                    else "waiting for the next compatible counter interval"
+                )
                 return
-            self.engine.ingest_interval_average(
-                start=interval.start,
-                end=interval.end,
-                signed_kw=interval.normalized.signed_kw,
-                import_kw=interval.normalized.import_kw,
-                export_kw=interval.normalized.export_kw,
-            )
-            self.derived_import_power_kw = interval.normalized.import_kw
-            self.derived_export_power_kw = interval.normalized.export_kw
-            self.derived_timestamp_utc = interval.end
+            for interval in intervals:
+                self.engine.ingest_interval_average(
+                    start=interval.start,
+                    end=interval.end,
+                    signed_kw=interval.normalized.signed_kw,
+                    import_kw=interval.normalized.import_kw,
+                    export_kw=interval.normalized.export_kw,
+                )
+                self.derived_import_power_kw = interval.normalized.import_kw
+                self.derived_export_power_kw = interval.normalized.export_kw
+                self.derived_timestamp_utc = interval.end
         except (AdapterError, CalculationError, TypeError, ValueError) as err:
             self.source_available = False
             self.source_status_reason = str(err)
@@ -968,9 +1006,11 @@ class GridMonitorRuntime:
             return
         self.source_available = True
         self.source_status_reason = (
-            "counter-derived interval average; instantaneous forecasts unavailable"
+            "net counter-derived interval average; import-only contractual confirmation unavailable"
+            if self.counter_behavior == COUNTER_NET
+            else "counter-derived interval average; instantaneous forecasts unavailable"
         )
-        self._refresh(interval.end)
+        self._refresh(intervals[-1].end)
 
     @callback
     def _refresh(self, now) -> None:

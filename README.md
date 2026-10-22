@@ -128,13 +128,33 @@ instantaneous measurement; unsupported forecasts remain unavailable.
   conflicting simultaneous import and export readings.
 - **Import-only power** accepts one nonnegative W/kW sensor. Export is unknown,
   never silently reported as measured zero.
-- **Cumulative energy counters** require imported energy and optionally accept
-  exported energy in Wh/kWh. SI Grid Monitor creates stable entry-owned derived
-  import/export power entities automatically; no YAML or helper is required.
+- **Cumulative energy counters** accept Wh/kWh and offer three explicit choices:
+  one import-only counter; one bidirectional net-energy counter (default increase
+  = import, with reversible polarity); or separate import and optional export
+  counters. SI Grid Monitor creates stable entry-owned derived-power entities;
+  no YAML, Template Sensor or Derivative helper is required.
 
-Counter resets establish a new baseline. Gaps and intervals that cross a fixed
+Monotonic counter resets establish a new baseline. Negative net-counter changes
+are valid export/import direction changes, not resets. Independent counters keep
+independent timestamps and are combined only over jointly evidenced time spans.
+A net delta can hide reversals between readings and therefore never proves a
+confirmed import-only contractual result. Gaps and intervals that cross a fixed
 quarter boundary without sufficient allocation evidence are retained as
 incomplete rather than confirmed billing measurements.
+
+### Removing a meter safely
+
+Removing an SI Grid Monitor config entry keeps its schema-6 database by default.
+To delete it permanently, first open that meter's integration Options, choose
+**Archive retention or permanent deletion**, select Delete, optionally request a
+SQLite backup, and type the exact displayed confirmation. Only then remove that
+same config entry. Shutdown completes pending writes and closes SQLite before the
+entry-owned database and WAL/SHM sidecars are removed. Other meters are untouched.
+
+Preserved databases are not automatically attached to a newly created entry,
+because a new entry has a different namespace. Recovery is currently a manual
+backup/restore operation: stop Home Assistant, retain an untouched copy, and
+restore only to the original entry-specific filename. Test recovery on a copy.
 
 ## Current entities
 
@@ -190,8 +210,9 @@ values are explicitly provisional estimates; their exceedances are never added
 to confirmed contractual statistics.
 
 Initial setup creates one assignment from the explicitly entered target and
-inclusive start/end dates. Integration Options expose a validated JSON period
-editor for one or more non-overlapping assignments. Each object contains
+inclusive start/end dates. Integration Options provide native add/edit/remove
+forms for one or more non-overlapping assignments; manual JSON is not required.
+Each stored assignment contains
 `effective_from`, `effective_to`, five `block_targets_kw` values, `provenance`
 and an optional `recorded_on` date. This interim editor supports separate
 assignments for 2026–2030 without creating extra config entries.

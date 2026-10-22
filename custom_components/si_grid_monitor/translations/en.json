@@ -5,17 +5,36 @@
       "already_configured": "This source is already configured."
     },
     "error": {
-      "invalid_contracted_power_periods": "Contracted-power assignments are invalid, overlapping, or have an end date before the start date."
+      "invalid_contracted_power_periods": "Contracted-power assignments are invalid, overlapping, or have an end date before the start date.",
+      "source_not_found": "The selected sensor does not exist. Check the entity and try again.",
+      "invalid_source_unit": "The selected sensor has an unsupported unit. Power requires W or kW; energy counters require Wh or kWh.",
+      "invalid_counter_state_class": "The cumulative sensor must use Home Assistant state class total or total_increasing.",
+      "invalid_source_value": "The current sensor state is not numeric. Wait for a valid reading or select another sensor.",
+      "negative_nonnegative_source": "This source must be nonnegative. Select a dedicated import/export sensor or use signed-power mode.",
+      "conflicting_power_sources": "Import and export are both positive. The two readings cannot safely represent one grid connection.",
+      "archive_delete_confirmation_mismatch": "The confirmation does not match. Type the exact phrase shown before permanent deletion."
     },
     "step": {
       "user": {
         "title": "Meter source",
         "description": "Choose one of the four V0.9.5 source designs. Every mode feeds the same import-only billing engine.",
         "data": {
+          "meter_name": "Friendly meter name",
           "source_mode": "Source mode"
         },
         "data_description": {
+          "meter_name": "A clear name shown on every dashboard page, for example Main Grid, Garage or Workshop.",
           "source_mode": "Choose signed power, separate import/export power, import-only power, or cumulative energy counters."
+        }
+      },
+      "counter_type": {
+        "title": "Cumulative counter type",
+        "description": "Choose how this counter behaves. SI Grid Monitor creates its own derived-power entities; no YAML, Template Sensor or Derivative helper is needed.",
+        "data": {
+          "counter_behavior": "Counter behavior"
+        },
+        "data_description": {
+          "counter_behavior": "Import-only counters never decrease during export. Bidirectional net counters may increase or decrease. Separate counters preserve independently measured import and export."
         }
       },
       "meter": {
@@ -34,8 +53,8 @@
           "positive_means_import": "Enable if a positive raw sensor reading means electricity imported from the grid. Disable if positive means grid export, as with some SolarEdge sensors. Review the live polarity preview.",
           "import_power_entity": "A nonnegative W or kW grid-import reading.",
           "export_power_entity": "A nonnegative W or kW grid-export reading.",
-          "import_energy_entity": "A monotonically increasing Wh or kWh total imported-energy counter.",
-          "export_energy_entity": "Optional monotonically increasing Wh or kWh exported-energy counter. If omitted, export remains unknown."
+          "import_energy_entity": "Select a Wh or kWh counter from Settings > Devices & services > Entities. For bidirectional-net mode this is the one signed/net counter; for the other counter modes it is cumulative import.",
+          "export_energy_entity": "For separate-counter mode only: an optional cumulative Wh or kWh export counter. Without it, export remains unknown."
         }
       },
       "polarity_preview": {
@@ -137,19 +156,25 @@
     }
   },
   "options": {
+    "error": {
+      "archive_delete_confirmation_mismatch": "The confirmation does not match. Type the exact phrase shown before permanent deletion."
+    },
     "step": {
       "init": {
         "title": "SI Grid Monitor settings",
         "menu_options": {
           "settings": "Calculation and meter settings",
           "assignments": "Manage contracted-power assignments",
-          "add_assignment": "Add contracted-power assignment"
+          "add_assignment": "Add contracted-power assignment",
+          "archive_removal": "Archive retention or permanent deletion"
         }
       },
       "settings": {
         "title": "Calculation and meter settings",
         "description": "Changing source or polarity creates a new configuration epoch. Unavailable or stale advice is never converted to zero.",
         "data": {
+          "meter_name": "Friendly meter name",
+          "counter_behavior": "Counter behavior",
           "power_entity": "Grid power sensor",
           "positive_means_import": "Positive source values mean import",
           "import_power_entity": "Import power sensor",
@@ -165,6 +190,8 @@
           "simulation_target_kw": "Temporary simulation threshold"
         },
         "data_description": {
+          "meter_name": "The name shown in the shared dashboard meter selector and on every tab.",
+          "counter_behavior": "Choose import-only, bidirectional net, or separate cumulative import/export counters. Changing this creates new source provenance; it does not rewrite history.",
           "power_entity": "Select the grid-connection power sensor (W or kW), not total house consumption or PV production. Current readings will be normalized into import (+) and export (−).",
           "positive_means_import": "Enable if a positive raw sensor reading means electricity imported from the grid. Disable if positive means grid export, as with some SolarEdge sensors. Review the live polarity preview.",
           "import_power_entity": "Nonnegative W/kW import source for this existing mode.",
@@ -178,6 +205,28 @@
           "retention": "How long completed 15-minute quarters remain in the integration-owned SQLite database. 'Forever' preserves them across normal HA recorder purges.",
           "simulation_enabled": "Use a temporary comparison threshold without changing the distributor-assigned B1–B5 schedule. Simulated results never count as confirmed contractual statistics.",
           "simulation_target_kw": "Temporary kW threshold used only while simulation is enabled. It does not overwrite dated contracted-power assignments or archived provenance."
+        }
+      },
+      "archive_removal": {
+        "title": "Archive behavior when this meter is removed",
+        "description": "Meter: {meter}. The safe default keeps its schema-6 SQLite archive. Permanent deletion is armed here but happens only if you then remove this exact config entry.",
+        "data": {
+          "archive_removal_action": "Removal behavior",
+          "archive_removal_backup": "Create a SQLite backup before permanent deletion"
+        },
+        "data_description": {
+          "archive_removal_action": "Keep preserves the database for manual recovery. Delete permanently removes only this meter's database and owned WAL/SHM sidecars after runtime shutdown.",
+          "archive_removal_backup": "Stores a consistent SQLite backup in Home Assistant's .storage/si_grid_monitor_backups folder before deletion."
+        }
+      },
+      "confirm_archive_deletion": {
+        "title": "Confirm permanent archive deletion",
+        "description": "This cannot be undone from SI Grid Monitor. To arm deletion for {meter}, type exactly: {confirmation}",
+        "data": {
+          "archive_removal_confirmation": "Exact confirmation"
+        },
+        "data_description": {
+          "archive_removal_confirmation": "The confirmation protects other configured meters and their archives from accidental deletion."
         }
       },
       "assignments": {
@@ -261,6 +310,19 @@
         "separate_power": "Separate import/export power",
         "import_only": "Import-only power",
         "cumulative_energy": "Cumulative energy counters"
+      }
+    },
+    "counter_behavior": {
+      "options": {
+        "import_only": "Import-only cumulative counter",
+        "net": "Bidirectional net-energy counter",
+        "separate": "Separate cumulative import/export counters"
+      }
+    },
+    "archive_removal_action": {
+      "options": {
+        "keep": "Keep this meter's database (recommended)",
+        "delete": "Permanently delete this meter's database"
       }
     },
     "target_mode": {

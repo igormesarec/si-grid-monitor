@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .const import DOMAIN
@@ -259,6 +261,75 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "is still active"
                 )
     return unload_ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remove an entry while retaining its archive unless deletion was armed."""
+
+    from .const import (
+        CONF_BACKUP_ARCHIVE_ON_REMOVE,
+        CONF_DELETE_ARCHIVE_ON_REMOVE,
+    )
+
+    options = dict(entry.options)
+    if not bool(options.get(CONF_DELETE_ARCHIVE_ON_REMOVE, False)):
+        _LOGGER.info(
+            "Keeping SI Grid Monitor archive for removed meter %s (%s)",
+            entry.title,
+            entry.entry_id,
+        )
+        return
+
+    runtime = getattr(entry, "runtime_data", None)
+    if runtime is not None and not bool(getattr(runtime, "shutdown_complete", False)):
+        await runtime.async_stop()
+        if not bool(getattr(runtime, "shutdown_complete", False)):
+            raise RuntimeError("SI Grid Monitor archive is still active; deletion refused")
+
+    archive_path = Path(hass.config.path(".storage", f"si_grid_monitor_{entry.entry_id}.db"))
+    storage_root = Path(hass.config.path(".storage")).resolve()
+    resolved = archive_path.resolve()
+    if resolved.parent != storage_root or resolved.name != f"si_grid_monitor_{entry.entry_id}.db":
+        raise RuntimeError("refusing to remove an unexpected archive path")
+    backup = bool(options.get(CONF_BACKUP_ARCHIVE_ON_REMOVE, False))
+    await hass.async_add_executor_job(
+        _remove_meter_archive,
+        resolved,
+        storage_root,
+        entry.entry_id,
+        backup,
+    )
+
+
+def _remove_meter_archive(
+    archive_path: Path,
+    storage_root: Path,
+    entry_id: str,
+    create_backup: bool,
+) -> Path | None:
+    """Back up and remove only one entry-owned SQLite archive and sidecars."""
+
+    from .archive import QuarterArchive
+
+    if not archive_path.exists():
+        return None
+    backup_path: Path | None = None
+    if create_backup:
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        backup_path = storage_root / "si_grid_monitor_backups" / f"{entry_id}-{stamp}.db"
+        archive = QuarterArchive(archive_path)
+        archive.open()
+        try:
+            archive.backup(backup_path)
+        finally:
+            archive.close()
+    for candidate in (
+        archive_path,
+        Path(f"{archive_path}-wal"),
+        Path(f"{archive_path}-shm"),
+    ):
+        candidate.unlink(missing_ok=True)
+    return backup_path
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:

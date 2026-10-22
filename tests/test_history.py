@@ -116,6 +116,33 @@ def test_exact_quarter_transition_promotes_only_completed_slot(tmp_path) -> None
     assert boundary["missing_count"] == 1
 
 
+def test_time_before_first_source_epoch_is_not_reported_as_missing(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "monitoring-start.db")
+    archive.open()
+    local_date = date(2026, 1, 2)
+    starts = quarter_starts_for_local_day(local_date)
+    monitoring_start = starts[40]
+    archive.register_source_epoch(
+        namespace="meter-a",
+        source_id="sensor.grid",
+        positive_means_import=True,
+        effective_utc=monitoring_start,
+    )
+    for index, start in enumerate(starts[40:48], start=40):
+        if index != 44:
+            archive.upsert_quarter(_record(start, index))
+
+    summary = _local_day_report(
+        archive,
+        local_date,
+        datetime(2026, 1, 2, 12, 0, tzinfo=LJUBLJANA),
+    )["summary"]
+    assert summary["completed_expected_count"] == 48
+    assert summary["pre_monitoring_completed_count"] == 40
+    assert summary["monitored_completed_expected_count"] == 8
+    assert summary["missing_count"] == 1
+
+
 def test_past_day_separates_gaps_incomplete_and_unavailable_rows(tmp_path) -> None:
     archive = QuarterArchive(tmp_path / "quality-gaps.db")
     archive.open()

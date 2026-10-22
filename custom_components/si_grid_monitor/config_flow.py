@@ -7,6 +7,7 @@ from typing import Any
 
 import voluptuous as vol
 from homeassistant import config_entries
+from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, STATE_UNAVAILABLE, STATE_UNKNOWN
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
@@ -14,16 +15,23 @@ from homeassistant.helpers import selector
 from .adapters import AdapterError, ImportOnlyPowerAdapter, SeparatePowerAdapter, SignedPowerAdapter
 from .const import (
     CONF_ALLOW_PROVISIONAL_TARIFF,
+    CONF_ARCHIVE_REMOVAL_ACTION,
+    CONF_ARCHIVE_REMOVAL_BACKUP,
+    CONF_ARCHIVE_REMOVAL_CONFIRMATION,
     CONF_ASSIGNMENT_ACTION,
     CONF_ASSIGNMENT_END_DATE,
     CONF_ASSIGNMENT_PROVENANCE,
     CONF_ASSIGNMENT_RECORDED_ON,
     CONF_ASSIGNMENT_START_DATE,
+    CONF_BACKUP_ARCHIVE_ON_REMOVE,
     CONF_CONTRACTED_POWER_PERIODS,
+    CONF_COUNTER_BEHAVIOR,
+    CONF_DELETE_ARCHIVE_ON_REMOVE,
     CONF_EXPORT_ENERGY_ENTITY,
     CONF_EXPORT_POWER_ENTITY,
     CONF_IMPORT_ENERGY_ENTITY,
     CONF_IMPORT_POWER_ENTITY,
+    CONF_METER_NAME,
     CONF_POSITIVE_MEANS_IMPORT,
     CONF_POWER_ENTITY,
     CONF_RETENTION,
@@ -35,6 +43,10 @@ from .const import (
     CONF_SUSTAINED_HORIZON_MINUTES,
     CONF_TARGET_KW,
     CONF_TARGET_MODE,
+    COUNTER_BEHAVIORS,
+    COUNTER_IMPORT_ONLY,
+    COUNTER_NET,
+    COUNTER_SEPARATE,
     DEFAULT_RETENTION,
     DEFAULT_SAFETY_MARGIN_KW,
     DEFAULT_SMOOTHING_SECONDS,
@@ -132,16 +144,19 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     def __init__(self) -> None:
         self._values: dict[str, Any] = {}
-        self._polarity_preview = "No current numeric W/kW reading is available."
+        self._polarity_preview = "live_reading=unavailable"
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         if user_input is not None:
             self._values.update(user_input)
+            if user_input[CONF_SOURCE_MODE] == SOURCE_CUMULATIVE_ENERGY:
+                return await self.async_step_counter_type()
             return await self.async_step_meter()
         return self.async_show_form(
             step_id="user",
             data_schema=vol.Schema(
                 {
+                    vol.Required(CONF_METER_NAME, default="Main Grid"): selector.TextSelector(),
                     vol.Required(
                         CONF_SOURCE_MODE, default=SOURCE_SIGNED_POWER
                     ): selector.SelectSelector(
@@ -150,6 +165,29 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             mode=selector.SelectSelectorMode.DROPDOWN,
                             translation_key="source_mode",
                         )
+                    ),
+                }
+            ),
+        )
+
+    async def async_step_counter_type(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Choose one truthful cumulative-counter behavior before entity selection."""
+
+        if user_input is not None:
+            self._values.update(user_input)
+            return await self.async_step_meter()
+        return self.async_show_form(
+            step_id="counter_type",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_COUNTER_BEHAVIOR, default=COUNTER_IMPORT_ONLY
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=list(COUNTER_BEHAVIORS),
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                            translation_key="counter_behavior",
+                        )
                     )
                 }
             ),
@@ -157,9 +195,13 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def async_step_meter(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         if user_input is not None:
-            self._values.update(user_input)
-            self._polarity_preview = self._source_preview()
-            return await self.async_step_polarity_preview()
+            errors = self._validate_source_input(user_input)
+            if not errors:
+                self._values.update(user_input)
+                self._polarity_preview = self._source_preview()
+                return await self.async_step_polarity_preview()
+        else:
+            errors = {}
         mode = self._values.get(CONF_SOURCE_MODE, SOURCE_SIGNED_POWER)
 
         def entity() -> selector.EntitySelector:
@@ -179,14 +221,78 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         elif mode == SOURCE_IMPORT_ONLY:
             fields = {vol.Required(CONF_IMPORT_POWER_ENTITY): entity()}
         else:
-            fields = {
-                vol.Required(CONF_IMPORT_ENERGY_ENTITY): entity(),
-                vol.Optional(CONF_EXPORT_ENERGY_ENTITY): entity(),
-            }
+            counter_behavior = self._values.get(CONF_COUNTER_BEHAVIOR, COUNTER_IMPORT_ONLY)
+            fields = {vol.Required(CONF_IMPORT_ENERGY_ENTITY): entity()}
+            if counter_behavior == COUNTER_NET:
+                fields[vol.Required(CONF_POSITIVE_MEANS_IMPORT, default=True)] = (
+                    selector.BooleanSelector()
+                )
+            elif counter_behavior == COUNTER_SEPARATE:
+                fields[vol.Optional(CONF_EXPORT_ENERGY_ENTITY)] = entity()
         return self.async_show_form(
             step_id="meter",
             data_schema=vol.Schema(fields),
+            errors=errors,
         )
+
+    def _validate_source_input(self, user_input: dict[str, Any]) -> dict[str, str]:
+        """Validate selected entity units and live values with actionable errors."""
+
+        mode = str(self._values.get(CONF_SOURCE_MODE, SOURCE_SIGNED_POWER))
+        combined = {**self._values, **user_input}
+        keys = {
+            SOURCE_SIGNED_POWER: (CONF_POWER_ENTITY,),
+            SOURCE_SEPARATE_POWER: (CONF_IMPORT_POWER_ENTITY, CONF_EXPORT_POWER_ENTITY),
+            SOURCE_IMPORT_ONLY: (CONF_IMPORT_POWER_ENTITY,),
+            SOURCE_CUMULATIVE_ENERGY: (
+                CONF_IMPORT_ENERGY_ENTITY,
+                CONF_EXPORT_ENERGY_ENTITY,
+            ),
+        }[mode]
+        states = []
+        for key in keys:
+            entity_id = combined.get(key)
+            if not entity_id:
+                continue
+            state = self.hass.states.get(entity_id)
+            if state is None:
+                return {"base": "source_not_found"}
+            states.append(state)
+            unit = state.attributes.get(ATTR_UNIT_OF_MEASUREMENT)
+            expected = {"Wh", "kWh"} if mode == SOURCE_CUMULATIVE_ENERGY else {"W", "kW"}
+            if unit not in expected:
+                return {"base": "invalid_source_unit"}
+            if mode == SOURCE_CUMULATIVE_ENERGY and state.attributes.get("state_class") not in {
+                "total",
+                "total_increasing",
+            }:
+                return {"base": "invalid_counter_state_class"}
+            if state.state in {STATE_UNKNOWN, STATE_UNAVAILABLE, "none", ""}:
+                continue
+            try:
+                numeric = float(state.state)
+            except (TypeError, ValueError):
+                return {"base": "invalid_source_value"}
+            if mode in {SOURCE_SEPARATE_POWER, SOURCE_IMPORT_ONLY} and numeric < 0:
+                return {"base": "negative_nonnegative_source"}
+        if (
+            mode == SOURCE_SEPARATE_POWER
+            and len(states) == 2
+            and all(
+                state.state not in {STATE_UNKNOWN, STATE_UNAVAILABLE, "none", ""}
+                for state in states
+            )
+        ):
+            try:
+                SeparatePowerAdapter().normalize(
+                    states[0].state,
+                    str(states[0].attributes[ATTR_UNIT_OF_MEASUREMENT]),
+                    states[1].state,
+                    str(states[1].attributes[ATTR_UNIT_OF_MEASUREMENT]),
+                )
+            except AdapterError:
+                return {"base": "conflicting_power_sources"}
+        return {}
 
     def _source_preview(self) -> str:
         mode = str(self._values.get(CONF_SOURCE_MODE, SOURCE_SIGNED_POWER))
@@ -209,11 +315,20 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     f"{entity_id}: {state.state} "
                     f"{state.attributes.get('unit_of_measurement', '')}".strip()
                 )
-        kind = "derived interval-average" if mode == SOURCE_CUMULATIVE_ENERGY else "direct power"
+        kind = "counter_interval_average" if mode == SOURCE_CUMULATIVE_ENERGY else "direct_power"
+        counter_behavior = self._values.get(CONF_COUNTER_BEHAVIOR, COUNTER_IMPORT_ONLY)
         export_unknown = mode == SOURCE_IMPORT_ONLY or (
-            mode == SOURCE_CUMULATIVE_ENERGY and not self._values.get(CONF_EXPORT_ENERGY_ENTITY)
+            mode == SOURCE_CUMULATIVE_ENERGY
+            and counter_behavior != COUNTER_NET
+            and not self._values.get(CONF_EXPORT_ENERGY_ENTITY)
         )
-        export = "export unknown" if export_unknown else "export measured"
+        export = (
+            "unknown"
+            if export_unknown
+            else "inferred_from_net_delta"
+            if mode == SOURCE_CUMULATIVE_ENERGY and counter_behavior == COUNTER_NET
+            else "measured"
+        )
         normalized = ""
         try:
             if mode == SOURCE_SIGNED_POWER and states:
@@ -238,18 +353,19 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             else:
                 sample = None
             if sample is not None:
-                direction = (
-                    "IMPORT"
-                    if sample.signed_kw > 0
-                    else "EXPORT"
-                    if sample.signed_kw < 0
-                    else "ZERO"
-                )
-                normalized = f" Normalized: {sample.signed_kw:+.3f} kW {direction}."
+                normalized = f" normalized_signed={sample.signed_kw:+.3f} kW."
         except (AdapterError, TypeError, ValueError):
-            normalized = " Normalized preview unavailable."
+            normalized = " normalized_signed=unavailable."
+        counter_note = (
+            f" counter_behavior={counter_behavior}; second_reading_required=true."
+            if mode == SOURCE_CUMULATIVE_ENERGY
+            else ""
+        )
         return (
-            f"{mode}: {kind}; {export}. " + ("; ".join(readings) or "No live reading.") + normalized
+            f"mode={mode}; measurement={kind}; export={export}. "
+            + ("; ".join(readings) or "live_reading=unavailable")
+            + normalized
+            + counter_note
         )
 
     async def async_step_polarity_preview(
@@ -403,11 +519,15 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if self._values.get(key)
             ]
             entity_id = ", ".join(source_ids)
-            await self.async_set_unique_id(f"{mode}:{'|'.join(source_ids)}")
-            self._abort_if_unique_id_configured()
-            return self.async_create_entry(
-                title=f"SI Grid Monitor ({entity_id})", data=self._values
+            unique_id = (
+                f"signed:{source_ids[0]}"
+                if mode == SOURCE_SIGNED_POWER
+                else f"{mode}:{'|'.join(source_ids)}"
             )
+            await self.async_set_unique_id(unique_id)
+            self._abort_if_unique_id_configured()
+            meter_name = str(self._values.get(CONF_METER_NAME) or entity_id)
+            return self.async_create_entry(title=meter_name, data=self._values)
         return self.async_show_form(
             step_id="review",
             data_schema=vol.Schema(
@@ -449,6 +569,7 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
 
     def __init__(self) -> None:
         self._selected_index: int | None = None
+        self._pending_archive_backup = True
 
     @property
     def _current(self) -> dict[str, Any]:
@@ -467,7 +588,70 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         return self.async_show_menu(
-            step_id="init", menu_options=["settings", "assignments", "add_assignment"]
+            step_id="init",
+            menu_options=["settings", "assignments", "add_assignment", "archive_removal"],
+        )
+
+    async def async_step_archive_removal(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure the explicit archive policy used only on entry removal."""
+
+        if user_input is not None:
+            action = str(user_input[CONF_ARCHIVE_REMOVAL_ACTION])
+            if action == "keep":
+                return self._save(
+                    {
+                        CONF_DELETE_ARCHIVE_ON_REMOVE: False,
+                        CONF_BACKUP_ARCHIVE_ON_REMOVE: False,
+                    }
+                )
+            self._pending_archive_backup = bool(user_input.get(CONF_ARCHIVE_REMOVAL_BACKUP, True))
+            return await self.async_step_confirm_archive_deletion()
+        return self.async_show_form(
+            step_id="archive_removal",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_ARCHIVE_REMOVAL_ACTION, default="keep"
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=["keep", "delete"],
+                            translation_key="archive_removal_action",
+                        )
+                    ),
+                    vol.Required(
+                        CONF_ARCHIVE_REMOVAL_BACKUP, default=True
+                    ): selector.BooleanSelector(),
+                }
+            ),
+            description_placeholders={"meter": self.config_entry.title},
+        )
+
+    async def async_step_confirm_archive_deletion(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Require the exact friendly meter name before arming deletion."""
+
+        errors: dict[str, str] = {}
+        expected = f"DELETE {self.config_entry.title}"
+        if user_input is not None:
+            if str(user_input[CONF_ARCHIVE_REMOVAL_CONFIRMATION]).strip() != expected:
+                errors["base"] = "archive_delete_confirmation_mismatch"
+            else:
+                return self._save(
+                    {
+                        CONF_DELETE_ARCHIVE_ON_REMOVE: True,
+                        CONF_BACKUP_ARCHIVE_ON_REMOVE: self._pending_archive_backup,
+                    }
+                )
+        return self.async_show_form(
+            step_id="confirm_archive_deletion",
+            data_schema=vol.Schema(
+                {vol.Required(CONF_ARCHIVE_REMOVAL_CONFIRMATION): selector.TextSelector()}
+            ),
+            errors=errors,
+            description_placeholders={"confirmation": expected, "meter": self.config_entry.title},
         )
 
     async def async_step_settings(self, user_input: dict[str, Any] | None = None) -> FlowResult:
@@ -477,6 +661,15 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
             user_input[CONF_SUSTAINED_HORIZON_MINUTES] = int(
                 user_input[CONF_SUSTAINED_HORIZON_MINUTES]
             )
+            if (
+                current.get(CONF_SOURCE_MODE) == SOURCE_CUMULATIVE_ENERGY
+                and user_input.get(CONF_COUNTER_BEHAVIOR) != COUNTER_SEPARATE
+            ):
+                # Override any prior separate-export source stored in entry data;
+                # the runtime must not subscribe to or identify an unused channel.
+                user_input[CONF_EXPORT_ENERGY_ENTITY] = None
+            meter_name = str(user_input.get(CONF_METER_NAME) or self.config_entry.title)
+            self.hass.config_entries.async_update_entry(self.config_entry, title=meter_name)
             return self._save(user_input)
         smoothing, smoothing_selector = _select(
             CONF_SMOOTHING_SECONDS,
@@ -541,14 +734,31 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
             )
             source_fields = {
                 vol.Required(
+                    CONF_COUNTER_BEHAVIOR,
+                    default=current.get(CONF_COUNTER_BEHAVIOR, COUNTER_IMPORT_ONLY),
+                ): selector.SelectSelector(
+                    selector.SelectSelectorConfig(
+                        options=list(COUNTER_BEHAVIORS),
+                        translation_key="counter_behavior",
+                    )
+                ),
+                vol.Required(
                     CONF_IMPORT_ENERGY_ENTITY, default=current[CONF_IMPORT_ENERGY_ENTITY]
                 ): entity(),
                 export_energy_key: entity(),
+                vol.Required(
+                    CONF_POSITIVE_MEANS_IMPORT,
+                    default=bool(current.get(CONF_POSITIVE_MEANS_IMPORT, True)),
+                ): selector.BooleanSelector(),
             }
         return self.async_show_form(
             step_id="settings",
             data_schema=vol.Schema(
                 {
+                    vol.Required(
+                        CONF_METER_NAME,
+                        default=str(current.get(CONF_METER_NAME) or self.config_entry.title),
+                    ): selector.TextSelector(),
                     **source_fields,
                     margin: margin_selector,
                     smoothing: smoothing_selector,

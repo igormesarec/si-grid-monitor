@@ -10,6 +10,11 @@ from custom_components.si_grid_monitor.adapters import (
     SeparatePowerAdapter,
     SignedPowerAdapter,
 )
+from custom_components.si_grid_monitor.const import (
+    COUNTER_IMPORT_ONLY,
+    COUNTER_NET,
+    COUNTER_SEPARATE,
+)
 from custom_components.si_grid_monitor.engine import DataQuality, FixedQuarterEngine, PowerSample
 from custom_components.si_grid_monitor.sources import CounterPowerConverter, CounterReading
 
@@ -82,7 +87,7 @@ def test_mode_d_wh_and_kwh_derivative_and_duplicate() -> None:
 
 
 def test_mode_d_optional_export_counter_is_not_netted_from_import() -> None:
-    converter = CounterPowerConverter()
+    converter = CounterPowerConverter(behavior=COUNTER_SEPARATE, export_expected=True)
     assert converter.update(reading(10, "kWh", 0), reading(5, "kWh", 0)) is None
     interval = converter.update(reading(10.5, "kWh", 15), reading(5.25, "kWh", 15))
     assert interval is not None
@@ -102,7 +107,7 @@ def test_mode_d_counter_reset_establishes_new_baseline() -> None:
 
 
 def test_mode_d_export_reset_does_not_discard_valid_import() -> None:
-    converter = CounterPowerConverter()
+    converter = CounterPowerConverter(behavior=COUNTER_SEPARATE, export_expected=True)
     assert converter.update(reading(10, "kWh", 0), reading(5, "kWh", 0)) is None
     interval = converter.update(reading(10.25, "kWh", 15), reading(1, "kWh", 15))
     assert interval is not None
@@ -111,6 +116,80 @@ def test_mode_d_export_reset_does_not_discard_valid_import() -> None:
     recovered = converter.update(reading(10.5, "kWh", 30), reading(1.25, "kWh", 30))
     assert recovered is not None
     assert recovered.normalized.export_kw == pytest.approx(1.0)
+
+
+def test_mode_d_bidirectional_net_counter_accepts_both_directions() -> None:
+    converter = CounterPowerConverter(behavior=COUNTER_NET)
+    assert converter.update(reading(10.0, "kWh", 0)) is None
+    imported = converter.update(reading(10.25, "kWh", 15))
+    exported = converter.update(reading(10.0, "kWh", 30))
+    assert imported is not None and exported is not None
+    assert imported.normalized.signed_kw == pytest.approx(1.0)
+    assert imported.normalized.import_kw == pytest.approx(1.0)
+    assert imported.normalized.export_kw == pytest.approx(0.0)
+    assert exported.normalized.signed_kw == pytest.approx(-1.0)
+    assert exported.normalized.import_kw == pytest.approx(0.0)
+    assert exported.normalized.export_kw == pytest.approx(1.0)
+    assert not imported.contractual_import_evidence
+    assert not exported.contractual_import_evidence
+
+
+def test_mode_d_bidirectional_net_counter_reverses_polarity() -> None:
+    converter = CounterPowerConverter(
+        behavior=COUNTER_NET,
+        positive_means_import=False,
+    )
+    assert converter.update(reading(10.0, "kWh", 0)) is None
+    exported = converter.update(reading(10.25, "kWh", 15))
+    imported = converter.update(reading(10.0, "kWh", 30))
+    assert exported is not None and imported is not None
+    assert exported.normalized.signed_kw == pytest.approx(-1.0)
+    assert imported.normalized.signed_kw == pytest.approx(1.0)
+
+
+def test_mode_d_separate_counters_join_asynchronous_cadences_once() -> None:
+    converter = CounterPowerConverter(behavior=COUNTER_SEPARATE, export_expected=True)
+    assert converter.update_intervals(reading(0, "kWh", 0), reading(0, "kWh", 0)) == ()
+
+    # Import reports at :15 and :30; export reports at :10, :20 and :30.
+    assert converter.update_intervals(reading(0.5, "kWh", 15), reading(0, "kWh", 0)) == ()
+    first = converter.update_intervals(reading(0.5, "kWh", 15), reading(0.1, "kWh", 10))
+    second = converter.update_intervals(reading(0.5, "kWh", 15), reading(0.2, "kWh", 20))
+    third = converter.update_intervals(reading(1.0, "kWh", 30), reading(0.3, "kWh", 30))
+
+    intervals = (*first, *second, *third)
+    assert [(item.start.minute, item.end.minute) for item in intervals] == [
+        (0, 10),
+        (10, 15),
+        (15, 20),
+        (20, 30),
+    ]
+    assert sum(item.import_kwh for item in intervals) == pytest.approx(1.0)
+    assert sum(item.export_kwh or 0.0 for item in intervals) == pytest.approx(0.3)
+
+
+def test_mode_d_separate_export_unavailable_keeps_import_and_rebaselines_export() -> None:
+    converter = CounterPowerConverter(behavior=COUNTER_SEPARATE, export_expected=True)
+    assert converter.update_intervals(reading(0, "kWh", 0), reading(0, "kWh", 0)) == ()
+    import_only = converter.update_intervals(reading(0.25, "kWh", 15), None)
+    assert len(import_only) == 1
+    assert import_only[0].import_kwh == pytest.approx(0.25)
+    assert import_only[0].export_kwh is None
+    # First recovered export reading is a new baseline; its gap is not smeared.
+    assert converter.update_intervals(reading(0.25, "kWh", 15), reading(0.5, "kWh", 15)) == ()
+    recovered = converter.update_intervals(reading(0.5, "kWh", 30), reading(0.75, "kWh", 30))
+    assert len(recovered) == 1
+    assert recovered[0].import_kwh == pytest.approx(0.25)
+    assert recovered[0].export_kwh == pytest.approx(0.25)
+
+
+def test_mode_d_duplicate_timestamp_is_idempotent_but_conflict_is_rejected() -> None:
+    converter = CounterPowerConverter(behavior=COUNTER_IMPORT_ONLY)
+    baseline = reading(1.0, "kWh", 0)
+    assert converter.update(baseline) is None
+    assert converter.update(baseline) is None
+    with pytest.raises(AdapterError, match="conflicting duplicate-timestamp"):
+        converter.update(reading(1.1, "kWh", 0))
 
 
 def test_mode_d_aligned_counter_interval_is_counter_derived() -> None:
