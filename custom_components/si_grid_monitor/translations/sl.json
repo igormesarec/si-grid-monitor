@@ -17,7 +17,7 @@
     "step": {
       "user": {
         "title": "Vir meritev",
-        "description": "Izberite enega od štirih načinov vira V0.9.5. Vsi uporabljajo isti obračunski mehanizem samo za uvoz.",
+        "description": "Priporočilo: izberite podpisano moč omrežja v živo, če je na voljo. Sicer uporabite ločena senzorja uvoza/izvoza, samo uvozni senzor za enosmerno meritev ali kumulativne števce, kadar so na voljo le entitete energije Wh/kWh. Vsi načini uporabljajo isti obračunski mehanizem samo za uvoz.",
         "data": {
           "meter_name": "Prijazno ime merilnika",
           "source_mode": "Način vira"

@@ -168,6 +168,58 @@ def test_mode_d_separate_counters_join_asynchronous_cadences_once() -> None:
     assert sum(item.export_kwh or 0.0 for item in intervals) == pytest.approx(0.3)
 
 
+def test_mode_d_separate_counters_join_export_first_update_order() -> None:
+    converter = CounterPowerConverter(behavior=COUNTER_SEPARATE, export_expected=True)
+    assert converter.update_intervals(reading(0, "kWh", 0), reading(0, "kWh", 0)) == ()
+
+    # Export advances first while import retains its baseline timestamp.
+    assert converter.update_intervals(reading(0, "kWh", 0), reading(0.1, "kWh", 10)) == ()
+    first = converter.update_intervals(reading(0.5, "kWh", 15), reading(0.1, "kWh", 10))
+    second = converter.update_intervals(reading(0.5, "kWh", 15), reading(0.2, "kWh", 20))
+    third = converter.update_intervals(reading(1.0, "kWh", 30), reading(0.3, "kWh", 30))
+
+    intervals = (*first, *second, *third)
+    assert [(item.start.minute, item.end.minute) for item in intervals] == [
+        (0, 10),
+        (10, 15),
+        (15, 20),
+        (20, 30),
+    ]
+    assert sum(item.import_kwh for item in intervals) == pytest.approx(1.0)
+    assert sum(item.export_kwh or 0.0 for item in intervals) == pytest.approx(0.3)
+
+
+def test_mode_d_separate_import_reset_keeps_export_channel_independent() -> None:
+    converter = CounterPowerConverter(behavior=COUNTER_SEPARATE, export_expected=True)
+    assert converter.update_intervals(reading(10, "kWh", 0), reading(5, "kWh", 0)) == ()
+
+    # Import resets while export remains monotonic. No stale export delta is paired
+    # with the reset interval, and each channel establishes its own next baseline.
+    assert converter.update_intervals(reading(1, "kWh", 15), reading(5.25, "kWh", 15)) == ()
+    assert any("import counter reset" in warning for warning in converter.last_warnings)
+    recovered = converter.update_intervals(reading(1.25, "kWh", 30), reading(5.5, "kWh", 30))
+    assert len(recovered) == 1
+    assert recovered[0].start.minute == 15
+    assert recovered[0].end.minute == 30
+    assert recovered[0].import_kwh == pytest.approx(0.25)
+    assert recovered[0].export_kwh == pytest.approx(0.25)
+
+
+def test_mode_d_converter_reload_requires_fresh_independent_baselines() -> None:
+    before_reload = CounterPowerConverter(behavior=COUNTER_SEPARATE, export_expected=True)
+    assert before_reload.update_intervals(reading(2, "kWh", 0), reading(1, "kWh", 0)) == ()
+    emitted = before_reload.update_intervals(reading(2.25, "kWh", 15), reading(1.1, "kWh", 15))
+    assert sum(item.import_kwh for item in emitted) == pytest.approx(0.25)
+
+    after_reload = CounterPowerConverter(behavior=COUNTER_SEPARATE, export_expected=True)
+    # Restored HA states establish baselines only; pre-reload energy is not emitted twice.
+    assert after_reload.update_intervals(reading(2.25, "kWh", 15), reading(1.1, "kWh", 15)) == ()
+    emitted = after_reload.update_intervals(reading(2.5, "kWh", 30), reading(1.2, "kWh", 30))
+    assert len(emitted) == 1
+    assert emitted[0].import_kwh == pytest.approx(0.25)
+    assert emitted[0].export_kwh == pytest.approx(0.1)
+
+
 def test_mode_d_separate_export_unavailable_keeps_import_and_rebaselines_export() -> None:
     converter = CounterPowerConverter(behavior=COUNTER_SEPARATE, export_expected=True)
     assert converter.update_intervals(reading(0, "kWh", 0), reading(0, "kWh", 0)) == ()
@@ -231,6 +283,30 @@ def test_mode_d_cross_boundary_interval_is_never_confirmed() -> None:
     assert completed[0].gap_seconds == pytest.approx(840)
 
 
+def test_mode_d_separate_counter_interval_crossing_quarter_boundary_is_incomplete() -> None:
+    converter = CounterPowerConverter(behavior=COUNTER_SEPARATE, export_expected=True)
+    assert converter.update_intervals(reading(1, "kWh", 10), reading(2, "kWh", 10)) == ()
+    intervals = converter.update_intervals(reading(1.5, "kWh", 20), reading(2.25, "kWh", 20))
+    assert len(intervals) == 1
+
+    engine = FixedQuarterEngine(
+        stale_after_seconds=900,
+        source_id="counter:separate",
+        completed_quality=DataQuality.COUNTER_DERIVED,
+    )
+    completed = engine.ingest_interval_average(
+        start=intervals[0].start,
+        end=intervals[0].end,
+        signed_kw=intervals[0].normalized.signed_kw,
+        import_kw=intervals[0].normalized.import_kw,
+        export_kw=intervals[0].normalized.export_kw,
+    )
+    assert len(completed) == 1
+    assert completed[0].quality == DataQuality.INCOMPLETE
+    assert completed[0].coverage_seconds == pytest.approx(300)
+    assert completed[0].gap_seconds == pytest.approx(600)
+
+
 def test_checkpoint_preserves_separate_import_export_semantics() -> None:
     start = datetime(2026, 10, 21, 10, 0, tzinfo=UTC)
     original = FixedQuarterEngine(stale_after_seconds=900, source_id="separate")
@@ -244,3 +320,21 @@ def test_checkpoint_preserves_separate_import_export_semantics() -> None:
     restored.advance(start + timedelta(minutes=15))
     assert restored.completed[0].import_demand_kw == pytest.approx(2.0)
     assert restored.completed[0].export_kwh == pytest.approx(0.25)
+
+
+def test_legacy_mode_a_source_identity_restores_v09_checkpoint() -> None:
+    source_id = "sensor.solaredge_m1_ac_power|positive_means_import=False"
+    start = datetime(2026, 10, 21, 10, 0, tzinfo=UTC)
+    original = FixedQuarterEngine(stale_after_seconds=900, source_id=source_id)
+    original.ingest(PowerSample(start, 3.0))
+    original.advance(start + timedelta(minutes=5))
+    payload = original.checkpoint()
+    assert payload is not None
+    assert payload["source_id"] == source_id
+
+    upgraded = FixedQuarterEngine(stale_after_seconds=900, source_id=source_id)
+    assert upgraded.restore_checkpoint(payload)
+    assert upgraded.import_kwh == pytest.approx(original.import_kwh)
+    upgraded.advance(start + timedelta(minutes=15))
+    assert len(upgraded.completed) == 1
+    assert upgraded.completed[0].import_kwh == pytest.approx(0.75)

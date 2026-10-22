@@ -17,7 +17,7 @@
     "step": {
       "user": {
         "title": "Meter source",
-        "description": "Choose one of the four V0.9.5 source designs. Every mode feeds the same import-only billing engine.",
+        "description": "Recommended: choose signed live grid power when available. Otherwise use separate import/export power, import-only power for a one-way sensor, or cumulative counters when only Wh/kWh energy entities exist. Every mode feeds the same import-only billing engine.",
         "data": {
           "meter_name": "Friendly meter name",
           "source_mode": "Source mode"

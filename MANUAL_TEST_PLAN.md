@@ -2,48 +2,53 @@
 
 ## V0.9.5 four-source-mode acceptance
 
-1. Upgrade an existing signed SolarEdge entry. Confirm its entry ID, entity unique
+1. Start a clean setup in English and Slovenian. Confirm the wizard recommends
+   signed live grid power when a suitable W/kW sensor exists, explains the three
+   alternatives, rejects incompatible units/state classes, previews normalized
+   direction and identifies interval-derived counter power. Submit untouched
+   defaults once in each language.
+2. Upgrade an existing signed SolarEdge entry. Confirm its entry ID, entity unique
    IDs, polarity, schema-6 row count and historical source epochs are unchanged.
-2. Create a separate-power entry with nonnegative W/kW import and export sensors.
+3. Create a separate-power entry with nonnegative W/kW import and export sensors.
    Exercise asynchronous updates, unavailable states and an intentionally
    conflicting simultaneous reading; invalid input must not create energy.
-3. Create an import-only entry. Confirm import demand works while export power,
+4. Create an import-only entry. Confirm import demand works while export power,
    exported quarter energy and export-dependent surplus claims are unavailable.
-4. Create counter mode with a Wh or kWh imported-energy total and choose
+5. Create counter mode with a Wh or kWh imported-energy total and choose
    **Import-only cumulative counter**. Confirm the derived import-power entity
    appears without YAML/helper setup and export stays unknown. Reload and restart
    twice; no duplicate entity may appear.
-5. Create a copied/test **bidirectional net-energy counter**. Verify the default
+6. Create a copied/test **bidirectional net-energy counter**. Verify the default
    increase = import polarity, reverse it, and exercise both positive and negative
    deltas. Confirm neither direction is treated as a reset, while the dashboard
    clearly marks contractual import evidence unconfirmed because reversals may be
    hidden between readings.
-6. Choose **Separate cumulative import/export counters** in another entry. Update
+7. Choose **Separate cumulative import/export counters** in another entry. Update
    import then export, reverse the order, and use different reporting intervals.
    Confirm each delta is processed once, no export delta is lost, and only shared
    evidenced spans are combined. Then omit the export counter and confirm export
    remains unknown.
-7. Reset a copied/test monotonic counter, pause updates across a quarter boundary, restore
+8. Reset a copied/test monotonic counter, pause updates across a quarter boundary, restore
    it, and temporarily make it unavailable. Confirm a new baseline, incomplete
    quality where allocation is unsupported, and no false confirmed exceedance.
-8. Rename/remove a test source, reload, restore it and reload again. Confirm clear
+9. Rename/remove a test source, reload, restore it and reload again. Confirm clear
    unavailable diagnostics, safe recovery and no deletion of unrelated helpers.
-9. Repeat with two meters and confirm generated entity IDs and archive namespaces
+10. Repeat with two meters and confirm generated entity IDs and archive namespaces
    stay isolated.
-10. Give both entries long, distinct friendly names. On every dashboard tab verify
+11. Give both entries long, distinct friendly names. On every dashboard tab verify
    the active friendly name and selector remain readable and reachable while
    scrolling on Android and desktop without covering content.
-11. Select the second meter, reload/reopen the dashboard and confirm it is restored
+12. Select the second meter, reload/reopen the dashboard and confirm it is restored
     where browser storage is allowed. Remove or unload it and confirm the panel
     selects another available meter with a visible notice.
-12. Switch meters with requests pending on OVERVIEW, TODAY, PERIOD, BLOCKS,
+13. Switch meters with requests pending on OVERVIEW, TODAY, PERIOD, BLOCKS,
     EXCEEDANCES, HISTORY and TARIFF CALENDAR. No chart, statistic, detail or archive
     row from the previous entry may appear. Confirm there is still one shared
     SI Grid Monitor sidebar item.
-13. Remove a disposable meter without changing its archive-removal Option. Confirm
+14. Remove a disposable meter without changing its archive-removal Option. Confirm
     the entry disappears but its exact schema-6 database remains. Re-create a
     separate entry and confirm it does not silently attach the preserved archive.
-14. For another disposable meter, choose permanent deletion in Options, request a
+15. For another disposable meter, choose permanent deletion in Options, request a
     backup, enter the exact `DELETE <friendly name>` confirmation, then remove the
     entry. Confirm pending writes finish, its database/WAL/SHM files disappear,
     the backup reopens, and every other meter/database remains unchanged. Repeat a

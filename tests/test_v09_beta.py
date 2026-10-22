@@ -701,6 +701,15 @@ def test_four_source_modes_are_wired_and_mode_e_is_removed() -> None:
     assert 'errors["base"] = "mode_not_available_v0_4"' not in config_flow
 
 
+def test_mode_a_keeps_legacy_unique_id_and_duplicate_guard() -> None:
+    config_flow = (ROOT / "custom_components/si_grid_monitor/config_flow.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'f"signed:{source_ids[0]}"' in config_flow
+    assert "await self.async_set_unique_id(unique_id)" in config_flow
+    assert "self._abort_if_unique_id_configured()" in config_flow
+
+
 def test_runtime_modes_expose_stable_sources_and_truthful_capabilities(tmp_path: Path) -> None:
     _ensure_homeassistant_stubs()
     from custom_components.si_grid_monitor.runtime import GridMonitorRuntime

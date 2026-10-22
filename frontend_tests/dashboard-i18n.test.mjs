@@ -34,6 +34,19 @@ test("meter persistence and fallback messages are localized", () => {
   );
 });
 
+test("forecast and HISTORY monitoring semantics are explicit in Slovenian", () => {
+  assert.notEqual(
+    translateDashboard("Instant projected final quarter average", "sl"),
+    translateDashboard("Smoothed projected final quarter average", "sl"),
+  );
+  assert.equal(
+    translateDashboard("history.measurement_coverage", "sl"),
+    "Pokritost meritve",
+  );
+  assert.match(translateDashboard("history.pre_monitoring", "sl"), /pred začetkom/);
+  assert.match(translateDashboard("history.measurement_missing", "sl"), /manjka/);
+});
+
 test("language switching translates dynamic audit and all navigation keys", () => {
   for (const page of ["overview", "today", "period", "blocks", "exceedances", "history", "calendar"]) {
     assert.notEqual(translateDashboard(`nav.${page}`, "sl"), `nav.${page}`);
