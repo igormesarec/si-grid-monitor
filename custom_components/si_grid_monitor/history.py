@@ -15,9 +15,18 @@ SUPPORTED_QUALITIES = frozenset(
 )
 
 
-def _export_provenance(source_id: str) -> str:
+def _export_provenance(source_id: str, archive_provenance: str) -> str:
     """Classify archived export without changing schema-6 measurements."""
 
+    provenance_parts = set(archive_provenance.split(":"))
+    if "export_unknown" in provenance_parts:
+        return "unknown"
+    if "export_mixed" in provenance_parts:
+        return "mixed_known_unknown"
+    if "export_inferred_net" in provenance_parts:
+        return "inferred_from_net"
+    if "export_measured" in provenance_parts:
+        return "directly_measured"
     if not source_id:
         return "unknown"
     if "counter_behavior=net" in source_id:
@@ -25,6 +34,19 @@ def _export_provenance(source_id: str) -> str:
     if "mode=import_only" in source_id or "export_configured=False" in source_id:
         return "unknown"
     return "directly_measured"
+
+
+def _provenance_seconds(archive_provenance: str, field: str) -> float | None:
+    """Read optional export-evidence seconds from additive provenance text."""
+
+    marker = f"{field}="
+    for part in archive_provenance.split(":"):
+        if part.startswith(marker):
+            try:
+                return float(part[len(marker) :])
+            except ValueError:
+                return None
+    return None
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,9 +177,19 @@ def history_report(
         item["measured_peak_kw"] = None
         item["measured_peak_evidence"] = "not_archived"
         source_id = str(item.get("source_id") or "")
-        export_provenance = _export_provenance(source_id)
+        archive_provenance = str(item.get("provenance") or "")
+        export_provenance = _export_provenance(
+            source_id,
+            archive_provenance,
+        )
         item["export_provenance"] = export_provenance
-        item["export_known"] = export_provenance != "unknown"
+        item["export_known"] = export_provenance not in {"unknown", "mixed_known_unknown"}
+        item["export_coverage_seconds"] = _provenance_seconds(
+            archive_provenance, "export_known_seconds"
+        )
+        item["export_unknown_seconds"] = _provenance_seconds(
+            archive_provenance, "export_unknown_seconds"
+        )
         items.append(item)
     return {
         "range": {"start_utc": start, "end_utc": end},

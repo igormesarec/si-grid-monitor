@@ -8,6 +8,9 @@ All notable changes to SI Grid Monitor will be documented here.
   an expired or missing confirmation always falls back to retaining schema-6 data.
 - Added explicit HISTORY export provenance for directly measured, net-inferred,
   and unknown export so an unsupported export channel never appears as measured zero.
+- Preserved per-quarter export evidence for separate cumulative counters across
+  failure, recovery and checkpoint restore. Mixed quarters show only the observed
+  export subtotal and explicitly identify their unknown intervals.
 - Added conservative bidirectional-net discontinuity handling using explicit
   `last_reset` metadata and an implausible interval-rate guard while preserving
   ordinary negative reverse-flow deltas.

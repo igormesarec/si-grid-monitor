@@ -656,6 +656,21 @@ test("HISTORY labels measured, net-inferred, and unknown export without zero fab
   assert.doesNotMatch(html, /0\.000 kWh · directly measured export/);
 });
 
+test("HISTORY marks partially known export without presenting a quarter-wide measured zero", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._historyBlock = "all";
+  const html = panel._historyQuarterReport({items: [{
+    ...quarter(START_A), measured_valid: true, import_demand_kw: 1.2,
+    contractual_target_kw: 3.5, import_kwh: .3, export_kwh: 0,
+    export_provenance: "mixed_known_unknown", export_known: false,
+    export_coverage_seconds: 600, export_unknown_seconds: 300,
+    coverage_pct: 100, quality: "counter_derived",
+  }]});
+  assert.match(html, /0\.000 kWh · partially measured export; unknown intervals present/);
+  assert.match(html, /600s known \/ 300s unknown/);
+  assert.doesNotMatch(html, /0\.000 kWh · directly measured export/);
+});
+
 test("mobile HISTORY CSS stacks header and controls at Android widths", () => {
   const panel = new SIGridMonitorPanel();
   const css = panel._mobileHistoryStyles();

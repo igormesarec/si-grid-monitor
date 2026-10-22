@@ -91,7 +91,12 @@ from .engine import (
     quarter_bounds,
 )
 from .reconstruction import audit_summary, plan_reconstruction
-from .sources import CAPABILITIES, CounterPowerConverter, CounterReading
+from .sources import (
+    CAPABILITIES,
+    CounterPowerConverter,
+    CounterReading,
+    counter_archive_provenance,
+)
 from .sustained import SustainedForecast, calculate_sustained_forecast
 from .tariffs import SlovenianTariffCalendar, TariffClassification
 from .tariffs.models import RuleStatus
@@ -1141,7 +1146,12 @@ class GridMonitorRuntime:
             await self._async_store_quarter(
                 quarter,
                 provenance=(
-                    "counter_derived_live"
+                    counter_archive_provenance(
+                        self.counter_behavior,
+                        quarter.export_evidence,
+                        export_coverage_seconds=quarter.export_coverage_seconds,
+                        export_unknown_seconds=quarter.export_unknown_seconds,
+                    )
                     if self.source_mode == SOURCE_CUMULATIVE_ENERGY
                     else "live_reconstructed"
                 ),

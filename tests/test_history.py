@@ -694,3 +694,40 @@ def test_history_distinguishes_measured_inferred_and_unknown_export(tmp_path) ->
         "unknown",
     ]
     assert [item["export_known"] for item in report["items"]] == [True, True, False]
+
+
+def test_history_prefers_archived_export_evidence_over_configured_channel(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "mixed-export-history.db")
+    archive.open()
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    source_id = (
+        "mode=cumulative_energy|entities=sensor.import,sensor.export|"
+        "positive_means_import=True|export_configured=True|counter_behavior=separate"
+    )
+    archive.upsert_quarter(
+        _record(
+            start,
+            source_id=source_id,
+            provenance="counter_derived_live:export_mixed",
+            export_kwh=0.01,
+        )
+    )
+    archive.upsert_quarter(
+        _record(
+            start + timedelta(minutes=15),
+            source_id=source_id,
+            provenance="counter_derived_live:export_unknown",
+            export_kwh=0.0,
+        )
+    )
+    report = history_report(
+        archive,
+        "meter-a",
+        HistoryQuery(start, start + timedelta(minutes=30), direction="asc"),
+        now_utc=start + timedelta(minutes=30),
+    )
+    assert [item["export_provenance"] for item in report["items"]] == [
+        "mixed_known_unknown",
+        "unknown",
+    ]
+    assert [item["export_known"] for item in report["items"]] == [False, False]

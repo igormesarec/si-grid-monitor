@@ -13,6 +13,31 @@ from .const import COUNTER_BEHAVIORS, COUNTER_IMPORT_ONLY, COUNTER_NET
 MAX_COUNTER_DERIVED_ABS_KW = 10_000.0
 
 
+def counter_archive_provenance(
+    counter_behavior: str,
+    export_evidence: str,
+    *,
+    export_coverage_seconds: float | None = None,
+    export_unknown_seconds: float | None = None,
+) -> str:
+    """Encode export evidence in existing schema-6 provenance text."""
+
+    if counter_behavior == COUNTER_NET:
+        evidence = "export_inferred_net"
+    elif export_evidence == "unknown":
+        evidence = "export_unknown"
+    elif export_evidence == "mixed":
+        evidence = "export_mixed"
+    else:
+        evidence = "export_measured"
+    parts = ["counter_derived_live", evidence]
+    if export_coverage_seconds is not None:
+        parts.append(f"export_known_seconds={export_coverage_seconds:.3f}")
+    if export_unknown_seconds is not None:
+        parts.append(f"export_unknown_seconds={export_unknown_seconds:.3f}")
+    return ":".join(parts)
+
+
 @dataclass(frozen=True, slots=True)
 class SourceCapabilities:
     """Truthful capabilities of one configured input design."""

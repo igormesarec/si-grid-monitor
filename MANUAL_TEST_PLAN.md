@@ -62,6 +62,12 @@
 18. On a copied net counter, verify an ordinary negative delta remains reverse
     flow, an explicit `last_reset` change is rejected, and an implausibly large
     discontinuity becomes unavailable until a fresh baseline is established.
+19. With separate cumulative counters, hold import updates active while making
+    export unavailable for part of one quarter, then recover export. Confirm the
+    quarter keeps valid imported energy and contractual import demand, labels the
+    observed export subtotal as partial with unknown intervals, and the following
+    fully evidenced zero-export quarter is labelled measured zero. Repeat across
+    an integration reload during the partially known quarter.
 
 ## V0.8 HISTORY, reconstruction and platform acceptance
 

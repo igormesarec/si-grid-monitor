@@ -164,7 +164,10 @@ restore only to the original entry-specific filename. Test recovery on a copy.
 HISTORY labels export provenance per archived quarter. Signed or separate export
 measurements are shown as directly measured, bidirectional net-counter export is
 shown as inferred from net change, and sources without export evidence show
-export as unknown rather than measured zero.
+export as unknown rather than measured zero. If a separate export counter is
+available for only part of a quarter, the stored known portion is explicitly
+labelled partial with unknown intervals; it is not presented as a quarter-wide
+measured zero.
 
 ## Current entities
 

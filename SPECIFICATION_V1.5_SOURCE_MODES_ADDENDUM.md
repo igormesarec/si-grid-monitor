@@ -49,7 +49,10 @@ selected entry-owned database plus its WAL/SHM sidecars after durable shutdown.
 
 Historical export presentation distinguishes directly measured export,
 bidirectional-net inferred export, and unknown export. Unknown export must never
-be presented as a measured zero.
+be presented as a measured zero. Separate-counter quarters retain whether export
+was evidenced for all, none, or only part of the import-covered time. Mixed
+quarters expose the observed export subtotal as partial and keep the remaining
+intervals unknown.
 
 Unavailable or delayed readings remain explicit.
 An interval that cannot be allocated across a fixed quarter from source evidence

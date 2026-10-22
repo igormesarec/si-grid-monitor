@@ -1061,6 +1061,12 @@ export class SIGridMonitorPanel extends HTMLElement {
     };
     const importExportText = row => {
       const imported = `${fmt(row.import_kwh, 3)} kWh`;
+      if (row.export_provenance === "mixed_known_unknown") {
+        const coverage = row.export_coverage_seconds == null || row.export_unknown_seconds == null
+          ? ""
+          : ` · ${this._t("history.export_evidence_seconds", {known: fmt(row.export_coverage_seconds, 0), unknown: fmt(row.export_unknown_seconds, 0)})}`;
+        return `${imported} / ${fmt(row.export_kwh, 3)} kWh · ${this._t("history.export_mixed")}${coverage}`;
+      }
       if (row.export_provenance === "unknown" || row.export_known === false) {
         return `${imported} / ${this._t("history.export_unknown")}`;
       }

@@ -91,6 +91,9 @@ class CompletedQuarter:
     gap_seconds: float
     quality: DataQuality
     source_id: str
+    export_evidence: str = "measured"
+    export_coverage_seconds: float = QUARTER_SECONDS
+    export_unknown_seconds: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -419,10 +422,13 @@ class FixedQuarterEngine:
         self.export_kwh = 0.0
         self.coverage_seconds = 0.0
         self.gap_seconds = 0.0
+        self.export_coverage_seconds = 0.0
+        self.export_unknown_seconds = 0.0
         self.completed: list[CompletedQuarter] = []
         self._force_incomplete = False
         self._unresolved_interval_active = False
         self._interval_average_active = False
+        self._interval_export_known = True
 
     def checkpoint(self) -> dict[str, object] | None:
         """Serialize durable current-quarter state without smoothing history."""
@@ -450,6 +456,8 @@ class FixedQuarterEngine:
             "export_kwh": self.export_kwh,
             "coverage_seconds": self.coverage_seconds,
             "gap_seconds": self.gap_seconds,
+            "export_coverage_seconds": self.export_coverage_seconds,
+            "export_unknown_seconds": self.export_unknown_seconds,
             "force_incomplete": self._force_incomplete,
         }
 
@@ -493,6 +501,19 @@ class FixedQuarterEngine:
             self.export_kwh = float(payload["export_kwh"])
             self.coverage_seconds = float(payload["coverage_seconds"])
             self.gap_seconds = float(payload["gap_seconds"])
+            legacy_counter_checkpoint = "mode=cumulative_energy" in self.source_id
+            self.export_coverage_seconds = float(
+                payload.get(
+                    "export_coverage_seconds",
+                    0.0 if legacy_counter_checkpoint else self.coverage_seconds,
+                )
+            )
+            self.export_unknown_seconds = float(
+                payload.get(
+                    "export_unknown_seconds",
+                    self.coverage_seconds if legacy_counter_checkpoint else 0.0,
+                )
+            )
             self._force_incomplete = bool(payload.get("force_incomplete", False))
         except (KeyError, TypeError, ValueError, CalculationError):
             return False
@@ -555,11 +576,13 @@ class FixedQuarterEngine:
             export_kw=export_kw,
         )
         self._interval_average_active = True
+        self._interval_export_known = export_kw is not None
         self.advance(end_utc)
         # A counter delta describes the interval that just ended. It is not an
         # instantaneous reading that may safely be held after ``end``.
         self.last_sample = None
         self._interval_average_active = False
+        self._interval_export_known = True
         self._unresolved_interval_active = False
         return tuple(self.completed[before:])
 
@@ -657,6 +680,8 @@ class FixedQuarterEngine:
         self.export_kwh = 0.0
         self.coverage_seconds = 0.0
         self.gap_seconds = 0.0
+        self.export_coverage_seconds = 0.0
+        self.export_unknown_seconds = 0.0
         self._force_incomplete = self._unresolved_interval_active
 
     def _integrate_segment(self, start: datetime, end: datetime) -> None:
@@ -679,13 +704,18 @@ class FixedQuarterEngine:
                 if self.last_sample.import_kw is not None
                 else max(0.0, self.last_sample.signed_kw)
             )
+            export_known = not self._interval_average_active or self._interval_export_known
             export_kw = (
                 self.last_sample.export_kw
                 if self.last_sample.export_kw is not None
                 else max(0.0, -self.last_sample.signed_kw)
             )
             self.import_kwh += import_kw * hours
-            self.export_kwh += export_kw * hours
+            if export_known:
+                self.export_kwh += export_kw * hours
+                self.export_coverage_seconds += seconds
+            else:
+                self.export_unknown_seconds += seconds
             self.coverage_seconds += seconds
         gap_start = max(start, covered_end)
         if end > gap_start:
@@ -702,6 +732,13 @@ class FixedQuarterEngine:
             else DataQuality.INCOMPLETE
         )
         signed_net_kwh = self.import_kwh - self.export_kwh
+        export_evidence = (
+            "mixed"
+            if self.export_unknown_seconds > EPSILON and self.export_coverage_seconds > EPSILON
+            else "unknown"
+            if self.export_unknown_seconds > EPSILON
+            else "measured"
+        )
         self.completed.append(
             CompletedQuarter(
                 start_utc=self.bounds.start_utc,
@@ -715,6 +752,9 @@ class FixedQuarterEngine:
                 gap_seconds=self.gap_seconds,
                 quality=quality,
                 source_id=self.source_id,
+                export_evidence=export_evidence,
+                export_coverage_seconds=self.export_coverage_seconds,
+                export_unknown_seconds=self.export_unknown_seconds,
             )
         )
 

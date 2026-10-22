@@ -10,13 +10,19 @@ from custom_components.si_grid_monitor.adapters import (
     SeparatePowerAdapter,
     SignedPowerAdapter,
 )
+from custom_components.si_grid_monitor.archive import ArchiveRecord, QuarterArchive
 from custom_components.si_grid_monitor.const import (
     COUNTER_IMPORT_ONLY,
     COUNTER_NET,
     COUNTER_SEPARATE,
 )
 from custom_components.si_grid_monitor.engine import DataQuality, FixedQuarterEngine, PowerSample
-from custom_components.si_grid_monitor.sources import CounterPowerConverter, CounterReading
+from custom_components.si_grid_monitor.history import HistoryQuery, history_report
+from custom_components.si_grid_monitor.sources import (
+    CounterPowerConverter,
+    CounterReading,
+    counter_archive_provenance,
+)
 
 
 def reading(value: float, unit: str, minute: int, second: int = 0) -> CounterReading:
@@ -272,6 +278,190 @@ def test_mode_d_separate_export_unavailable_keeps_import_and_rebaselines_export(
     assert len(recovered) == 1
     assert recovered[0].import_kwh == pytest.approx(0.25)
     assert recovered[0].export_kwh == pytest.approx(0.25)
+
+
+def test_mode_d_separate_export_failure_is_preserved_through_history(tmp_path) -> None:
+    """Known-zero, unknown, recovery and mixed export survive schema-6 storage."""
+
+    converter = CounterPowerConverter(behavior=COUNTER_SEPARATE, export_expected=True)
+    assert converter.update_intervals(reading(0, "kWh", 0), reading(0, "kWh", 0)) == ()
+    known_zero = converter.update_intervals(reading(0.1, "kWh", 5), reading(0, "kWh", 5))
+    unknown = converter.update_intervals(reading(0.2, "kWh", 10), None)
+    assert converter.update_intervals(reading(0.2, "kWh", 10), reading(0, "kWh", 10)) == ()
+    recovered = converter.update_intervals(reading(0.3, "kWh", 15), reading(0, "kWh", 15))
+
+    engine = FixedQuarterEngine(
+        stale_after_seconds=900,
+        source_id=(
+            "mode=cumulative_energy|entities=sensor.import,sensor.export|"
+            "positive_means_import=True|export_configured=True|counter_behavior=separate"
+        ),
+        completed_quality=DataQuality.COUNTER_DERIVED,
+    )
+    completed = ()
+    for interval in (*known_zero, *unknown, *recovered):
+        completed = engine.ingest_interval_average(
+            start=interval.start,
+            end=interval.end,
+            signed_kw=interval.normalized.signed_kw,
+            import_kw=interval.normalized.import_kw,
+            export_kw=interval.normalized.export_kw,
+        )
+    assert len(completed) == 1
+    quarter = completed[0]
+    assert quarter.import_kwh == pytest.approx(0.3)
+    assert quarter.import_demand_kw == pytest.approx(1.2)
+    assert quarter.quality == DataQuality.COUNTER_DERIVED
+    assert quarter.export_kwh == pytest.approx(0.0)
+    assert quarter.export_evidence == "mixed"
+    assert quarter.export_coverage_seconds == pytest.approx(600)
+    assert quarter.export_unknown_seconds == pytest.approx(300)
+
+    archive = QuarterArchive(tmp_path / "mixed-export.db")
+    archive.open()
+    archive.upsert_quarter(
+        ArchiveRecord(
+            namespace="meter-a",
+            start_utc=quarter.start_utc,
+            end_utc=quarter.end_utc,
+            import_kwh=quarter.import_kwh,
+            export_kwh=quarter.export_kwh,
+            signed_average_kw=quarter.signed_average_kw,
+            import_demand_kw=quarter.import_demand_kw,
+            coverage_seconds=quarter.coverage_seconds,
+            gap_seconds=quarter.gap_seconds,
+            quality=quarter.quality.value,
+            provenance=counter_archive_provenance(
+                COUNTER_SEPARATE,
+                quarter.export_evidence,
+                export_coverage_seconds=quarter.export_coverage_seconds,
+                export_unknown_seconds=quarter.export_unknown_seconds,
+            ),
+            source_id=quarter.source_id,
+            source_epoch=1,
+            configuration_status="known",
+            contractual_target_kw=4.8,
+            safety_margin_kw=0.0,
+            operational_target_kw=4.8,
+            utilization_pct=25.0,
+            exceeded=False,
+            excess_kw=0.0,
+            contractual_status="confirmed",
+            confirmed_exceeded=False,
+        )
+    )
+    report = history_report(
+        archive,
+        "meter-a",
+        HistoryQuery(quarter.start_utc, quarter.end_utc),
+        now_utc=quarter.end_utc,
+    )
+    item = report["items"][0]
+    assert item["import_kwh"] == pytest.approx(0.3)
+    assert item["export_kwh"] == pytest.approx(0.0)
+    assert item["export_known"] is False
+    assert item["export_provenance"] == "mixed_known_unknown"
+    assert item["export_coverage_seconds"] == pytest.approx(600)
+    assert item["export_unknown_seconds"] == pytest.approx(300)
+
+    # After recovery, a fully evidenced zero-export quarter remains measured zero.
+    next_intervals = converter.update_intervals(reading(0.6, "kWh", 30), reading(0, "kWh", 30))
+    next_engine = FixedQuarterEngine(
+        stale_after_seconds=900,
+        source_id=quarter.source_id,
+        completed_quality=DataQuality.COUNTER_DERIVED,
+    )
+    next_completed = ()
+    for interval in next_intervals:
+        next_completed = next_engine.ingest_interval_average(
+            start=interval.start,
+            end=interval.end,
+            signed_kw=interval.normalized.signed_kw,
+            import_kw=interval.normalized.import_kw,
+            export_kw=interval.normalized.export_kw,
+        )
+    assert next_completed[0].export_evidence == "measured"
+    assert next_completed[0].export_kwh == pytest.approx(0.0)
+
+
+def test_mode_d_mixed_export_evidence_survives_current_quarter_checkpoint() -> None:
+    start = datetime(2026, 10, 21, 10, 0, tzinfo=UTC)
+    source_id = "mode=cumulative_energy|export_configured=True|counter_behavior=separate"
+    engine = FixedQuarterEngine(
+        stale_after_seconds=900,
+        source_id=source_id,
+        completed_quality=DataQuality.COUNTER_DERIVED,
+    )
+    engine.ingest_interval_average(
+        start=start,
+        end=start + timedelta(minutes=5),
+        signed_kw=1.0,
+        import_kw=1.0,
+        export_kw=0.0,
+    )
+    engine.ingest_interval_average(
+        start=start + timedelta(minutes=5),
+        end=start + timedelta(minutes=10),
+        signed_kw=1.0,
+        import_kw=1.0,
+        export_kw=None,
+    )
+    payload = engine.checkpoint()
+    assert payload is not None
+
+    restored = FixedQuarterEngine(
+        stale_after_seconds=900,
+        source_id=source_id,
+        completed_quality=DataQuality.COUNTER_DERIVED,
+    )
+    assert restored.restore_checkpoint(payload)
+    completed = restored.ingest_interval_average(
+        start=start + timedelta(minutes=10),
+        end=start + timedelta(minutes=15),
+        signed_kw=1.0,
+        import_kw=1.0,
+        export_kw=0.0,
+    )
+    assert completed[0].export_evidence == "mixed"
+    assert completed[0].export_coverage_seconds == pytest.approx(600)
+    assert completed[0].export_unknown_seconds == pytest.approx(300)
+
+
+def test_legacy_counter_checkpoint_without_export_evidence_restores_conservatively() -> None:
+    start = datetime(2026, 10, 21, 10, 0, tzinfo=UTC)
+    source_id = "mode=cumulative_energy|export_configured=True|counter_behavior=separate"
+    original = FixedQuarterEngine(
+        stale_after_seconds=900,
+        source_id=source_id,
+        completed_quality=DataQuality.COUNTER_DERIVED,
+    )
+    original.ingest_interval_average(
+        start=start,
+        end=start + timedelta(minutes=5),
+        signed_kw=1.0,
+        import_kw=1.0,
+        export_kw=0.0,
+    )
+    legacy_payload = original.checkpoint()
+    assert legacy_payload is not None
+    legacy_payload.pop("export_coverage_seconds")
+    legacy_payload.pop("export_unknown_seconds")
+
+    restored = FixedQuarterEngine(
+        stale_after_seconds=900,
+        source_id=source_id,
+        completed_quality=DataQuality.COUNTER_DERIVED,
+    )
+    assert restored.restore_checkpoint(legacy_payload)
+    completed = restored.ingest_interval_average(
+        start=start + timedelta(minutes=5),
+        end=start + timedelta(minutes=15),
+        signed_kw=1.0,
+        import_kw=1.0,
+        export_kw=0.0,
+    )
+    assert completed[0].export_evidence == "mixed"
+    assert completed[0].export_unknown_seconds == pytest.approx(300)
 
 
 def test_mode_d_duplicate_timestamp_is_idempotent_but_conflict_is_rejected() -> None:
