@@ -26,7 +26,6 @@ class SourceMode(StrEnum):
     SEPARATE_POWER = "separate_power"
     IMPORT_ONLY = "import_only"
     CUMULATIVE_ENERGY = "cumulative_energy"
-    ALIGNED_QUARTER = "aligned_quarter"
 
 
 @dataclass(frozen=True, slots=True)
@@ -108,7 +107,7 @@ class SignedPowerAdapter:
 class SeparatePowerAdapter:
     """Combine separate nonnegative live import and export sources."""
 
-    def __init__(self, *, simultaneous_tolerance_kw: float = 0.001) -> None:
+    def __init__(self, *, simultaneous_tolerance_kw: float = 0.0) -> None:
         if simultaneous_tolerance_kw < 0:
             raise AdapterError("simultaneous tolerance must be nonnegative")
         self.simultaneous_tolerance_kw = simultaneous_tolerance_kw

@@ -38,6 +38,27 @@ class SIGridSensorDescription(SensorEntityDescription):
 
 SENSORS: tuple[SIGridSensorDescription, ...] = (
     SIGridSensorDescription(
+        key="source_mode",
+        translation_key="source_mode",
+        value_fn=lambda snapshot, runtime: runtime.source_mode,
+    ),
+    SIGridSensorDescription(
+        key="derived_import_power",
+        translation_key="derived_import_power",
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda snapshot, runtime: runtime.derived_import_power_kw,
+    ),
+    SIGridSensorDescription(
+        key="derived_export_power",
+        translation_key="derived_export_power",
+        native_unit_of_measurement=UnitOfPower.KILO_WATT,
+        device_class=SensorDeviceClass.POWER,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda snapshot, runtime: runtime.derived_export_power_kw,
+    ),
+    SIGridSensorDescription(
         key="current_power",
         translation_key="current_power",
         native_unit_of_measurement=UnitOfPower.KILO_WATT,
@@ -461,6 +482,15 @@ CONTRACTUAL_SENSOR_KEYS = {
     "must_reduce_power",
 }
 
+LIVE_FORECAST_SENSOR_KEYS = {
+    "forecast_instant_kw",
+    "forecast_smoothed_kw",
+    "forecast_utilization_pct",
+    "forecast_instant_utilization_pct",
+    "can_add_power",
+    "must_reduce_power",
+}
+
 ARCHIVED_SENSOR_KEYS = {
     "last_completed_15m_import_demand",
     "last_completed_15m_signed_average",
@@ -475,7 +505,13 @@ async def async_setup_entry(
     """Set up SI Grid Monitor sensors."""
 
     runtime: GridMonitorRuntime = entry.runtime_data
-    async_add_entities(SIGridSensor(runtime, entry, description) for description in SENSORS)
+    derived_keys = {"derived_import_power", "derived_export_power"}
+    descriptions = (
+        description
+        for description in SENSORS
+        if description.key not in derived_keys or runtime.source_mode == "cumulative_energy"
+    )
+    async_add_entities(SIGridSensor(runtime, entry, description) for description in descriptions)
 
 
 class SIGridSensor(SensorEntity):
@@ -507,11 +543,31 @@ class SIGridSensor(SensorEntity):
     @property
     def available(self) -> bool:
         snapshot = self.runtime.snapshot
+        if self.entity_description.key == "source_mode":
+            return True
+        if self.entity_description.key == "derived_import_power":
+            return (
+                self.runtime.source_available and self.runtime.derived_import_power_kw is not None
+            )
+        if self.entity_description.key == "derived_export_power":
+            return (
+                self.runtime.source_available and self.runtime.derived_export_power_kw is not None
+            )
+        if (
+            self.entity_description.key in {"export_power", "quarter_export_kwh_so_far"}
+            and not self.runtime.export_known
+        ):
+            return False
         if self.entity_description.key in TARIFF_ONLY_SENSOR_KEYS:
             return self.entity_description.value_fn(snapshot, self.runtime) is not None
         if self.entity_description.key in ARCHIVED_SENSOR_KEYS:
             return self.entity_description.value_fn(snapshot, self.runtime) is not None
         if snapshot is None:
+            return False
+        if (
+            self.entity_description.key in LIVE_FORECAST_SENSOR_KEYS
+            and not self.runtime.instantaneous_power_known
+        ):
             return False
         if self.entity_description.key in CONTRACTUAL_SENSOR_KEYS:
             return self.runtime.current_contractual_available
@@ -533,7 +589,9 @@ class SIGridSensor(SensorEntity):
     def native_value(self) -> float | int | str | None:
         snapshot = self.runtime.snapshot
         if snapshot is None and self.entity_description.key not in (
-            TARIFF_ONLY_SENSOR_KEYS | ARCHIVED_SENSOR_KEYS
+            TARIFF_ONLY_SENSOR_KEYS
+            | ARCHIVED_SENSOR_KEYS
+            | {"source_mode", "derived_import_power", "derived_export_power"}
         ):
             return None
         value = self.entity_description.value_fn(snapshot, self.runtime)
@@ -551,6 +609,17 @@ class SIGridSensor(SensorEntity):
     def extra_state_attributes(self) -> dict[str, Any]:
         snapshot = self.runtime.snapshot
         attributes: dict[str, Any] = {}
+        attributes.update(
+            {
+                "source_mode": self.runtime.source_mode,
+                "source_entities": self.runtime.source_entities,
+                "source_available": self.runtime.source_available,
+                "source_status_reason": self.runtime.source_status_reason,
+                "source_measurement_timestamp_utc": (self.runtime.source_measurement_timestamp_utc),
+                "instantaneous_power_known": self.runtime.instantaneous_power_known,
+                "export_known": self.runtime.export_known,
+            }
+        )
         if snapshot is not None:
             attributes.update(
                 {

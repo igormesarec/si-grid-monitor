@@ -84,6 +84,11 @@ class SIGridBinarySensor(BinarySensorEntity):
         snapshot = self.runtime.snapshot
         if snapshot is None:
             return False
+        if (
+            self.entity_description.key == "projected_exceedance"
+            and not self.runtime.instantaneous_power_known
+        ):
+            return False
         if self.entity_description.key in {
             "projected_exceedance",
             "unrecoverable_interval",

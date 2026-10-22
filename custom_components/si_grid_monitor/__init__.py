@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .const import DOMAIN
@@ -96,6 +98,16 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         # Entry identity and the authoritative serialized schedule stay unchanged.
         # Archive migration is independently additive in QuarterArchive.
         hass.config_entries.async_update_entry(entry, version=4, minor_version=0)
+    if entry.version < 5:
+        from .const import CONF_SOURCE_MODE, SOURCE_SIGNED_POWER
+
+        data = dict(entry.data)
+        options = dict(entry.options)
+        destination = options if "power_entity" in options else data
+        destination.setdefault(CONF_SOURCE_MODE, SOURCE_SIGNED_POWER)
+        hass.config_entries.async_update_entry(
+            entry, data=data, options=options, version=5, minor_version=0
+        )
     return True
 
 
@@ -249,6 +261,105 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     "is still active"
                 )
     return unload_ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Remove an entry, retaining its archive unless deletion was freshly confirmed."""
+
+    from .const import (
+        ARCHIVE_REMOVAL_CONFIRMATION_TTL_SECONDS,
+        CONF_BACKUP_ARCHIVE_ON_REMOVE,
+    )
+
+    options = dict(entry.options)
+    if not _archive_deletion_authorized(
+        options,
+        now_utc=datetime.now(UTC),
+        ttl_seconds=ARCHIVE_REMOVAL_CONFIRMATION_TTL_SECONDS,
+    ):
+        _LOGGER.info(
+            "Keeping SI Grid Monitor archive for removed meter %s (%s); "
+            "permanent deletion was not freshly confirmed",
+            entry.title,
+            entry.entry_id,
+        )
+        return
+
+    runtime = getattr(entry, "runtime_data", None)
+    if runtime is not None and not bool(getattr(runtime, "shutdown_complete", False)):
+        await runtime.async_stop()
+        if not bool(getattr(runtime, "shutdown_complete", False)):
+            raise RuntimeError("SI Grid Monitor archive is still active; deletion refused")
+
+    archive_path = Path(hass.config.path(".storage", f"si_grid_monitor_{entry.entry_id}.db"))
+    storage_root = Path(hass.config.path(".storage")).resolve()
+    resolved = archive_path.resolve()
+    if resolved.parent != storage_root or resolved.name != f"si_grid_monitor_{entry.entry_id}.db":
+        raise RuntimeError("refusing to remove an unexpected archive path")
+    backup = bool(options.get(CONF_BACKUP_ARCHIVE_ON_REMOVE, False))
+    await hass.async_add_executor_job(
+        _remove_meter_archive,
+        resolved,
+        storage_root,
+        entry.entry_id,
+        backup,
+    )
+
+
+def _archive_deletion_authorized(
+    options: dict[str, Any],
+    *,
+    now_utc: datetime,
+    ttl_seconds: int,
+) -> bool:
+    """Return whether explicit archive deletion confirmation is still fresh."""
+
+    from .const import CONF_ARCHIVE_REMOVAL_CONFIRMED_AT, CONF_DELETE_ARCHIVE_ON_REMOVE
+
+    if not bool(options.get(CONF_DELETE_ARCHIVE_ON_REMOVE, False)):
+        return False
+    raw = options.get(CONF_ARCHIVE_REMOVAL_CONFIRMED_AT)
+    if not isinstance(raw, str) or not raw:
+        return False
+    try:
+        confirmed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if confirmed.tzinfo is None or now_utc.tzinfo is None:
+        return False
+    age = now_utc.astimezone(UTC) - confirmed.astimezone(UTC)
+    return -timedelta(seconds=60) <= age <= timedelta(seconds=ttl_seconds)
+
+
+def _remove_meter_archive(
+    archive_path: Path,
+    storage_root: Path,
+    entry_id: str,
+    create_backup: bool,
+) -> Path | None:
+    """Back up and remove only one entry-owned SQLite archive and sidecars."""
+
+    from .archive import QuarterArchive
+
+    if not archive_path.exists():
+        return None
+    backup_path: Path | None = None
+    if create_backup:
+        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+        backup_path = storage_root / "si_grid_monitor_backups" / f"{entry_id}-{stamp}.db"
+        archive = QuarterArchive(archive_path)
+        archive.open()
+        try:
+            archive.backup(backup_path)
+        finally:
+            archive.close()
+    for candidate in (
+        archive_path,
+        Path(f"{archive_path}-wal"),
+        Path(f"{archive_path}-shm"),
+    ):
+        candidate.unlink(missing_ok=True)
+    return backup_path
 
 
 async def _async_update_listener(hass: HomeAssistant, entry: ConfigEntry) -> None:

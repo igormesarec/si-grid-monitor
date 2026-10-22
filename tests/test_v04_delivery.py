@@ -14,7 +14,7 @@ def test_v04_manifest_packages_supported_panel_dependencies() -> None:
     manifest = json.loads(
         (ROOT / "custom_components/si_grid_monitor/manifest.json").read_text(encoding="utf-8")
     )
-    assert manifest["version"] == VERSION == "0.9.0"
+    assert manifest["version"] == VERSION == "0.9.5"
     assert {"frontend", "http", "websocket_api"} <= set(manifest["dependencies"])
     assert PANEL_URL_PATH == "si-grid-monitor"
 
@@ -27,7 +27,9 @@ def test_dashboard_bundle_is_self_contained_and_uses_authenticated_websocket() -
     assert "hass.connection.sendMessagePromise" in bundle
     assert "si_grid_monitor/entries" in bundle
     assert "https://" not in bundle
-    assert "localStorage" not in bundle
+    assert 'ACTIVE_METER_STORAGE_KEY = "si_grid_monitor.active_meter.v1"' in bundle
+    assert "globalThis.localStorage?.getItem(ACTIVE_METER_STORAGE_KEY)" in bundle
+    assert "globalThis.localStorage?.setItem(ACTIVE_METER_STORAGE_KEY, entryId)" in bundle
     assert "setInterval(() => this._tick(), 1000)" in bundle
     assert "RequestGate" in bundle
 
@@ -144,8 +146,8 @@ def test_v042_dashboard_assets_and_acceptance_controls_are_cache_busted() -> Non
     model = (ROOT / "custom_components/si_grid_monitor/frontend/dashboard-model.mjs").read_text(
         encoding="utf-8"
     )
-    assert "dashboard-model.mjs?v=0.9.0" in bundle
-    assert "dashboard-i18n.mjs?v=0.9.0" in bundle
+    assert "dashboard-model.mjs?v=0.9.5" in bundle
+    assert "dashboard-i18n.mjs?v=0.9.5" in bundle
     assert 'energyProjection: {color: "#8b5cf6", dash: "7 4"}' in model
     assert (
         ".legend-line .energy-projection{stroke:${CHART_SERIES.energyProjection.color};"

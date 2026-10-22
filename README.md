@@ -1,7 +1,7 @@
 # SI Grid Monitor
 
 SI Grid Monitor is a HACS-compatible Home Assistant custom integration for
-Slovenian fixed 15-minute grid-demand monitoring. V0.9.0 beta provides guided setup,
+Slovenian fixed 15-minute grid-demand monitoring. V0.9.5 beta provides guided setup,
 an automatically registered sidebar dashboard, import-only live calculations,
 sustained-load forecasting, and a permanent
 SQLite quarter archive, a paginated HISTORY explorer, controlled Recorder
@@ -24,17 +24,27 @@ The combined history/platform-release status is tracked in
 The V1 requirement audit, safe-upgrade instructions, rollback guidance and clean
 Home Assistant beta procedure are in
 [`V0.9_BETA_ACCEPTANCE.md`](V0.9_BETA_ACCEPTANCE.md).
+The approved four-mode scope that supersedes the older source-mode roadmap is
+documented without changing the master specification in
+[`SPECIFICATION_V1.5_SOURCE_MODES_ADDENDUM.md`](SPECIFICATION_V1.5_SOURCE_MODES_ADDENDUM.md).
 
-## V0.9 beta installation and dashboard
+## V0.9.5 beta installation and dashboard
 
 1. Install from HACS and restart Home Assistant.
 2. Add SI Grid Monitor from Settings > Devices & services.
-3. Complete the meter, polarity, dated B1-B5 contract, settings, and review steps.
+3. Choose signed power, separate import/export power, import-only power, or
+   cumulative energy counters, then complete the dated B1-B5 contract and settings.
 4. Open **SI Grid Monitor** directly from the left sidebar.
 
 No Lovelace dashboard, YAML, pasted JavaScript, or resource registration is
 required. One idempotent custom panel safely supports multiple config entries
 with separate archive namespaces and is removed only after the final entry unloads.
+Every tab displays the active meter's friendly name in a compact sticky control.
+When multiple meters exist, the selector stays reachable while scrolling and the
+last choice is remembered in local browser storage when supported. If that meter
+is later removed or unavailable, the dashboard selects another available entry
+and reports the fallback. Changing meters clears entry-specific live, chart,
+statistics, calendar and HISTORY state before loading the new namespace.
 
 - **Overview** shows the current quarter, measured trace, import/export, budgets,
   forecasts, advice, prior-quarter summary, and upcoming limits.
@@ -82,11 +92,10 @@ the beta acceptance report linked above.
 |---|:---:|:---:|:---:|:---:|
 | HACS/manifest/config-flow skeleton | Yes | Yes | Yes (CI) | No |
 | Local transparent brand icons (1×/2×) | Yes | Yes | PNG validated | No |
-| One signed live W/kW power source | Yes | Yes | Yes | No |
-| Separate import/export adapter design | Yes | Pure Python only | Yes | No |
-| Import-only adapter design | Yes | Pure Python only | Yes | No |
-| Cumulative-energy adapter design | Yes | Pure Python only | Yes | No |
-| Aligned completed-quarter adapter design | Yes | Pure Python only | Yes | No |
+| Signed live W/kW power source | Yes | Yes | Yes | No |
+| Separate import/export W/kW sources | Yes | Yes | Yes | No |
+| Import-only W/kW source | Yes | Yes | Yes | No |
+| Automatic cumulative Wh/kWh conversion | Yes | Yes | Yes | No |
 | Signed rolling 15-minute mean | Yes | Yes | Yes | No |
 | Fixed-quarter import-only demand | Yes | Yes | Yes | No |
 | Import/export switching and boundary splits | Yes | Yes | Yes | No |
@@ -107,10 +116,58 @@ the beta acceptance report linked above.
 | GitHub Pages source/build preview | V0.8 | Yes | Static build | Not published |
 | Official HACS default listing | External future work | No | No | No |
 
-“Pure Python only” means that the adapter and its validation contract exist but
-the Home Assistant config entry and entity lifecycle for that source mode do
-not. V0.3 rejects those choices in the setup flow instead of creating a partly
-working or misleading configuration.
+All four modes use the same calculation and archive engine. Import-only mode
+marks export unknown. Counter mode exposes integration-owned derived-power
+entities and treats each derivative as an evidenced interval average, not an
+instantaneous measurement; unsupported forecasts remain unavailable.
+
+## Source modes and generated entities
+
+- **Signed live power** accepts W/kW and retains the existing configurable polarity.
+- **Separate import/export power** requires two nonnegative W/kW sensors and rejects
+  conflicting simultaneous import and export readings.
+- **Import-only power** accepts one nonnegative W/kW sensor. Export is unknown,
+  never silently reported as measured zero.
+- **Cumulative energy counters** accept Wh/kWh and offer three explicit choices:
+  one import-only counter; one bidirectional net-energy counter (default increase
+  = import, with reversible polarity); or separate import and optional export
+  counters. SI Grid Monitor creates stable entry-owned derived-power entities;
+  no YAML, Template Sensor or Derivative helper is required.
+
+Monotonic counter resets establish a new baseline. Ordinary negative net-counter
+changes are valid export/import direction changes, not automatically resets.
+Genuine net-counter reversals and unmarked resets cannot always be distinguished;
+explicit Home Assistant `last_reset` changes and physically implausible interval
+discontinuities are rejected conservatively and establish a new baseline.
+Independent counters keep
+independent timestamps and are combined only over jointly evidenced time spans.
+A net delta can hide reversals between readings and therefore never proves a
+confirmed import-only contractual result. Gaps and intervals that cross a fixed
+quarter boundary without sufficient allocation evidence are retained as
+incomplete rather than confirmed billing measurements.
+
+### Removing a meter safely
+
+Removing an SI Grid Monitor config entry keeps its schema-6 database by default.
+To delete it permanently, first open that meter's integration Options, choose
+**Archive retention or permanent deletion**, select Delete, optionally request a
+SQLite backup, and type the exact displayed confirmation. That entry-scoped
+authorization expires after 10 minutes; remove the same config entry inside that
+window or native removal keeps the archive. Shutdown completes pending writes and closes SQLite before the
+entry-owned database and WAL/SHM sidecars are removed. Other meters are untouched.
+
+Preserved databases are not automatically attached to a newly created entry,
+because a new entry has a different namespace. Recovery is currently a manual
+backup/restore operation: stop Home Assistant, retain an untouched copy, and
+restore only to the original entry-specific filename. Test recovery on a copy.
+
+HISTORY labels export provenance per archived quarter. Signed or separate export
+measurements are shown as directly measured, bidirectional net-counter export is
+shown as inferred from net change, and sources without export evidence show
+export as unknown rather than measured zero. If a separate export counter is
+available for only part of a quarter, the stored known portion is explicitly
+labelled partial with unknown intervals; it is not presented as a quarter-wide
+measured zero.
 
 ## Current entities
 
@@ -166,8 +223,9 @@ values are explicitly provisional estimates; their exceedances are never added
 to confirmed contractual statistics.
 
 Initial setup creates one assignment from the explicitly entered target and
-inclusive start/end dates. Integration Options expose a validated JSON period
-editor for one or more non-overlapping assignments. Each object contains
+inclusive start/end dates. Integration Options provide native add/edit/remove
+forms for one or more non-overlapping assignments; manual JSON is not required.
+Each stored assignment contains
 `effective_from`, `effective_to`, five `block_targets_kw` values, `provenance`
 and an optional `recorded_on` date. This interim editor supports separate
 assignments for 2026–2030 without creating extra config entries.
@@ -256,7 +314,8 @@ and the HACS repository validator.
 
 ## Current limitations
 
-- Only source mode A (one signed live power entity) is wired into Home Assistant.
+- Mode D power is an interval-average estimate. Instantaneous and sustained advice
+  is unavailable when the source evidence cannot support it.
 - Live-sensor quarters are labeled reconstructed/incomplete; no supplier-exact
   claim is made.
 - Recorder reconstruction and SQLite migration/recovery are automated but still

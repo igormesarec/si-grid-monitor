@@ -15,20 +15,39 @@ from typing import Any, ClassVar
 
 import pytest
 
-from custom_components.si_grid_monitor import async_setup_entry, async_unload_entry
+from custom_components.si_grid_monitor import (
+    _archive_deletion_authorized,
+    _remove_meter_archive,
+    async_migrate_entry,
+    async_remove_entry,
+    async_setup_entry,
+    async_unload_entry,
+)
 from custom_components.si_grid_monitor.archive import ArchiveRecord, QuarterArchive
 from custom_components.si_grid_monitor.const import (
+    ARCHIVE_REMOVAL_CONFIRMATION_TTL_SECONDS,
     CONF_ALLOW_PROVISIONAL_TARIFF,
+    CONF_ARCHIVE_REMOVAL_CONFIRMED_AT,
     CONF_CONTRACTED_POWER_PERIODS,
+    CONF_COUNTER_BEHAVIOR,
+    CONF_EXPORT_ENERGY_ENTITY,
+    CONF_EXPORT_POWER_ENTITY,
+    CONF_IMPORT_ENERGY_ENTITY,
+    CONF_IMPORT_POWER_ENTITY,
     CONF_POSITIVE_MEANS_IMPORT,
     CONF_POWER_ENTITY,
     CONF_SAFETY_MARGIN_KW,
     CONF_SIMULATION_ENABLED,
     CONF_SIMULATION_TARGET_KW,
     CONF_SMOOTHING_SECONDS,
+    CONF_SOURCE_MODE,
     CONF_SUSTAINED_HORIZON_MINUTES,
     CONF_TARGET_KW,
+    COUNTER_NET,
     DOMAIN,
+    SOURCE_CUMULATIVE_ENERGY,
+    SOURCE_IMPORT_ONLY,
+    SOURCE_SEPARATE_POWER,
     VERSION,
 )
 from custom_components.si_grid_monitor.contracted_power import (
@@ -661,9 +680,9 @@ def test_beta_version_frontend_and_hacs_package_are_consistent() -> None:
         encoding="utf-8"
     )
     hacs = json.loads((ROOT / "hacs.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == VERSION == "0.9.0"
-    assert "dashboard-model.mjs?v=0.9.0" in dashboard
-    assert "dashboard-i18n.mjs?v=0.9.0" in dashboard
+    assert manifest["version"] == VERSION == "0.9.5"
+    assert "dashboard-model.mjs?v=0.9.5" in dashboard
+    assert "dashboard-i18n.mjs?v=0.9.5" in dashboard
     assert hacs["name"] == "SI Grid Monitor"
     assert not any(ROOT.joinpath(name).exists() for name in ("release.zip", "dist.zip"))
 
@@ -676,14 +695,361 @@ def test_entity_unique_id_formulas_remain_entry_scoped_and_version_independent()
         assert 'f"{entry.entry_id}_{description.key}"' in source
 
 
-def test_signed_mode_is_only_implemented_source_mode_and_is_documented_truthfully() -> None:
+def test_four_source_modes_are_wired_and_mode_e_is_removed() -> None:
     config_flow = (ROOT / "custom_components/si_grid_monitor/config_flow.py").read_text(
         encoding="utf-8"
     )
-    acceptance = (ROOT / "V0.9_BETA_ACCEPTANCE.md").read_text(encoding="utf-8")
-    assert 'errors["base"] = "mode_not_available_v0_4"' in config_flow
-    assert "Modes B-E" in acceptance
-    assert "Unsupported" in acceptance
+    assert "SOURCE_MODES = (" in config_flow
+    assert "SOURCE_ALIGNED_QUARTER" not in config_flow
+    assert 'errors["base"] = "mode_not_available_v0_4"' not in config_flow
+
+
+def test_mode_a_keeps_legacy_unique_id_and_duplicate_guard() -> None:
+    config_flow = (ROOT / "custom_components/si_grid_monitor/config_flow.py").read_text(
+        encoding="utf-8"
+    )
+    assert 'f"signed:{source_ids[0]}"' in config_flow
+    assert "await self.async_set_unique_id(unique_id)" in config_flow
+    assert "self._abort_if_unique_id_configured()" in config_flow
+
+
+def test_runtime_modes_expose_stable_sources_and_truthful_capabilities(tmp_path: Path) -> None:
+    _ensure_homeassistant_stubs()
+    from custom_components.si_grid_monitor.runtime import GridMonitorRuntime
+
+    class Config:
+        def path(self, *parts: str) -> str:
+            return str(tmp_path.joinpath(*parts))
+
+    class States:
+        @staticmethod
+        def get(_entity_id: str) -> None:
+            return None
+
+    hass = SimpleNamespace(config=Config(), states=States())
+    common = {
+        CONF_TARGET_KW: 4.8,
+        CONF_CONTRACTED_POWER_PERIODS: "[]",
+        CONF_ALLOW_PROVISIONAL_TARIFF: False,
+        CONF_SAFETY_MARGIN_KW: 0.0,
+        CONF_SMOOTHING_SECONDS: 120,
+        CONF_SUSTAINED_HORIZON_MINUTES: 60,
+        CONF_SIMULATION_ENABLED: False,
+        CONF_SIMULATION_TARGET_KW: 4.8,
+    }
+
+    separate = GridMonitorRuntime(
+        hass,
+        SimpleNamespace(
+            entry_id="b",
+            data={
+                **common,
+                CONF_SOURCE_MODE: SOURCE_SEPARATE_POWER,
+                CONF_IMPORT_POWER_ENTITY: "sensor.import",
+                CONF_EXPORT_POWER_ENTITY: "sensor.export",
+            },
+            options={},
+        ),
+    )
+    assert separate.source_entities == ("sensor.import", "sensor.export")
+    assert separate.export_known and separate.instantaneous_power_known
+
+    import_only = GridMonitorRuntime(
+        hass,
+        SimpleNamespace(
+            entry_id="c",
+            data={
+                **common,
+                CONF_SOURCE_MODE: SOURCE_IMPORT_ONLY,
+                CONF_IMPORT_POWER_ENTITY: "sensor.import_only",
+            },
+            options={},
+        ),
+    )
+    assert import_only.source_entities == ("sensor.import_only",)
+    assert not import_only.export_known
+    assert import_only.instantaneous_power_known
+
+    counters = GridMonitorRuntime(
+        hass,
+        SimpleNamespace(
+            entry_id="d",
+            data={
+                **common,
+                CONF_SOURCE_MODE: SOURCE_CUMULATIVE_ENERGY,
+                CONF_IMPORT_ENERGY_ENTITY: "sensor.import_total",
+                CONF_EXPORT_ENERGY_ENTITY: "sensor.export_total",
+            },
+            options={},
+        ),
+    )
+    assert counters.source_entities == ("sensor.import_total", "sensor.export_total")
+    assert not counters.instantaneous_power_known
+    assert not counters.export_known  # Unknown until an aligned export delta exists.
+
+    net_counter = GridMonitorRuntime(
+        hass,
+        SimpleNamespace(
+            entry_id="d-net",
+            data={
+                **common,
+                CONF_SOURCE_MODE: SOURCE_CUMULATIVE_ENERGY,
+                CONF_COUNTER_BEHAVIOR: COUNTER_NET,
+                CONF_IMPORT_ENERGY_ENTITY: "sensor.net_total",
+            },
+            options={},
+        ),
+    )
+    assert net_counter.source_entities == ("sensor.net_total",)
+    assert net_counter.export_known_by_design
+    assert not net_counter.instantaneous_power_known
+    assert net_counter.engine.completed_quality.value == "incomplete"
+
+
+def test_v09_entry_migrates_to_mode_a_without_changing_identity() -> None:
+    entry = SimpleNamespace(
+        version=4,
+        minor_version=0,
+        entry_id="existing-mode-a",
+        data={CONF_POWER_ENTITY: "sensor.solaredge_m1_ac_power", CONF_TARGET_KW: 4.8},
+        options={},
+    )
+
+    class Entries:
+        @staticmethod
+        def async_update_entry(target: Any, **changes: Any) -> None:
+            for key, value in changes.items():
+                setattr(target, key, value)
+
+    hass = SimpleNamespace(config_entries=Entries())
+    assert _run(async_migrate_entry(hass, entry))
+    assert entry.version == 5
+    assert entry.entry_id == "existing-mode-a"
+    assert entry.data[CONF_SOURCE_MODE] == "signed_power"
+    assert entry.data[CONF_POWER_ENTITY] == "sensor.solaredge_m1_ac_power"
+
+
+def test_migrated_mode_a_keeps_the_v09_configuration_epoch_identity(tmp_path: Path) -> None:
+    _ensure_homeassistant_stubs()
+    from custom_components.si_grid_monitor.runtime import GridMonitorRuntime
+
+    class Config:
+        @staticmethod
+        def path(*parts: str) -> str:
+            return str(tmp_path.joinpath(*parts))
+
+    entry = SimpleNamespace(
+        entry_id="existing-mode-a",
+        title="Main grid",
+        data={
+            CONF_SOURCE_MODE: "signed_power",
+            CONF_POWER_ENTITY: "sensor.solaredge_m1_ac_power",
+            CONF_TARGET_KW: 4.8,
+            CONF_CONTRACTED_POWER_PERIODS: "[]",
+        },
+        options={},
+    )
+    runtime = GridMonitorRuntime(SimpleNamespace(config=Config()), entry)
+    assert runtime.configuration_source_id == "sensor.solaredge_m1_ac_power"
+    assert runtime.source_semantics_id == "sensor.solaredge_m1_ac_power|positive_means_import=True"
+    archive = runtime.archive
+    archive.open()
+    original = archive.register_configuration_epoch(
+        namespace=entry.entry_id,
+        source_id="sensor.solaredge_m1_ac_power",
+        positive_means_import=True,
+        contractual_target_kw=None,
+        safety_margin_kw=0.0,
+        effective_utc=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    after_upgrade = archive.register_configuration_epoch(
+        namespace=entry.entry_id,
+        source_id=runtime.configuration_source_id,
+        positive_means_import=True,
+        contractual_target_kw=None,
+        safety_margin_kw=0.0,
+        effective_utc=datetime(2026, 1, 2, tzinfo=UTC),
+    )
+    assert after_upgrade.epoch == original.epoch
+    assert len(archive.list_configuration_epochs(entry.entry_id)) == 1
+    archive.close()
+
+
+def test_meter_archive_removal_is_entry_scoped_and_backup_is_reopenable(tmp_path: Path) -> None:
+    storage = tmp_path / ".storage"
+    storage.mkdir()
+    selected = storage / "si_grid_monitor_meter-a.db"
+    other = storage / "si_grid_monitor_meter-b.db"
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    for path, namespace in ((selected, "meter-a"), (other, "meter-b")):
+        archive = QuarterArchive(path)
+        archive.open()
+        archive.upsert_quarter(_archive_record(namespace, start))
+        archive.close()
+    Path(f"{selected}-wal").write_bytes(b"owned sidecar")
+    Path(f"{selected}-shm").write_bytes(b"owned sidecar")
+
+    backup = _remove_meter_archive(selected, storage, "meter-a", True)
+
+    assert backup is not None and backup.exists()
+    assert not selected.exists()
+    assert not Path(f"{selected}-wal").exists()
+    assert not Path(f"{selected}-shm").exists()
+    assert other.exists()
+    restored = QuarterArchive(backup)
+    restored.open()
+    assert restored.schema_version == 6
+    assert len(restored.list_quarters("meter-a", start, start + timedelta(minutes=15))) == 1
+    restored.close()
+
+
+def test_remove_entry_keeps_database_unless_deletion_was_explicitly_armed(
+    tmp_path: Path,
+) -> None:
+    storage = tmp_path / ".storage"
+    storage.mkdir()
+    archive_path = storage / "si_grid_monitor_keep-meter.db"
+    archive = QuarterArchive(archive_path)
+    archive.open()
+    archive.close()
+
+    class Config:
+        @staticmethod
+        def path(*parts: str) -> str:
+            return str(tmp_path.joinpath(*parts))
+
+    class Hass:
+        config = Config()
+
+        @staticmethod
+        async def async_add_executor_job(function: Any, *args: Any) -> Any:
+            return function(*args)
+
+    entry = SimpleNamespace(
+        entry_id="keep-meter",
+        title="Keep meter",
+        options={},
+        runtime_data=None,
+    )
+    _run(async_remove_entry(Hass(), entry))
+    assert archive_path.exists()
+
+
+def test_remove_entry_deletes_only_the_armed_meter_after_shutdown(tmp_path: Path) -> None:
+    storage = tmp_path / ".storage"
+    storage.mkdir()
+    selected = storage / "si_grid_monitor_delete-meter.db"
+    other = storage / "si_grid_monitor_other-meter.db"
+    for path in (selected, other):
+        archive = QuarterArchive(path)
+        archive.open()
+        archive.close()
+
+    class Config:
+        @staticmethod
+        def path(*parts: str) -> str:
+            return str(tmp_path.joinpath(*parts))
+
+    class Hass:
+        config = Config()
+
+        @staticmethod
+        async def async_add_executor_job(function: Any, *args: Any) -> Any:
+            return function(*args)
+
+    entry = SimpleNamespace(
+        entry_id="delete-meter",
+        title="Delete meter",
+        options={
+            "delete_archive_on_remove": True,
+            "backup_archive_on_remove": False,
+            CONF_ARCHIVE_REMOVAL_CONFIRMED_AT: datetime.now(UTC).isoformat(),
+        },
+        runtime_data=None,
+    )
+    _run(async_remove_entry(Hass(), entry))
+    assert not selected.exists()
+    assert other.exists()
+
+
+def test_archive_deletion_confirmation_expires_and_cannot_remain_armed() -> None:
+    confirmed = datetime(2026, 10, 22, 12, 0, tzinfo=UTC)
+    options = {
+        "delete_archive_on_remove": True,
+        CONF_ARCHIVE_REMOVAL_CONFIRMED_AT: confirmed.isoformat(),
+    }
+    assert _archive_deletion_authorized(
+        options,
+        now_utc=confirmed + timedelta(minutes=9, seconds=59),
+        ttl_seconds=ARCHIVE_REMOVAL_CONFIRMATION_TTL_SECONDS,
+    )
+    assert not _archive_deletion_authorized(
+        options,
+        now_utc=confirmed + timedelta(minutes=10, seconds=1),
+        ttl_seconds=ARCHIVE_REMOVAL_CONFIRMATION_TTL_SECONDS,
+    )
+    assert not _archive_deletion_authorized(
+        {"delete_archive_on_remove": True},
+        now_utc=confirmed,
+        ttl_seconds=ARCHIVE_REMOVAL_CONFIRMATION_TTL_SECONDS,
+    )
+
+
+def test_remove_entry_keeps_database_after_deletion_confirmation_expires(tmp_path: Path) -> None:
+    storage = tmp_path / ".storage"
+    storage.mkdir()
+    archive_path = storage / "si_grid_monitor_expired-meter.db"
+    archive = QuarterArchive(archive_path)
+    archive.open()
+    archive.close()
+
+    class Config:
+        @staticmethod
+        def path(*parts: str) -> str:
+            return str(tmp_path.joinpath(*parts))
+
+    class Hass:
+        config = Config()
+
+        @staticmethod
+        async def async_add_executor_job(function: Any, *args: Any) -> Any:
+            return function(*args)
+
+    entry = SimpleNamespace(
+        entry_id="expired-meter",
+        title="Expired meter",
+        options={
+            "delete_archive_on_remove": True,
+            CONF_ARCHIVE_REMOVAL_CONFIRMED_AT: "2020-01-01T00:00:00+00:00",
+        },
+        runtime_data=None,
+    )
+    _run(async_remove_entry(Hass(), entry))
+    assert archive_path.exists()
+
+
+def test_setup_translations_cover_all_counter_and_removal_choices() -> None:
+    for language in ("en", "sl"):
+        translations = json.loads(
+            (ROOT / f"custom_components/si_grid_monitor/translations/{language}.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        assert set(translations["selector"]["source_mode"]["options"]) == {
+            "signed_power",
+            "separate_power",
+            "import_only",
+            "cumulative_energy",
+        }
+        assert set(translations["selector"]["counter_behavior"]["options"]) == {
+            "import_only",
+            "net",
+            "separate",
+        }
+        assert "meter_name" in translations["config"]["step"]["user"]["data_description"]
+        assert "counter_type" in translations["config"]["step"]
+        assert "archive_removal" in translations["options"]["step"]
+        assert "confirm_archive_deletion" in translations["options"]["step"]
 
 
 def test_runtime_startup_failure_closes_open_archive(

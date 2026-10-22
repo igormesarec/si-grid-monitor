@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "si_grid_monitor"
-VERSION = "0.9.0"
+VERSION = "0.9.5"
 PANEL_URL_PATH = "si-grid-monitor"
 PANEL_TITLE = "SI Grid Monitor"
 PANEL_ICON = "mdi:transmission-tower"
@@ -11,7 +11,20 @@ FRONTEND_URL = "/si_grid_monitor_frontend"
 
 CONF_SOURCE_MODE = "source_mode"
 CONF_POWER_ENTITY = "power_entity"
+CONF_IMPORT_POWER_ENTITY = "import_power_entity"
+CONF_EXPORT_POWER_ENTITY = "export_power_entity"
+CONF_IMPORT_ENERGY_ENTITY = "import_energy_entity"
+CONF_EXPORT_ENERGY_ENTITY = "export_energy_entity"
 CONF_POSITIVE_MEANS_IMPORT = "positive_means_import"
+CONF_COUNTER_BEHAVIOR = "counter_behavior"
+CONF_METER_NAME = "meter_name"
+CONF_ARCHIVE_REMOVAL_ACTION = "archive_removal_action"
+CONF_ARCHIVE_REMOVAL_BACKUP = "archive_removal_backup"
+CONF_ARCHIVE_REMOVAL_CONFIRMATION = "archive_removal_confirmation"
+CONF_DELETE_ARCHIVE_ON_REMOVE = "delete_archive_on_remove"
+CONF_BACKUP_ARCHIVE_ON_REMOVE = "backup_archive_on_remove"
+CONF_ARCHIVE_REMOVAL_CONFIRMED_AT = "archive_removal_confirmed_at"
+ARCHIVE_REMOVAL_CONFIRMATION_TTL_SECONDS = 600
 CONF_TARGET_KW = "target_kw"
 CONF_TARGET_MODE = "target_mode"
 CONF_TARGET_B1_KW = "target_b1_kw"
@@ -38,7 +51,11 @@ SOURCE_SIGNED_POWER = "signed_power"
 SOURCE_SEPARATE_POWER = "separate_power"
 SOURCE_IMPORT_ONLY = "import_only"
 SOURCE_CUMULATIVE_ENERGY = "cumulative_energy"
-SOURCE_ALIGNED_QUARTER = "aligned_quarter"
+
+COUNTER_IMPORT_ONLY = "import_only"
+COUNTER_NET = "net"
+COUNTER_SEPARATE = "separate"
+COUNTER_BEHAVIORS = (COUNTER_IMPORT_ONLY, COUNTER_NET, COUNTER_SEPARATE)
 
 DEFAULT_TARGET_KW = 4.8
 DEFAULT_SAFETY_MARGIN_KW = 0.0

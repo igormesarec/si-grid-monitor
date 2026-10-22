@@ -922,10 +922,17 @@ class QuarterArchive:
                     WHERE {where} GROUP BY contractual_status""",
                 parameters,
             ).fetchall()
+            monitoring_row = self._db.execute(
+                "SELECT MIN(effective_utc) AS started FROM source_epochs WHERE namespace=?",
+                (namespace,),
+            ).fetchone()
         return {
             "total": int(bounds["total"] or 0),
             "oldest": bounds["oldest"],
             "newest": bounds["newest"],
+            "monitoring_started_utc": (
+                monitoring_row["started"] if monitoring_row is not None else None
+            ),
             "completed_total": int(bounds["completed_total"] or 0),
             "valid_count": int(bounds["valid_count"] or 0),
             "incomplete_count": int(bounds["incomplete_count"] or 0),

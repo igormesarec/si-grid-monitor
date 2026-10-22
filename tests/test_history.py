@@ -116,6 +116,33 @@ def test_exact_quarter_transition_promotes_only_completed_slot(tmp_path) -> None
     assert boundary["missing_count"] == 1
 
 
+def test_time_before_first_source_epoch_is_not_reported_as_missing(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "monitoring-start.db")
+    archive.open()
+    local_date = date(2026, 1, 2)
+    starts = quarter_starts_for_local_day(local_date)
+    monitoring_start = starts[40]
+    archive.register_source_epoch(
+        namespace="meter-a",
+        source_id="sensor.grid",
+        positive_means_import=True,
+        effective_utc=monitoring_start,
+    )
+    for index, start in enumerate(starts[40:48], start=40):
+        if index != 44:
+            archive.upsert_quarter(_record(start, index))
+
+    summary = _local_day_report(
+        archive,
+        local_date,
+        datetime(2026, 1, 2, 12, 0, tzinfo=LJUBLJANA),
+    )["summary"]
+    assert summary["completed_expected_count"] == 48
+    assert summary["pre_monitoring_completed_count"] == 40
+    assert summary["monitored_completed_expected_count"] == 8
+    assert summary["missing_count"] == 1
+
+
 def test_past_day_separates_gaps_incomplete_and_unavailable_rows(tmp_path) -> None:
     archive = QuarterArchive(tmp_path / "quality-gaps.db")
     archive.open()
@@ -604,3 +631,103 @@ def test_dense_ten_year_history_uses_bounded_pages_and_indexed_sql(tmp_path) -> 
     assert len(report["items"]) == 50
     assert report["summary"]["total"] == count
     assert any("INDEX" in str(row[3]).upper() for row in plan)
+
+
+def test_history_marks_unmeasured_export_unknown_for_import_only_sources(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "import-only-history.db")
+    archive.open()
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    archive.upsert_quarter(
+        _record(
+            start,
+            source_id=(
+                "mode=import_only|entities=sensor.grid_import|"
+                "positive_means_import=True|export_configured=False"
+            ),
+            export_kwh=0.0,
+        )
+    )
+    report = history_report(
+        archive,
+        "meter-a",
+        HistoryQuery(start, start + timedelta(minutes=15)),
+        now_utc=start + timedelta(minutes=15),
+    )
+    assert report["items"][0]["export_known"] is False
+    assert report["items"][0]["export_provenance"] == "unknown"
+
+
+def test_history_distinguishes_measured_inferred_and_unknown_export(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "export-provenance.db")
+    archive.open()
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    records = (
+        _record(start, source_id="sensor.legacy_signed_grid", export_kwh=0.1),
+        _record(
+            start + timedelta(minutes=15),
+            source_id=(
+                "mode=cumulative_energy|entities=sensor.net|"
+                "positive_means_import=True|export_configured=True|counter_behavior=net"
+            ),
+            export_kwh=0.2,
+        ),
+        _record(
+            start + timedelta(minutes=30),
+            source_id=(
+                "mode=import_only|entities=sensor.import|"
+                "positive_means_import=True|export_configured=False"
+            ),
+            export_kwh=0.0,
+        ),
+    )
+    for record in records:
+        archive.upsert_quarter(record)
+    report = history_report(
+        archive,
+        "meter-a",
+        HistoryQuery(start, start + timedelta(minutes=45), direction="asc"),
+        now_utc=start + timedelta(minutes=45),
+    )
+    assert [item["export_provenance"] for item in report["items"]] == [
+        "directly_measured",
+        "inferred_from_net",
+        "unknown",
+    ]
+    assert [item["export_known"] for item in report["items"]] == [True, True, False]
+
+
+def test_history_prefers_archived_export_evidence_over_configured_channel(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "mixed-export-history.db")
+    archive.open()
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    source_id = (
+        "mode=cumulative_energy|entities=sensor.import,sensor.export|"
+        "positive_means_import=True|export_configured=True|counter_behavior=separate"
+    )
+    archive.upsert_quarter(
+        _record(
+            start,
+            source_id=source_id,
+            provenance="counter_derived_live:export_mixed",
+            export_kwh=0.01,
+        )
+    )
+    archive.upsert_quarter(
+        _record(
+            start + timedelta(minutes=15),
+            source_id=source_id,
+            provenance="counter_derived_live:export_unknown",
+            export_kwh=0.0,
+        )
+    )
+    report = history_report(
+        archive,
+        "meter-a",
+        HistoryQuery(start, start + timedelta(minutes=30), direction="asc"),
+        now_utc=start + timedelta(minutes=30),
+    )
+    assert [item["export_provenance"] for item in report["items"]] == [
+        "mixed_known_unknown",
+        "unknown",
+    ]
+    assert [item["export_known"] for item in report["items"]] == [False, False]

@@ -4,6 +4,43 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+- Made archive deletion authorization entry-scoped and valid for only 10 minutes;
+  an expired or missing confirmation always falls back to retaining schema-6 data.
+- Added explicit HISTORY export provenance for directly measured, net-inferred,
+  and unknown export so an unsupported export channel never appears as measured zero.
+- Preserved per-quarter export evidence for separate cumulative counters across
+  failure, recovery and checkpoint restore. Mixed quarters show only the observed
+  export subtotal and explicitly identify their unknown intervals.
+- Added conservative bidirectional-net discontinuity handling using explicit
+  `last_reset` metadata and an implausible interval-rate guard while preserving
+  ordinary negative reverse-flow deltas.
+- Added V0.9.5's four supported input designs: signed live power, separate
+  nonnegative import/export power, import-only power, and cumulative Wh/kWh
+  counters with integration-owned derived-power entities.
+- Removed aligned quarter records (former Mode E) from the setup choices and
+  active product roadmap without changing or deleting historical archive rows.
+- Preserved import-only billing by carrying separate import/export quantities
+  through the shared engine; export never offsets imported quarter energy.
+- Added conservative counter quality handling for first readings, resets,
+  duplicates, gaps and cross-quarter intervals. Counter derivatives remain
+  interval averages and do not masquerade as verified instantaneous forecasts.
+- Added a responsive sticky active-meter control shared by every dashboard tab.
+  It displays the friendly name, remembers the last selection locally when
+  browser storage is available, safely falls back with a notice when that entry
+  disappears, and retains entry-scoped request gates across every view.
+- Expanded cumulative-counter setup into import-only, bidirectional net and
+  separate import/export behaviors. Net polarity is configurable; separate
+  channels retain independent baselines and asynchronous update cadence.
+- Kept bidirectional net-derived contractual results unconfirmed because a net
+  delta can hide import/export reversals between readings.
+- Preserved the V0.9 Mode A source identity so upgrading does not create a false
+  configuration epoch or duplicate signed-source configuration.
+- Added explicit archive-removal policy: keep is the default; permanent deletion
+  requires exact confirmation, can create a consistent backup, waits for durable
+  shutdown, and removes only the selected meter's database and sidecars.
+- HISTORY now separates completed time before archive monitoring began from
+  genuinely missing completed intervals during a known source epoch.
+
 - Started the V0.9.0 beta-readiness milestone with a complete V1 acceptance
   matrix, safe V0.8 upgrade/rollback guidance and a clean-HA test procedure.
 - Made config-entry setup transactional: failed platform forwarding now stops
