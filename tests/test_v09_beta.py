@@ -29,12 +29,7 @@ from custom_components.si_grid_monitor.const import (
     CONF_ALLOW_PROVISIONAL_TARIFF,
     CONF_ARCHIVE_REMOVAL_CONFIRMED_AT,
     CONF_CONTRACTED_POWER_PERIODS,
-    CONF_COUNTER_BEHAVIOR,
-    CONF_COUNTER_MAX_PLAUSIBLE_POWER_KW,
-    CONF_COUNTER_MIN_OBSERVATION_SECONDS,
-    CONF_EXPORT_ENERGY_ENTITY,
     CONF_EXPORT_POWER_ENTITY,
-    CONF_IMPORT_ENERGY_ENTITY,
     CONF_IMPORT_POWER_ENTITY,
     CONF_POSITIVE_MEANS_IMPORT,
     CONF_POWER_ENTITY,
@@ -45,7 +40,6 @@ from custom_components.si_grid_monitor.const import (
     CONF_SOURCE_MODE,
     CONF_SUSTAINED_HORIZON_MINUTES,
     CONF_TARGET_KW,
-    COUNTER_NET,
     DOMAIN,
     SOURCE_CUMULATIVE_ENERGY,
     SOURCE_IMPORT_ONLY,
@@ -255,6 +249,34 @@ def test_clean_setup_reload_and_unload_are_symmetric(monkeypatch: pytest.MonkeyP
     assert hass.config_entries.unloaded == 1
     assert entry.runtime_data is None
     assert calls == {"setup": 1, "register": 1, "unregister": 1}
+
+
+def test_legacy_mode_d_is_disabled_without_mutation_and_other_meter_starts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """V1.0 must stop before runtime construction or Wh/kWh interpretation."""
+
+    _install_lifecycle_doubles(monkeypatch)
+    _Runtime.instances.clear()
+    hass = _Hass()
+    legacy = _Entry()
+    legacy.data = {
+        CONF_SOURCE_MODE: SOURCE_CUMULATIVE_ENERGY,
+        "import_energy_entity": "sensor.legacy_import_kwh",
+    }
+    original = dict(legacy.data)
+
+    assert _run(async_setup_entry(hass, legacy)) is False
+    assert legacy.data == original
+    assert legacy.options == {}
+    assert legacy.runtime_data is None
+    assert _Runtime.instances == []
+
+    supported = _Entry()
+    supported.entry_id = "supported-meter"
+    supported.data = {CONF_SOURCE_MODE: "signed_power", CONF_POWER_ENTITY: "sensor.grid_w"}
+    assert _run(async_setup_entry(hass, supported)) is True
+    assert _Runtime.instances[-1].entry is supported
 
 
 def test_failed_platform_setup_rolls_back_runtime_and_panel(
@@ -682,9 +704,9 @@ def test_beta_version_frontend_and_hacs_package_are_consistent() -> None:
         encoding="utf-8"
     )
     hacs = json.loads((ROOT / "hacs.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == VERSION == "0.9.6"
-    assert "dashboard-model.mjs?v=0.9.6" in dashboard
-    assert "dashboard-i18n.mjs?v=0.9.6" in dashboard
+    assert manifest["version"] == VERSION == "1.0.0"
+    assert "dashboard-model.mjs?v=1.0.0" in dashboard
+    assert "dashboard-i18n.mjs?v=1.0.0" in dashboard
     assert hacs["name"] == "SI Grid Monitor"
     assert not any(ROOT.joinpath(name).exists() for name in ("release.zip", "dist.zip"))
 
@@ -697,11 +719,12 @@ def test_entity_unique_id_formulas_remain_entry_scoped_and_version_independent()
         assert 'f"{entry.entry_id}_{description.key}"' in source
 
 
-def test_four_source_modes_are_wired_and_mode_e_is_removed() -> None:
+def test_only_three_source_modes_are_wired() -> None:
     config_flow = (ROOT / "custom_components/si_grid_monitor/config_flow.py").read_text(
         encoding="utf-8"
     )
-    assert "SOURCE_MODES = (" in config_flow
+    assert "SOURCE_MODES = SUPPORTED_SOURCE_MODES" in config_flow
+    assert "SOURCE_CUMULATIVE_ENERGY" not in config_flow
     assert "SOURCE_ALIGNED_QUARTER" not in config_flow
     assert 'errors["base"] = "mode_not_available_v0_4"' not in config_flow
 
@@ -717,7 +740,10 @@ def test_mode_a_keeps_legacy_unique_id_and_duplicate_guard() -> None:
 
 def test_runtime_modes_expose_stable_sources_and_truthful_capabilities(tmp_path: Path) -> None:
     _ensure_homeassistant_stubs()
-    from custom_components.si_grid_monitor.runtime import GridMonitorRuntime
+    from custom_components.si_grid_monitor.runtime import (
+        GridMonitorRuntime,
+        UnsupportedSourceModeError,
+    )
 
     class Config:
         def path(self, *parts: str) -> str:
@@ -772,105 +798,29 @@ def test_runtime_modes_expose_stable_sources_and_truthful_capabilities(tmp_path:
     assert not import_only.export_known
     assert import_only.instantaneous_power_known
 
-    counters = GridMonitorRuntime(
-        hass,
-        SimpleNamespace(
-            entry_id="d",
-            title="Counters",
-            data={
-                **common,
-                CONF_SOURCE_MODE: SOURCE_CUMULATIVE_ENERGY,
-                CONF_IMPORT_ENERGY_ENTITY: "sensor.import_total",
-                CONF_EXPORT_ENERGY_ENTITY: "sensor.export_total",
-            },
-            options={
-                CONF_COUNTER_MIN_OBSERVATION_SECONDS: 45,
-                CONF_COUNTER_MAX_PLAUSIBLE_POWER_KW: 12.5,
-            },
-        ),
-    )
-    assert counters.source_entities == ("sensor.import_total", "sensor.export_total")
-    assert not counters.instantaneous_power_known
-    assert not counters.export_known  # Unknown until an aligned export delta exists.
-    assert counters.counter_converter.minimum_observation_seconds == pytest.approx(45)
-    assert counters.counter_converter.maximum_plausible_power_kw == pytest.approx(12.5)
-
-    from custom_components.si_grid_monitor.sources import CounterReading
-
-    interval_start = datetime(2026, 10, 21, 10, 0, tzinfo=UTC)
-    assert counters.counter_converter.update(CounterReading(1.0, "kWh", interval_start)) is None
-    interval = counters.counter_converter.update(
-        CounterReading(1.01, "kWh", interval_start + timedelta(seconds=45))
-    )
-    assert interval is not None
-    counters.engine.ingest_interval_average(
-        start=interval.start,
-        end=interval.end,
-        signed_kw=interval.normalized.signed_kw,
-        import_kw=interval.normalized.import_kw,
-        export_kw=interval.normalized.export_kw,
-    )
-    counters.counter_intervals.append(interval)
-    counters.derived_import_power_kw = interval.normalized.import_kw
-    counters.derived_timestamp_utc = interval.end
-    counters.counter_last_observation_utc = interval.end
-    counters.source_available = True
-    counters.source_status_reason = (
-        "counter-derived interval average; instantaneous and sustained forecasts unavailable"
-    )
-    counters._last_checkpoint_utc = interval.end
-    counters._refresh(interval.end)
-    live = counters.dashboard_current()
-    assert live["power"]["signed_kw"] is None
-    assert live["power"]["import_kw"] is None
-    assert live["power"]["input_stale"] is False
-    assert live["power"]["latest_interval_average"]["import_kw"] == pytest.approx(0.8)
-    assert live["counter_intervals"][0]["import_kwh"] == pytest.approx(0.01)
-    assert "unsupported" in live["projection"]["smoothed_future_reason"]
-    assert "stale" not in live["projection"]["smoothed_future_reason"]
-    assert "unsupported" in live["sustained"]["reason"]
-
-    net_counter = GridMonitorRuntime(
-        hass,
-        SimpleNamespace(
-            entry_id="d-net",
-            data={
-                **common,
-                CONF_SOURCE_MODE: SOURCE_CUMULATIVE_ENERGY,
-                CONF_COUNTER_BEHAVIOR: COUNTER_NET,
-                CONF_IMPORT_ENERGY_ENTITY: "sensor.net_total",
-            },
-            options={},
-        ),
-    )
-    assert net_counter.source_entities == ("sensor.net_total",)
-    assert net_counter.export_known_by_design
-    assert not net_counter.instantaneous_power_known
-    assert net_counter.engine.completed_quality.value == "incomplete"
+    with pytest.raises(UnsupportedSourceModeError, match="not supported"):
+        GridMonitorRuntime(
+            hass,
+            SimpleNamespace(
+                entry_id="d",
+                title="Legacy counter",
+                data={
+                    **common,
+                    CONF_SOURCE_MODE: SOURCE_CUMULATIVE_ENERGY,
+                    "import_energy_entity": "sensor.import_total",
+                },
+                options={},
+            ),
+        )
 
 
-def test_options_flow_scopes_counter_policy_to_mode_d_and_restores_values() -> None:
-    """Mode A must not show Mode D policy; Mode D reloads its stored values."""
+def test_options_flow_has_no_active_counter_policy() -> None:
+    """V1.0 options expose only live-power source fields."""
 
     source = (ROOT / "custom_components/si_grid_monitor/config_flow.py").read_text(encoding="utf-8")
-    signed_start = source.index(
-        "if mode == SOURCE_SIGNED_POWER:", source.index("class SIGridMonitorOptionsFlow")
-    )
-    separate_start = source.index("elif mode == SOURCE_SEPARATE_POWER:", signed_start)
-    cumulative_start = source.index(
-        "else:", source.index("elif mode == SOURCE_IMPORT_ONLY:", separate_start)
-    )
-    form_end = source.index("return self.async_show_form(", cumulative_start)
-
-    signed_fields = source[signed_start:separate_start]
-    cumulative_fields = source[cumulative_start:form_end]
-    for key in (
-        "CONF_COUNTER_MIN_OBSERVATION_SECONDS",
-        "CONF_COUNTER_MAX_PLAUSIBLE_POWER_KW",
-    ):
-        assert key not in signed_fields
-        assert key in cumulative_fields
-        assert f"current.get(\n                            {key}" in cumulative_fields
+    assert "CONF_COUNTER_MIN_OBSERVATION_SECONDS" not in source
+    assert "CONF_COUNTER_MAX_PLAUSIBLE_POWER_KW" not in source
+    assert "async_step_counter_type" not in source
 
 
 def test_kw_kwh_entities_publish_full_precision_with_three_digit_display_hint() -> None:
@@ -1108,7 +1058,7 @@ def test_remove_entry_keeps_database_after_deletion_confirmation_expires(tmp_pat
     assert archive_path.exists()
 
 
-def test_setup_translations_cover_all_counter_and_removal_choices() -> None:
+def test_setup_translations_cover_three_modes_and_legacy_notice() -> None:
     for language in ("en", "sl"):
         translations = json.loads(
             (ROOT / f"custom_components/si_grid_monitor/translations/{language}.json").read_text(
@@ -1119,15 +1069,10 @@ def test_setup_translations_cover_all_counter_and_removal_choices() -> None:
             "signed_power",
             "separate_power",
             "import_only",
-            "cumulative_energy",
-        }
-        assert set(translations["selector"]["counter_behavior"]["options"]) == {
-            "import_only",
-            "net",
-            "separate",
         }
         assert "meter_name" in translations["config"]["step"]["user"]["data_description"]
-        assert "counter_type" in translations["config"]["step"]
+        assert "reconfigure" in translations["config"]["step"]
+        assert "legacy_mode_d_unsupported" in translations["issues"]
         assert "archive_removal" in translations["options"]["step"]
         assert "confirm_archive_deletion" in translations["options"]["step"]
 

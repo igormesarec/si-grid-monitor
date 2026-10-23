@@ -1,5 +1,10 @@
 # SI Grid Monitor source-mode scope addendum (V0.9.5)
 
+> **Historical experimental specification.** This document records the
+> V0.9.5/V0.9.6 Mode D experiment. It is superseded for V1.0 by
+> `SPECIFICATION_V1.6_V1_SCOPE_ADDENDUM.md`; cumulative-energy input is not an
+> active or selectable V1.0 feature.
+
 This approved addendum supersedes the earlier input-mode roadmap only. The
 frozen `SPECIFICATION.md` remains unchanged.
 

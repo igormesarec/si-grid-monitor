@@ -21,32 +21,8 @@ globalThis.HTMLElement = FakeElement;
 globalThis.customElements = {define() {}};
 
 const {SIGridMonitorPanel} = await import(
-  "../custom_components/si_grid_monitor/frontend/dashboard.js?panel-tests=0.9.6"
+  "../custom_components/si_grid_monitor/frontend/dashboard.js?panel-tests=1.0.0"
 );
-
-test("Mode D power chart labels interval averages and never fabricates instantaneous samples", () => {
-  const panel = new SIGridMonitorPanel();
-  const base = {
-    quarter: {start_utc: "2026-10-21T10:00:00Z", end_utc: "2026-10-21T10:15:00Z"},
-    power: {measurement_kind: "counter_derived_interval_average"},
-    tariff: {contractual_target_kw: 4.8, contractual_operational_target_kw: 4.8,
-      safety_margin_kw: 0, simulation_enabled: false, simulation_target_kw: null},
-    projection: {operational_target_kw: 4.8},
-  };
-  const waiting = panel._liveChart({...base, counter_intervals: []});
-  assert.match(waiting, /No accepted counter intervals yet/);
-  assert.match(waiting, /does not fabricate instantaneous samples/);
-
-  const html = panel._liveChart({...base, counter_intervals: [{
-    start_utc: "2026-10-21T10:00:00Z", end_utc: "2026-10-21T10:00:30Z",
-    signed_average_kw: 1.2, import_average_kw: 1.2, export_average_kw: null,
-    export_known: false, quality: "counter_interval_average",
-  }]});
-  assert.match(html, /Interval-average power \(kW\)/);
-  assert.match(html, /Evidenced import interval average/);
-  assert.match(html, /Instantaneous and sustained forecasts are unsupported for Mode D/);
-  assert.doesNotMatch(html, /Historical smoothing|Future assumption/);
-});
 
 const START_A = "2026-10-19T08:00:00+00:00";
 const START_B = "2026-10-19T08:15:00+00:00";
@@ -543,7 +519,7 @@ test("PERIOD chart never announces a missing bin as measured zero", () => {
   };
   const html = panel._periodChart();
   assert.match(html, /missing data is not zero/);
-  assert.match(html, /measured; 0\.00 kWh imported/);
+  assert.match(html, /measured; 0\.000 kWh imported/);
   assert.equal((html.match(/class="import-bar"/g) || []).length, 1);
 });
 
