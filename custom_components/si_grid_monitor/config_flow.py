@@ -744,40 +744,6 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
                     CONF_POSITIVE_MEANS_IMPORT,
                     default=bool(current.get(CONF_POSITIVE_MEANS_IMPORT, True)),
                 ): selector.BooleanSelector(),
-                vol.Required(
-                    CONF_COUNTER_MIN_OBSERVATION_SECONDS,
-                    default=float(
-                        current.get(
-                            CONF_COUNTER_MIN_OBSERVATION_SECONDS,
-                            DEFAULT_COUNTER_MIN_OBSERVATION_SECONDS,
-                        )
-                    ),
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=1,
-                        max=900,
-                        step=1,
-                        mode=selector.NumberSelectorMode.BOX,
-                        unit_of_measurement="s",
-                    )
-                ),
-                vol.Required(
-                    CONF_COUNTER_MAX_PLAUSIBLE_POWER_KW,
-                    default=float(
-                        current.get(
-                            CONF_COUNTER_MAX_PLAUSIBLE_POWER_KW,
-                            DEFAULT_COUNTER_MAX_PLAUSIBLE_POWER_KW,
-                        )
-                    ),
-                ): selector.NumberSelector(
-                    selector.NumberSelectorConfig(
-                        min=0.1,
-                        max=10000,
-                        step=0.1,
-                        mode=selector.NumberSelectorMode.BOX,
-                        unit_of_measurement="kW",
-                    )
-                ),
             }
         elif mode == SOURCE_SEPARATE_POWER:
             source_fields = {
@@ -821,6 +787,40 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
                     CONF_POSITIVE_MEANS_IMPORT,
                     default=bool(current.get(CONF_POSITIVE_MEANS_IMPORT, True)),
                 ): selector.BooleanSelector(),
+                vol.Required(
+                    CONF_COUNTER_MIN_OBSERVATION_SECONDS,
+                    default=float(
+                        current.get(
+                            CONF_COUNTER_MIN_OBSERVATION_SECONDS,
+                            DEFAULT_COUNTER_MIN_OBSERVATION_SECONDS,
+                        )
+                    ),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1,
+                        max=900,
+                        step=1,
+                        mode=selector.NumberSelectorMode.BOX,
+                        unit_of_measurement="s",
+                    )
+                ),
+                vol.Required(
+                    CONF_COUNTER_MAX_PLAUSIBLE_POWER_KW,
+                    default=float(
+                        current.get(
+                            CONF_COUNTER_MAX_PLAUSIBLE_POWER_KW,
+                            DEFAULT_COUNTER_MAX_PLAUSIBLE_POWER_KW,
+                        )
+                    ),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0.1,
+                        max=10000,
+                        step=0.1,
+                        mode=selector.NumberSelectorMode.BOX,
+                        unit_of_measurement="kW",
+                    )
+                ),
             }
         return self.async_show_form(
             step_id="settings",

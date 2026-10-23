@@ -165,6 +165,13 @@ quarter using its actual evidenced timestamps. The cumulative-energy chart is
 anchored to the engine's authoritative imported-energy total and shows only
 supported interval segments; gaps are never bridged.
 
+Mode D's minimum observation and meter-specific plausibility ceiling are edited
+in that meter's Options and survive reloads. Counter intervals that straddle a
+fixed quarter boundary conserve their evidenced energy, but both affected
+quarters remain incomplete because the counter does not reveal the energy split.
+Dashboard and Home Assistant kW/kWh values use three-decimal display precision;
+the calculation engine and SQLite archive retain full precision.
+
 ### Removing a meter safely
 
 Removing an SI Grid Monitor config entry keeps its schema-6 database by default.

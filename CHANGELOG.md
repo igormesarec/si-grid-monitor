@@ -6,6 +6,19 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [0.9.6] - 2026-10-23
 
+- Moved the cumulative-counter minimum observation and plausibility-ceiling
+  controls into Mode D Options, with stored values restored on reload and passed
+  directly to the active converter; Mode A no longer shows unrelated controls.
+- Standardized dashboard kW/kWh presentation and Home Assistant entity display
+  hints to three decimal places while retaining full engine/archive precision,
+  adaptive chart ticks, integer counts and two-decimal percentages.
+- Kept both quarters touched by an unaligned counter interval explicitly
+  incomplete. A multi-quarter 30-second-cadence regression conserves the exact
+  energy while preventing ambiguous cross-boundary allocation from becoming a
+  confirmed contractual result.
+- Added an explicit TODAY **Current / Live** action. TODAY defaults to the live
+  quarter and preserves a deliberately selected archived quarter across normal
+  10-second refreshes.
 - Prevented quantized cumulative counters from producing trusted short-interval
   derivative spikes. Counter deltas now accumulate for a configurable minimum
   observation interval (30 seconds by default) before conversion.

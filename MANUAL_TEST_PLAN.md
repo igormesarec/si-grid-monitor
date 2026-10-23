@@ -36,6 +36,23 @@
    restart and quarter-boundary tests in English and Slovenian on Android and
    desktop. Verify Modes A/B/C are unchanged and two meter archives remain
    isolated.
+9. Open Options for a Mode A meter and confirm counter minimum-observation and
+   plausibility fields are absent. Open Options for Mode D, change both fields,
+   reload the integration, and confirm Overview diagnostics and converter
+   behavior use the saved values.
+10. Confirm dashboard and Home Assistant kW/kWh sensor values display three
+    decimal places while percentages retain two decimals, counts remain whole,
+    adaptive graph ticks remain readable and unavailable values show `Unknown`
+    or unavailable—not `0.000`.
+11. With a counter reporting every 30 seconds at timestamps not aligned to
+    `:00/:15/:30/:45`, run through several boundaries. Compare total counter
+    delta with archived plus current-quarter energy (they must reconcile), and
+    confirm every boundary-straddled quarter is incomplete rather than a
+    confirmed contractual interval.
+12. On TODAY at Android widths, confirm initial selection is the live quarter.
+    Select an older quarter, wait through multiple 10-second refreshes, and
+    confirm it remains selected. Tap **Current / Live** and confirm immediate
+    return to the current interval without horizontal page overflow.
 
 ## V0.9.5 four-source-mode acceptance
 

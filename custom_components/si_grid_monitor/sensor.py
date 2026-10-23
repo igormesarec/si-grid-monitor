@@ -22,7 +22,7 @@ from .const import (
     ATTR_BUDGET_HEADROOM_WARNING,
     DOMAIN,
 )
-from .engine import EngineSnapshot, round_for_display
+from .engine import EngineSnapshot
 from .runtime import GridMonitorRuntime
 
 
@@ -406,7 +406,7 @@ SENSORS: tuple[SIGridSensorDescription, ...] = (
             else None
         ),
         budget_warning=True,
-        display_precision=2,
+        display_precision=3,
     ),
     SIGridSensorDescription(
         key="sustained_must_reduce_power",
@@ -419,7 +419,7 @@ SENSORS: tuple[SIGridSensorDescription, ...] = (
             else None
         ),
         budget_warning=True,
-        display_precision=2,
+        display_precision=3,
     ),
     SIGridSensorDescription(
         key="sustained_forecast_quality",
@@ -535,8 +535,11 @@ class SIGridSensor(SensorEntity):
             model="Software meter monitor",
         )
         precision = description.display_precision
-        if precision is None and description.native_unit_of_measurement == UnitOfPower.KILO_WATT:
-            precision = 2
+        if precision is None and description.native_unit_of_measurement in {
+            UnitOfPower.KILO_WATT,
+            UnitOfEnergy.KILO_WATT_HOUR,
+        }:
+            precision = 3
         if precision is not None:
             self._attr_suggested_display_precision = precision
 
@@ -595,14 +598,9 @@ class SIGridSensor(SensorEntity):
         ):
             return None
         value = self.entity_description.value_fn(snapshot, self.runtime)
-        precision = self.entity_description.display_precision
-        if (
-            precision is None
-            and self.entity_description.native_unit_of_measurement == UnitOfPower.KILO_WATT
-        ):
-            precision = 2
-        if isinstance(value, float) and precision is not None:
-            return round_for_display(value, precision)
+        # Suggested display precision controls presentation. Preserve the full
+        # engine value in Home Assistant state/Recorder instead of rounding the
+        # measurement before it leaves the entity.
         return value
 
     @property

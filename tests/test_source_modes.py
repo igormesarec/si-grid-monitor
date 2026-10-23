@@ -325,6 +325,57 @@ def test_mode_d_quantized_counter_preserves_accurate_quarter_energy() -> None:
     assert completed[0].quality == DataQuality.COUNTER_DERIVED
 
 
+def test_mode_d_unaligned_thirty_second_windows_conserve_energy_and_stay_incomplete() -> None:
+    """Every straddled boundary is conserved but never promoted to confirmed quality."""
+
+    baseline = datetime(2026, 10, 21, 9, 59, 47, tzinfo=UTC)
+    converter = CounterPowerConverter(minimum_observation_seconds=30)
+    engine = FixedQuarterEngine(
+        stale_after_seconds=900,
+        source_id="mode=cumulative_energy|counter_behavior=import_only",
+        completed_quality=DataQuality.COUNTER_DERIVED,
+    )
+    assert converter.update(CounterReading(10.0, "kWh", baseline)) is None
+
+    counter_delta_kwh = 0.0
+    for step in range(1, 122):
+        counter_delta_kwh += 0.001
+        interval = converter.update(
+            CounterReading(
+                10.0 + counter_delta_kwh,
+                "kWh",
+                baseline + timedelta(seconds=30 * step),
+            )
+        )
+        assert interval is not None
+        engine.ingest_interval_average(
+            start=interval.start,
+            end=interval.end,
+            signed_kw=interval.normalized.signed_kw,
+            import_kw=interval.normalized.import_kw,
+            export_kw=interval.normalized.export_kw,
+        )
+
+    # Four consecutive real-world-style full quarters were observed between
+    # 10:00 and 11:00. Each boundary falls inside a 30-second counter window,
+    # so the energy is retained but all 4/4 quarters (100%) remain incomplete.
+    full_quarters = [
+        item
+        for item in engine.completed
+        if datetime(2026, 10, 21, 10, 0, tzinfo=UTC)
+        <= item.start_utc
+        < datetime(2026, 10, 21, 11, 0, tzinfo=UTC)
+    ]
+    assert len(full_quarters) == 4
+    assert all(item.coverage_seconds == pytest.approx(900) for item in full_quarters)
+    assert all(item.quality == DataQuality.INCOMPLETE for item in full_quarters)
+    assert all(item.import_demand_kw == pytest.approx(0.12) for item in full_quarters)
+
+    archived_and_live_kwh = sum(item.import_kwh for item in engine.completed) + engine.import_kwh
+    assert archived_and_live_kwh == pytest.approx(counter_delta_kwh)
+    assert sum(item.import_kwh for item in full_quarters) == pytest.approx(0.12)
+
+
 def test_mode_d_bidirectional_net_requires_total_state_class() -> None:
     start = datetime(2026, 10, 21, 10, 0, tzinfo=UTC)
     converter = CounterPowerConverter(behavior=COUNTER_NET)

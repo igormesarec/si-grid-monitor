@@ -562,6 +562,12 @@ class FixedQuarterEngine:
             raise CalculationError("counter intervals must not overlap or move backwards")
         before = len(self.completed)
         self._unresolved_interval_active = quarter_bounds(start_utc).end_utc < end_utc
+        if self._unresolved_interval_active and self.bounds is not None:
+            # A cumulative-counter delta spanning a fixed-quarter boundary does
+            # not reveal how its energy was distributed on either side. Keep
+            # both touched quarters incomplete even when their elapsed coverage
+            # would otherwise reach 900 seconds.
+            self._force_incomplete = True
         if self.bounds is None:
             self._initialize(start_utc)
             self.gap_seconds = (start_utc - self.bounds.start_utc).total_seconds()

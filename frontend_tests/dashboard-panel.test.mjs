@@ -217,6 +217,58 @@ test("a stale quarter result cannot replace a newer selected quarter", async () 
   assert.equal(panel._historical.quarter.start_utc, START_B);
 });
 
+test("TODAY defaults to live, preserves history on refresh, and returns to Current / Live", async () => {
+  const today = new Intl.DateTimeFormat("sv-SE", {timeZone: "Europe/Ljubljana"})
+    .format(new Date());
+  const historical = quarter(`${today}T08:00:00+00:00`, "completed", {import_demand_kw: 1.23456});
+  const live = quarter(`${today}T08:15:00+00:00`, "live", {import_demand_kw: 0.45678});
+  const panel = panelForToday([historical, live]);
+  panel._selectedDate = today;
+  panel._selectedTodayQuarterUtc = null;
+  let archiveCalls = 0;
+  panel._call = async type => {
+    if (type === "day") return day([historical, live]);
+    archiveCalls += 1;
+    return {quarter: {start_utc: historical.start_utc, import_kwh: 0.123456}};
+  };
+
+  await panel._loadTab();
+  assert.equal(panel._selectedTodayQuarterUtc, live.start_utc);
+  assert.equal(archiveCalls, 0, "live quarter must not request a nonexistent archive row");
+  assert.match(panel._today(), /data-today-live[^>]*>Current \/ Live</);
+
+  await panel._selectTodayQuarter(historical.start_utc);
+  assert.equal(panel._selectedTodayQuarterUtc, historical.start_utc);
+  assert.equal(archiveCalls, 1);
+  await panel._loadTab();
+  assert.equal(panel._selectedTodayQuarterUtc, historical.start_utc,
+    "automatic refresh must preserve an explicit historical selection");
+  assert.equal(panel._historical.quarter.start_utc, historical.start_utc);
+
+  await panel._selectTodayLive();
+  assert.equal(panel._selectedTodayQuarterUtc, live.start_utc);
+  assert.equal(panel._historical, null);
+});
+
+test("dashboard formats kW and kWh to three decimals without converting unknown to zero", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._historical = {quarter: {
+    start_utc: START_A,
+    import_demand_kw: 1.23456,
+    import_kwh: 0.123456,
+    export_kwh: null,
+    contractual_target_kw: 3.9,
+    quality: "measured",
+    tariff_rule_status: "official",
+    confirmed_exceeded: false,
+  }};
+  const html = panel._historicalCard();
+  assert.match(html, /1\.235 <small>kW/);
+  assert.match(html, /0\.123 <small>kWh/);
+  assert.match(html, /Export<\/span><strong>—/);
+  assert.doesNotMatch(html, /Export<\/span><strong>0\.000/);
+});
+
 test("a delayed archive result cannot cross a meter switch", async () => {
   const panel = panelForToday();
   panel._entries = [
@@ -585,11 +637,11 @@ test("HISTORY chart, labels, table and accessibility agree on measurement validi
       import_demand_kw: 9.1, import_kwh: null, coverage_seconds: 0, quality: "missing"},
   ]});
   assert.equal((html.match(/class="history-demand"/g) || []).length, 1);
-  assert.match(html, /0\.00 kW/);
+  assert.match(html, /0\.000 kW/);
   assert.match(html, /Partial observation: 0\.100 kWh import; contractual demand unavailable/);
   assert.match(html, /Measurement unavailable/);
   assert.match(html, /Archive record missing/);
-  assert.doesNotMatch(html, /7\.80 kW|8\.40 kW|9\.10 kW/);
+  assert.doesNotMatch(html, /7\.800 kW|8\.400 kW|9\.100 kW/);
   assert.match(html, /state-valid_zero/);
   assert.match(html, /state-partial/);
   assert.match(html, /state-unavailable/);
