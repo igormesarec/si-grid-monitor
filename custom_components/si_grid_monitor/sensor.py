@@ -620,13 +620,32 @@ class SIGridSensor(SensorEntity):
                 "export_known": self.runtime.export_known,
             }
         )
+        if self.entity_description.key in {"derived_import_power", "derived_export_power"}:
+            counter_intervals = getattr(self.runtime, "counter_intervals", ())
+            latest = counter_intervals[-1] if counter_intervals else None
+            attributes.update(
+                {
+                    "measurement_kind": "counter_derived_interval_average",
+                    "instantaneous_measurement": False,
+                    "interval_start_utc": latest.start if latest is not None else None,
+                    "interval_end_utc": latest.end if latest is not None else None,
+                    "observation_seconds": (
+                        round(latest.observation_seconds, 3) if latest is not None else None
+                    ),
+                    "interval_quality": latest.quality if latest is not None else None,
+                }
+            )
         if snapshot is not None:
             attributes.update(
                 {
                     "quality": snapshot.quality.value,
                     "coverage_seconds": round(snapshot.coverage_seconds, 3),
                     "gap_seconds": round(snapshot.gap_seconds, 3),
-                    "input_stale": snapshot.input_stale,
+                    "input_stale": (
+                        snapshot.input_stale
+                        if self.runtime.instantaneous_power_known
+                        else not self.runtime.source_available
+                    ),
                     "simulation_enabled": bool(
                         self.runtime.settings.get("simulation_enabled", False)
                     ),

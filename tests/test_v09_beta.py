@@ -680,9 +680,9 @@ def test_beta_version_frontend_and_hacs_package_are_consistent() -> None:
         encoding="utf-8"
     )
     hacs = json.loads((ROOT / "hacs.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == VERSION == "0.9.5"
-    assert "dashboard-model.mjs?v=0.9.5" in dashboard
-    assert "dashboard-i18n.mjs?v=0.9.5" in dashboard
+    assert manifest["version"] == VERSION == "0.9.6"
+    assert "dashboard-model.mjs?v=0.9.6" in dashboard
+    assert "dashboard-i18n.mjs?v=0.9.6" in dashboard
     assert hacs["name"] == "SI Grid Monitor"
     assert not any(ROOT.joinpath(name).exists() for name in ("release.zip", "dist.zip"))
 
@@ -774,6 +774,7 @@ def test_runtime_modes_expose_stable_sources_and_truthful_capabilities(tmp_path:
         hass,
         SimpleNamespace(
             entry_id="d",
+            title="Counters",
             data={
                 **common,
                 CONF_SOURCE_MODE: SOURCE_CUMULATIVE_ENERGY,
@@ -786,6 +787,41 @@ def test_runtime_modes_expose_stable_sources_and_truthful_capabilities(tmp_path:
     assert counters.source_entities == ("sensor.import_total", "sensor.export_total")
     assert not counters.instantaneous_power_known
     assert not counters.export_known  # Unknown until an aligned export delta exists.
+
+    from custom_components.si_grid_monitor.sources import CounterReading
+
+    interval_start = datetime(2026, 10, 21, 10, 0, tzinfo=UTC)
+    assert counters.counter_converter.update(CounterReading(1.0, "kWh", interval_start)) is None
+    interval = counters.counter_converter.update(
+        CounterReading(1.01, "kWh", interval_start + timedelta(seconds=30))
+    )
+    assert interval is not None
+    counters.engine.ingest_interval_average(
+        start=interval.start,
+        end=interval.end,
+        signed_kw=interval.normalized.signed_kw,
+        import_kw=interval.normalized.import_kw,
+        export_kw=interval.normalized.export_kw,
+    )
+    counters.counter_intervals.append(interval)
+    counters.derived_import_power_kw = interval.normalized.import_kw
+    counters.derived_timestamp_utc = interval.end
+    counters.counter_last_observation_utc = interval.end
+    counters.source_available = True
+    counters.source_status_reason = (
+        "counter-derived interval average; instantaneous and sustained forecasts unavailable"
+    )
+    counters._last_checkpoint_utc = interval.end
+    counters._refresh(interval.end)
+    live = counters.dashboard_current()
+    assert live["power"]["signed_kw"] is None
+    assert live["power"]["import_kw"] is None
+    assert live["power"]["input_stale"] is False
+    assert live["power"]["latest_interval_average"]["import_kw"] == pytest.approx(1.2)
+    assert live["counter_intervals"][0]["import_kwh"] == pytest.approx(0.01)
+    assert "unsupported" in live["projection"]["smoothed_future_reason"]
+    assert "stale" not in live["projection"]["smoothed_future_reason"]
+    assert "unsupported" in live["sustained"]["reason"]
 
     net_counter = GridMonitorRuntime(
         hass,

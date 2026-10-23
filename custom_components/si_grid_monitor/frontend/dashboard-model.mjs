@@ -372,6 +372,73 @@ export function livePowerChartModel({
   };
 }
 
+export function counterIntervalChartModel({
+  intervals,
+  quarterStartUtc,
+  quarterEndUtc,
+  contractualTargetKw = null,
+  contractualSafetyTargetKw = null,
+  operationalTargetKw = null,
+  simulationTargetKw = null,
+}) {
+  const quarterStart = new Date(quarterStartUtc).getTime();
+  const quarterEnd = new Date(quarterEndUtc).getTime();
+  const accepted = intervals
+    .map(interval => ({
+      ...interval,
+      start: Math.max(quarterStart, new Date(interval.start_utc).getTime()),
+      end: Math.min(quarterEnd, new Date(interval.end_utc).getTime()),
+    }))
+    .filter(interval => Number.isFinite(interval.start) && Number.isFinite(interval.end)
+      && interval.end > interval.start && interval.quality === "counter_interval_average")
+    .sort((left, right) => left.start - right.start);
+  const actualImportSegments = accepted.map(interval => [
+    {timestamp: new Date(interval.start).toISOString(), kw: Number(interval.import_average_kw)},
+    {timestamp: new Date(interval.end).toISOString(), kw: Number(interval.import_average_kw)},
+  ]);
+  const actualExportSegments = accepted
+    .filter(interval => interval.export_known && Number(interval.export_average_kw) > 0)
+    .map(interval => [
+      {timestamp: new Date(interval.start).toISOString(), kw: -Number(interval.export_average_kw)},
+      {timestamp: new Date(interval.end).toISOString(), kw: -Number(interval.export_average_kw)},
+    ]);
+  const values = [
+    0,
+    contractualTargetKw,
+    contractualSafetyTargetKw,
+    operationalTargetKw,
+    simulationTargetKw,
+    ...actualImportSegments.flat().map(point => point.kw),
+    ...actualExportSegments.flat().map(point => point.kw),
+  ].filter(value => value != null && Number.isFinite(Number(value))).map(Number);
+  const hasExport = actualExportSegments.length > 0;
+  const rawMin = hasExport ? Math.min(...values) : 0;
+  const rawMax = Math.max(...values, 0);
+  const span = Math.max(0.1, rawMax - rawMin);
+  const gridStepKw = span <= 1 ? 0.2 : span <= 12 ? 1 : span <= 30 ? 2 : 5;
+  const domainMinKw = hasExport
+    ? Math.floor((rawMin - Math.max(0.1, Math.abs(rawMin) * 0.1)) / gridStepKw) * gridStepKw
+    : 0;
+  const domainMaxKw = Math.max(
+    gridStepKw,
+    Math.ceil((rawMax + Math.max(0.1, rawMax * 0.1)) / gridStepKw) * gridStepKw,
+  );
+  const gridValues = [];
+  for (let value = domainMinKw; value <= domainMaxKw + gridStepKw / 2; value += gridStepKw) {
+    gridValues.push(Number(value.toFixed(6)));
+  }
+  return {
+    accepted,
+    actualImportSegments,
+    actualExportSegments,
+    domainMinKw,
+    domainMaxKw,
+    gridStepKw,
+    gridValues,
+    hasExport,
+  };
+}
+
 function coveredImportSegments(samples, start, now, staleMs) {
   const covered = [];
   for (let index = 0; index < samples.length; index += 1) {
@@ -403,6 +470,7 @@ export function energyAxisScale(values) {
 
 export function quarterEnergyModel({
   trace,
+  counterIntervals = [],
   quarterStartUtc,
   quarterEndUtc,
   nowUtc,
@@ -426,7 +494,17 @@ export function quarterEnergyModel({
   let cursorTime = start;
   let hasGap = false;
   const reconstructed = [{timestamp: new Date(start).toISOString(), kwh: 0}];
-  const covered = coveredImportSegments(samples, start, now, staleMs);
+  const covered = counterIntervals.length
+    ? counterIntervals
+      .map(interval => ({
+        start: Math.max(start, new Date(interval.start_utc).getTime()),
+        end: Math.min(now, new Date(interval.end_utc).getTime()),
+        kw: Number(interval.import_average_kw),
+      }))
+      .filter(interval => Number.isFinite(interval.start) && Number.isFinite(interval.end)
+        && Number.isFinite(interval.kw) && interval.end > interval.start)
+      .sort((left, right) => left.start - right.start)
+    : coveredImportSegments(samples, start, now, staleMs);
   for (const segment of covered) {
     const segmentStart = segment.start;
     const segmentEnd = segment.end;

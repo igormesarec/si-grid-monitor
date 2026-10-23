@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import uuid
+from collections import deque
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from functools import partial
@@ -43,6 +44,8 @@ from .const import (
     CONF_ALLOW_PROVISIONAL_TARIFF,
     CONF_CONTRACTED_POWER_PERIODS,
     CONF_COUNTER_BEHAVIOR,
+    CONF_COUNTER_MAX_PLAUSIBLE_POWER_KW,
+    CONF_COUNTER_MIN_OBSERVATION_SECONDS,
     CONF_EXPORT_ENERGY_ENTITY,
     CONF_EXPORT_POWER_ENTITY,
     CONF_IMPORT_ENERGY_ENTITY,
@@ -65,6 +68,8 @@ from .const import (
     COUNTER_IMPORT_ONLY,
     COUNTER_NET,
     COUNTER_SEPARATE,
+    DEFAULT_COUNTER_MAX_PLAUSIBLE_POWER_KW,
+    DEFAULT_COUNTER_MIN_OBSERVATION_SECONDS,
     DEFAULT_RETENTION,
     DEFAULT_SAFETY_MARGIN_KW,
     DEFAULT_SMOOTHING_SECONDS,
@@ -95,6 +100,7 @@ from .sources import (
     CAPABILITIES,
     CounterPowerConverter,
     CounterReading,
+    DerivedInterval,
     counter_archive_provenance,
 )
 from .sustained import SustainedForecast, calculate_sustained_forecast
@@ -145,10 +151,25 @@ class GridMonitorRuntime:
             export_expected=(
                 self.counter_behavior == COUNTER_SEPARATE and self.export_energy_entity is not None
             ),
+            minimum_observation_seconds=float(
+                configured.get(
+                    CONF_COUNTER_MIN_OBSERVATION_SECONDS,
+                    DEFAULT_COUNTER_MIN_OBSERVATION_SECONDS,
+                )
+            ),
+            maximum_plausible_power_kw=float(
+                configured.get(
+                    CONF_COUNTER_MAX_PLAUSIBLE_POWER_KW,
+                    DEFAULT_COUNTER_MAX_PLAUSIBLE_POWER_KW,
+                )
+            ),
         )
         self.derived_import_power_kw: float | None = None
         self.derived_export_power_kw: float | None = None
         self.derived_timestamp_utc: datetime | None = None
+        self.counter_last_observation_utc: datetime | None = None
+        self.counter_intervals: deque[DerivedInterval] = deque(maxlen=256)
+        self.counter_rejected_intervals: deque[dict[str, object]] = deque(maxlen=64)
         self.source_available = False
         self.source_status_reason: str | None = "waiting_for_valid_measurement"
         source_entities = ",".join(self.source_entities)
@@ -262,7 +283,7 @@ class GridMonitorRuntime:
     @property
     def source_measurement_timestamp_utc(self) -> datetime | None:
         if self.source_mode == SOURCE_CUMULATIVE_ENERGY:
-            return self.derived_timestamp_utc
+            return self.counter_last_observation_utc
         return (
             self.engine.last_sample.timestamp_utc if self.engine.last_sample is not None else None
         )
@@ -287,6 +308,18 @@ class GridMonitorRuntime:
                 data.get(CONF_SMOOTHING_SECONDS, DEFAULT_SMOOTHING_SECONDS)
             ),
             CONF_RETENTION: str(data.get(CONF_RETENTION, DEFAULT_RETENTION)),
+            CONF_COUNTER_MIN_OBSERVATION_SECONDS: float(
+                data.get(
+                    CONF_COUNTER_MIN_OBSERVATION_SECONDS,
+                    DEFAULT_COUNTER_MIN_OBSERVATION_SECONDS,
+                )
+            ),
+            CONF_COUNTER_MAX_PLAUSIBLE_POWER_KW: float(
+                data.get(
+                    CONF_COUNTER_MAX_PLAUSIBLE_POWER_KW,
+                    DEFAULT_COUNTER_MAX_PLAUSIBLE_POWER_KW,
+                )
+            ),
             CONF_SIMULATION_ENABLED: bool(data.get(CONF_SIMULATION_ENABLED, False)),
             CONF_SIMULATION_TARGET_KW: float(
                 data.get(CONF_SIMULATION_TARGET_KW, data[CONF_TARGET_KW])
@@ -348,8 +381,11 @@ class GridMonitorRuntime:
                 "entry_id": self.entry.entry_id,
                 "title": self.entry.title,
                 "available": False,
-                "reason": self.contractual_status_reason or "waiting_for_valid_measurement",
+                "reason": self.source_status_reason
+                or self.contractual_status_reason
+                or "waiting_for_valid_measurement",
                 "trace": [],
+                "counter_intervals": [],
             }
         projection = snapshot.projection
         sustained = self.sustained_forecast
@@ -372,7 +408,13 @@ class GridMonitorRuntime:
             if projection.forecast_smoothed_kw is not None and snapshot.smoothed_import.complete
             else None
         )
-        if smoothed_future_import_kw is not None and (
+        if self.source_mode == SOURCE_CUMULATIVE_ENERGY:
+            smoothed_future_import_kw = None
+            smoothed_forecast_reason = (
+                "instantaneous and sustained forecasts are unsupported for "
+                "counter-derived interval-average measurements"
+            )
+        elif smoothed_future_import_kw is not None and (
             simulation_enabled
             or (tariff is not None and tariff.rule_status == RuleStatus.PROVISIONAL)
         ):
@@ -394,6 +436,23 @@ class GridMonitorRuntime:
             for sample in self.engine.buffer.samples
             if sample.timestamp_utc >= quarter_start
         ]
+        counter_intervals = [
+            {
+                "start_utc": interval.start.isoformat(),
+                "end_utc": interval.end.isoformat(),
+                "signed_average_kw": interval.normalized.signed_kw,
+                "import_average_kw": interval.normalized.import_kw,
+                "export_average_kw": interval.normalized.export_kw,
+                "import_kwh": interval.import_kwh,
+                "export_kwh": interval.export_kwh,
+                "export_known": interval.normalized.export_known,
+                "contractual_import_evidence": interval.contractual_import_evidence,
+                "observation_seconds": interval.observation_seconds,
+                "quality": interval.quality,
+            }
+            for interval in self.counter_intervals
+            if interval.end > quarter_start and interval.start < snapshot.bounds.end_utc
+        ]
         age_reference = (
             snapshot.now_utc if self.instantaneous_power_known else dt_util.utcnow().astimezone(UTC)
         )
@@ -403,8 +462,8 @@ class GridMonitorRuntime:
                 (age_reference - self.engine.buffer.samples[-1].timestamp_utc).total_seconds(),
             )
             if self.engine.buffer.samples
-            else max(0.0, (age_reference - self.derived_timestamp_utc).total_seconds())
-            if self.derived_timestamp_utc is not None
+            else max(0.0, (age_reference - self.counter_last_observation_utc).total_seconds())
+            if self.counter_last_observation_utc is not None
             else None
         )
         return {
@@ -429,30 +488,27 @@ class GridMonitorRuntime:
                 "quality": snapshot.quality.value,
             },
             "power": {
-                "signed_kw": (
-                    snapshot.current_signed_power_kw
-                    if self.instantaneous_power_known
-                    else (
-                        self.derived_import_power_kw - (self.derived_export_power_kw or 0.0)
-                        if self.derived_import_power_kw is not None
-                        else None
-                    )
-                ),
+                "signed_kw": snapshot.current_signed_power_kw
+                if self.instantaneous_power_known
+                else None,
                 "import_kw": (
-                    self.derived_import_power_kw
-                    if not self.instantaneous_power_known
-                    else max(0.0, snapshot.current_signed_power_kw)
-                    if snapshot.current_signed_power_kw is not None
+                    max(0.0, snapshot.current_signed_power_kw)
+                    if self.instantaneous_power_known
+                    and snapshot.current_signed_power_kw is not None
                     else None
                 ),
                 "export_kw": (
-                    self.derived_export_power_kw
-                    if not self.instantaneous_power_known
-                    else max(0.0, -snapshot.current_signed_power_kw)
-                    if snapshot.current_signed_power_kw is not None and self.export_known
+                    max(0.0, -snapshot.current_signed_power_kw)
+                    if self.instantaneous_power_known
+                    and snapshot.current_signed_power_kw is not None
+                    and self.export_known
                     else None
                 ),
-                "input_stale": snapshot.input_stale,
+                "input_stale": (
+                    snapshot.input_stale
+                    if self.instantaneous_power_known
+                    else not self.source_available
+                ),
                 "source_age_seconds": source_age_seconds,
                 "source_mode": self.source_mode,
                 "counter_behavior": (
@@ -472,6 +528,32 @@ class GridMonitorRuntime:
                     "direct"
                     if self.instantaneous_power_known
                     else "counter_derived_interval_average"
+                ),
+                "latest_interval_average": (
+                    {
+                        "start_utc": self.counter_intervals[-1].start.isoformat(),
+                        "end_utc": self.counter_intervals[-1].end.isoformat(),
+                        "signed_kw": self.counter_intervals[-1].normalized.signed_kw,
+                        "import_kw": self.counter_intervals[-1].normalized.import_kw,
+                        "export_kw": self.counter_intervals[-1].normalized.export_kw,
+                        "quality": self.counter_intervals[-1].quality,
+                        "observation_seconds": self.counter_intervals[-1].observation_seconds,
+                    }
+                    if self.counter_intervals
+                    else None
+                ),
+                "counter_policy": (
+                    {
+                        "minimum_observation_seconds": (
+                            self.counter_converter.minimum_observation_seconds
+                        ),
+                        "maximum_plausible_power_kw": (
+                            self.counter_converter.maximum_plausible_power_kw
+                        ),
+                        "rejected_interval_count": (self.counter_converter.rejected_interval_count),
+                    }
+                    if self.source_mode == SOURCE_CUMULATIVE_ENERGY
+                    else None
                 ),
             },
             "tariff": {
@@ -557,6 +639,7 @@ class GridMonitorRuntime:
             "last_completed_import_demand_kw": self.last_completed_import_demand_kw,
             "last_completed_signed_average_kw": self.last_completed_signed_average_kw,
             "trace": trace,
+            "counter_intervals": counter_intervals,
             "trace_stale_after_seconds": DEFAULT_STALE_AFTER_SECONDS,
             "detailed_trace_provenance": "bounded_runtime_samples",
         }
@@ -880,13 +963,20 @@ class GridMonitorRuntime:
             # every second would manufacture a gap and make the next evidenced
             # counter interval overlap that synthetic cursor.
             now_utc = now.astimezone(UTC)
+            observation_timeout = max(
+                300.0,
+                self.counter_converter.minimum_observation_seconds * 3,
+            )
             if (
-                self.derived_timestamp_utc is not None
-                and now_utc - self.derived_timestamp_utc
-                > timedelta(seconds=DEFAULT_STALE_AFTER_SECONDS)
+                self.counter_last_observation_utc is not None
+                and now_utc - self.counter_last_observation_utc
+                > timedelta(seconds=observation_timeout)
             ):
                 self.source_available = False
-                self.source_status_reason = "latest counter-derived interval is stale"
+                self.source_status_reason = (
+                    "cumulative counter has not reported recently; interval-average "
+                    "measurements and forecasts are unavailable"
+                )
             for listener in tuple(self._listeners):
                 listener()
             return
@@ -984,14 +1074,22 @@ class GridMonitorRuntime:
                 and export_state.state not in {"unknown", "unavailable", "none", ""}
                 else None
             )
+            observation_times = [import_reading.timestamp]
+            if export_reading is not None:
+                observation_times.append(export_reading.timestamp)
+            self.counter_last_observation_utc = max(observation_times)
             intervals = self.counter_converter.update_intervals(import_reading, export_reading)
             if not intervals:
-                self.source_available = False
+                self.source_available = True
                 self.source_status_reason = (
                     self.counter_converter.last_warnings[-1]
                     if self.counter_converter.last_warnings
-                    else "waiting for the next compatible counter interval"
+                    else self.counter_converter.last_status_reason
+                    or "waiting for the next compatible counter interval; "
+                    "instantaneous and sustained forecasts are unsupported"
                 )
+                for listener in tuple(self._listeners):
+                    listener()
                 return
             for interval in intervals:
                 self.engine.ingest_interval_average(
@@ -1004,16 +1102,37 @@ class GridMonitorRuntime:
                 self.derived_import_power_kw = interval.normalized.import_kw
                 self.derived_export_power_kw = interval.normalized.export_kw
                 self.derived_timestamp_utc = interval.end
+                self.counter_intervals.append(interval)
         except (AdapterError, CalculationError, TypeError, ValueError) as err:
-            self.source_available = False
-            self.source_status_reason = str(err)
+            rejected = self.counter_converter.last_rejected_interval
+            if rejected is not None:
+                self.counter_rejected_intervals.append(
+                    {
+                        "channel": rejected.channel,
+                        "start_utc": rejected.start,
+                        "end_utc": rejected.end,
+                        "average_kw": rejected.average_kw,
+                        "reason": rejected.reason,
+                    }
+                )
+            self.source_available = True
+            self.source_status_reason = (
+                f"counter measurement rejected: {err}; instantaneous and sustained "
+                "forecasts are unsupported"
+            )
             _LOGGER.warning("Rejected cumulative counter update: %s", err)
+            for listener in tuple(self._listeners):
+                listener()
             return
         self.source_available = True
         self.source_status_reason = (
-            "net counter-derived interval average; import-only contractual confirmation unavailable"
+            "net counter-derived interval average; import-only contractual confirmation and "
+            "instantaneous/sustained forecasts unavailable"
             if self.counter_behavior == COUNTER_NET
-            else "counter-derived interval average; instantaneous forecasts unavailable"
+            else (
+                "counter-derived interval average; instantaneous and sustained forecasts "
+                "unavailable"
+            )
         )
         self._refresh(intervals[-1].end)
 
@@ -1076,7 +1195,12 @@ class GridMonitorRuntime:
             self.contractual_status_reason = "tariff rule is provisional and not legally confirmed"
         else:
             self.contractual_status_reason = None
-        self.sustained_status_reason = self.contractual_status_reason
+        self.sustained_status_reason = (
+            "instantaneous and sustained forecasts are unsupported for "
+            "counter-derived interval-average measurements"
+            if self.source_mode == SOURCE_CUMULATIVE_ENERGY
+            else self.contractual_status_reason
+        )
         try:
             self.snapshot = self.engine.snapshot(
                 now=now,
@@ -1090,7 +1214,7 @@ class GridMonitorRuntime:
             self.sustained_forecast = None
         else:
             self.sustained_forecast = None
-            if self.current_contractual_available:
+            if self.current_contractual_available and self.source_mode != SOURCE_CUMULATIVE_ENERGY:
                 latest = self.engine.last_sample
                 smoothing_seconds = int(settings[CONF_SMOOTHING_SECONDS])
                 try:
@@ -1151,6 +1275,18 @@ class GridMonitorRuntime:
                         quarter.export_evidence,
                         export_coverage_seconds=quarter.export_coverage_seconds,
                         export_unknown_seconds=quarter.export_unknown_seconds,
+                        rejected_anomaly_count=sum(
+                            1
+                            for rejected in self.counter_rejected_intervals
+                            if rejected["end_utc"] > quarter.start_utc
+                            and rejected["start_utc"] < quarter.end_utc
+                        ),
+                        minimum_observation_seconds=(
+                            self.counter_converter.minimum_observation_seconds
+                        ),
+                        maximum_plausible_power_kw=(
+                            self.counter_converter.maximum_plausible_power_kw
+                        ),
                     )
                     if self.source_mode == SOURCE_CUMULATIVE_ENERGY
                     else "live_reconstructed"
@@ -1589,4 +1725,5 @@ def _counter_reading(state: State) -> CounterReading:
         unit=unit,
         timestamp=(state.last_reported or state.last_updated).astimezone(UTC),
         last_reset_utc=reset_utc,
+        state_class=str(state_class),
     )

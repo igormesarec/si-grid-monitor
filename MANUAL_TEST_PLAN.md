@@ -1,4 +1,41 @@
-# SI Grid Monitor V0.9.5 Beta - Real Home Assistant Test Plan
+# SI Grid Monitor V0.9.6 Beta - Real Home Assistant Test Plan
+
+## V0.9.6 Mode D live-measurement hotfix acceptance
+
+1. Update an existing V0.9.5 installation through HACS without removing its
+   config entry. Restart Home Assistant and refresh/reopen the Companion App.
+   Confirm manifest and versioned dashboard assets report `0.9.6`; schema 6,
+   archive row counts, entry IDs and entity unique IDs remain unchanged.
+2. Configure the counter used in the reported Android case. Record its energy
+   resolution and update cadence. Confirm a first reading establishes a baseline
+   and does not create a power value or energy.
+3. Send rapid unchanged reports, then one quantized energy step inside the
+   default 30-second minimum window. Confirm the UI says it is accumulating
+   counter evidence and never displays a trusted 402.06 kW-style spike. After a
+   later report reaches 30 seconds, verify the derived value is labelled
+   **interval average**, has the correct start/end timestamps, and preserves the
+   exact counter delta in quarter energy.
+4. Set a realistic meter-specific plausibility ceiling. On a disposable copied
+   counter, introduce a larger discontinuity above that ceiling. Confirm it is
+   rejected, visibly diagnosed, cannot create a confirmed exceedance, and leaves
+   the affected coverage incomplete. The next valid baseline/interval must
+   recover without repeating or redistributing the rejected delta.
+5. Verify the Overview power chart draws accepted counter intervals as separate
+   horizontal evidenced segments and leaves gaps visible. It must not connect
+   them into an instantaneous trace. Confirm the cumulative-energy chart ends at
+   the engine's authoritative imported kWh and never decreases during export.
+6. Confirm Mode D shows instantaneous power, instant projection, smoothed
+   projection and sustained advice as unsupported—not stale. Pause counter
+   reports beyond the observation timeout and verify the separate counter-report
+   availability diagnostic becomes unavailable without inventing a sample.
+7. Test an import-only `total_increasing` counter and a bidirectional net `total`
+   counter in both directions. Confirm the wizard rejects `total_increasing` for
+   bidirectional net behavior and explains the configured import direction and
+   reset ambiguity.
+8. Repeat baseline, fast reports, zero changes, reset, unavailable/recovery,
+   restart and quarter-boundary tests in English and Slovenian on Android and
+   desktop. Verify Modes A/B/C are unchanged and two meter archives remain
+   isolated.
 
 ## V0.9.5 four-source-mode acceptance
 
@@ -74,7 +111,7 @@
 1. Back up Home Assistant. Record the pre-update schema-5 row count, database
    size, oldest/newest quarter, config-entry ID and entity unique IDs.
 2. Update through HACS, restart, and hard-refresh desktop and Android WebViews.
-   Confirm versioned `0.9.5` dashboard modules load and no entry reconfiguration
+   Confirm versioned `0.9.6` dashboard modules load and no entry reconfiguration
    is requested. Verify schema 6 and the exact same historical quarter count.
 3. Open HISTORY and test day/week/month/year/custom ranges, B1–B5, quality and
    exceedance filters, sorting and pagination. A valid measured zero must remain

@@ -9,6 +9,7 @@
       "source_not_found": "The selected sensor does not exist. Check the entity and try again.",
       "invalid_source_unit": "The selected sensor has an unsupported unit. Power requires W or kW; energy counters require Wh or kWh.",
       "invalid_counter_state_class": "The cumulative sensor must use Home Assistant state class total or total_increasing.",
+      "invalid_net_counter_state_class": "A bidirectional net-energy counter must use Home Assistant state class total. total_increasing cannot represent legitimate reverse-flow decreases.",
       "invalid_source_value": "The current sensor state is not numeric. Wait for a valid reading or select another sensor.",
       "negative_nonnegative_source": "This source must be nonnegative. Select a dedicated import/export sensor or use signed-power mode.",
       "conflicting_power_sources": "Import and export are both positive. The two readings cannot safely represent one grid connection.",
@@ -31,10 +32,14 @@
         "title": "Cumulative counter type",
         "description": "Choose how this counter behaves. SI Grid Monitor creates its own derived-power entities; no YAML, Template Sensor or Derivative helper is needed.",
         "data": {
-          "counter_behavior": "Counter behavior"
+          "counter_behavior": "Counter behavior",
+          "counter_min_observation_seconds": "Minimum counter observation time",
+          "counter_max_plausible_power_kw": "Maximum plausible interval-average power"
         },
         "data_description": {
-          "counter_behavior": "Import-only counters never decrease during export. Bidirectional net counters may increase or decrease. Separate counters preserve independently measured import and export."
+          "counter_behavior": "Import-only counters never decrease during export. Bidirectional net counters may increase or decrease; choose the direction on the next screen. Separate counters preserve independently measured import and export. A net counter may use state class total; an import-only or separate monotonic counter normally uses total_increasing.",
+          "counter_min_observation_seconds": "Counter changes observed sooner than this are accumulated instead of converted into a misleading spike. Default 30 seconds. Energy is retained until enough observation time exists.",
+          "counter_max_plausible_power_kw": "Meter-specific safety ceiling for a derived interval average. Values above it are rejected as anomalous and cannot create a confirmed exceedance. This is not the contractual target or breaker rating."
         }
       },
       "meter": {
@@ -50,7 +55,7 @@
         },
         "data_description": {
           "power_entity": "Select the grid-connection power sensor (W or kW), not total house consumption or PV production. Current readings will be normalized into import (+) and export (−).",
-          "positive_means_import": "Enable if a positive raw sensor reading means electricity imported from the grid. Disable if positive means grid export, as with some SolarEdge sensors. Review the live polarity preview.",
+          "positive_means_import": "For live power, enable if a positive reading means grid import. For a bidirectional net-energy counter, enable if the counter increases during import (default); disable if it increases during export. Review the preview before continuing.",
           "import_power_entity": "A nonnegative W or kW grid-import reading.",
           "export_power_entity": "A nonnegative W or kW grid-export reading.",
           "import_energy_entity": "Select a Wh or kWh counter from Settings > Devices & services > Entities. For bidirectional-net mode this is the one signed/net counter; for the other counter modes it is cumulative import.",
@@ -175,6 +180,8 @@
         "data": {
           "meter_name": "Friendly meter name",
           "counter_behavior": "Counter behavior",
+          "counter_min_observation_seconds": "Minimum counter observation time",
+          "counter_max_plausible_power_kw": "Maximum plausible interval-average power",
           "power_entity": "Grid power sensor",
           "positive_means_import": "Positive source values mean import",
           "import_power_entity": "Import power sensor",
@@ -192,8 +199,10 @@
         "data_description": {
           "meter_name": "The name shown in the shared dashboard meter selector and on every tab.",
           "counter_behavior": "Choose import-only, bidirectional net, or separate cumulative import/export counters. Changing this creates new source provenance; it does not rewrite history.",
+          "counter_min_observation_seconds": "Accumulate quantized counter changes for at least this many seconds before deriving an interval average.",
+          "counter_max_plausible_power_kw": "Reject a derived interval average above this meter-specific ceiling. Rejected energy remains unallocated and cannot confirm a contractual exceedance.",
           "power_entity": "Select the grid-connection power sensor (W or kW), not total house consumption or PV production. Current readings will be normalized into import (+) and export (−).",
-          "positive_means_import": "Enable if a positive raw sensor reading means electricity imported from the grid. Disable if positive means grid export, as with some SolarEdge sensors. Review the live polarity preview.",
+          "positive_means_import": "For live power, enable if a positive reading means grid import. For a bidirectional net-energy counter, enable if the counter increases during import (default); disable if it increases during export.",
           "import_power_entity": "Nonnegative W/kW import source for this existing mode.",
           "export_power_entity": "Nonnegative W/kW export source for this existing mode.",
           "import_energy_entity": "Wh/kWh total or total-increasing imported-energy counter.",
@@ -338,10 +347,10 @@
         "name": "Source mode"
       },
       "derived_import_power": {
-        "name": "Counter-derived import power"
+        "name": "Counter-derived import interval-average power"
       },
       "derived_export_power": {
-        "name": "Counter-derived export power"
+        "name": "Counter-derived export interval-average power"
       },
       "current_power": {
         "name": "Current signed grid power"

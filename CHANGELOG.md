@@ -4,6 +4,30 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-10-23
+
+- Prevented quantized cumulative counters from producing trusted short-interval
+  derivative spikes. Counter deltas now accumulate for a configurable minimum
+  observation interval (30 seconds by default) before conversion.
+- Added a configurable meter-specific plausibility ceiling (100 kW by default).
+  Rejected anomalies are excluded from billing integration, retained in
+  provenance diagnostics and cannot create confirmed contractual exceedances.
+- Kept the real counter-energy delta intact while accumulating short reports;
+  gaps, resets, rejected discontinuities and unsupported cross-quarter
+  allocation remain incomplete rather than being spread across time.
+- Separated counter-derived interval-average power from instantaneous live
+  power throughout entities, WebSocket data and the dashboard. Mode D now
+  reports instantaneous and sustained forecasts as unsupported instead of
+  describing the absent instantaneous sample as stale.
+- Added a gap-aware Mode D interval chart and cumulative-energy trajectory using
+  only accepted evidenced intervals and the authoritative engine energy total.
+- Required bidirectional net counters to use Home Assistant `total` state class;
+  `total_increasing` remains valid for monotonic import/export counters but is
+  rejected for a counter expected to decrease during reverse flow.
+- Added regressions for the reported 402.06 kW quantization spike, rapid state
+  reports, unchanged readings, plausibility rejection/recovery, first baseline,
+  net-counter state class and exact quarter-energy preservation.
+
 - Made archive deletion authorization entry-scoped and valid for only 10 minutes;
   an expired or missing confirmation always falls back to retaining schema-6 data.
 - Added explicit HISTORY export provenance for directly measured, net-inferred,

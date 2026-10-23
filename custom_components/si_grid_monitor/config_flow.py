@@ -27,6 +27,8 @@ from .const import (
     CONF_BACKUP_ARCHIVE_ON_REMOVE,
     CONF_CONTRACTED_POWER_PERIODS,
     CONF_COUNTER_BEHAVIOR,
+    CONF_COUNTER_MAX_PLAUSIBLE_POWER_KW,
+    CONF_COUNTER_MIN_OBSERVATION_SECONDS,
     CONF_DELETE_ARCHIVE_ON_REMOVE,
     CONF_EXPORT_ENERGY_ENTITY,
     CONF_EXPORT_POWER_ENTITY,
@@ -48,6 +50,8 @@ from .const import (
     COUNTER_IMPORT_ONLY,
     COUNTER_NET,
     COUNTER_SEPARATE,
+    DEFAULT_COUNTER_MAX_PLAUSIBLE_POWER_KW,
+    DEFAULT_COUNTER_MIN_OBSERVATION_SECONDS,
     DEFAULT_RETENTION,
     DEFAULT_SAFETY_MARGIN_KW,
     DEFAULT_SMOOTHING_SECONDS,
@@ -189,7 +193,31 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             mode=selector.SelectSelectorMode.DROPDOWN,
                             translation_key="counter_behavior",
                         )
-                    )
+                    ),
+                    vol.Required(
+                        CONF_COUNTER_MIN_OBSERVATION_SECONDS,
+                        default=DEFAULT_COUNTER_MIN_OBSERVATION_SECONDS,
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=1,
+                            max=900,
+                            step=1,
+                            mode=selector.NumberSelectorMode.BOX,
+                            unit_of_measurement="s",
+                        )
+                    ),
+                    vol.Required(
+                        CONF_COUNTER_MAX_PLAUSIBLE_POWER_KW,
+                        default=DEFAULT_COUNTER_MAX_PLAUSIBLE_POWER_KW,
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.1,
+                            max=10000,
+                            step=0.1,
+                            mode=selector.NumberSelectorMode.BOX,
+                            unit_of_measurement="kW",
+                        )
+                    ),
                 }
             ),
         )
@@ -268,6 +296,12 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 "total_increasing",
             }:
                 return {"base": "invalid_counter_state_class"}
+            if (
+                mode == SOURCE_CUMULATIVE_ENERGY
+                and combined.get(CONF_COUNTER_BEHAVIOR) == COUNTER_NET
+                and state.attributes.get("state_class") != "total"
+            ):
+                return {"base": "invalid_net_counter_state_class"}
             if state.state in {STATE_UNKNOWN, STATE_UNAVAILABLE, "none", ""}:
                 continue
             try:
@@ -710,6 +744,40 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
                     CONF_POSITIVE_MEANS_IMPORT,
                     default=bool(current.get(CONF_POSITIVE_MEANS_IMPORT, True)),
                 ): selector.BooleanSelector(),
+                vol.Required(
+                    CONF_COUNTER_MIN_OBSERVATION_SECONDS,
+                    default=float(
+                        current.get(
+                            CONF_COUNTER_MIN_OBSERVATION_SECONDS,
+                            DEFAULT_COUNTER_MIN_OBSERVATION_SECONDS,
+                        )
+                    ),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=1,
+                        max=900,
+                        step=1,
+                        mode=selector.NumberSelectorMode.BOX,
+                        unit_of_measurement="s",
+                    )
+                ),
+                vol.Required(
+                    CONF_COUNTER_MAX_PLAUSIBLE_POWER_KW,
+                    default=float(
+                        current.get(
+                            CONF_COUNTER_MAX_PLAUSIBLE_POWER_KW,
+                            DEFAULT_COUNTER_MAX_PLAUSIBLE_POWER_KW,
+                        )
+                    ),
+                ): selector.NumberSelector(
+                    selector.NumberSelectorConfig(
+                        min=0.1,
+                        max=10000,
+                        step=0.1,
+                        mode=selector.NumberSelectorMode.BOX,
+                        unit_of_measurement="kW",
+                    )
+                ),
             }
         elif mode == SOURCE_SEPARATE_POWER:
             source_fields = {

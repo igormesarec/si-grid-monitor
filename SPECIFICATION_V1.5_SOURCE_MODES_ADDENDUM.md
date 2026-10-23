@@ -58,3 +58,15 @@ Unavailable or delayed readings remain explicit.
 An interval that cannot be allocated across a fixed quarter from source evidence
 must not create a confirmed contractual result. Instantaneous or sustained
 forecasts are unavailable when the source cannot support them.
+
+V0.9.6 clarification: cumulative energy is converted only after a configurable
+minimum observation interval (30 seconds by default). Unchanged high-frequency
+state reports do not advance the derivative baseline; a later quantized energy
+step therefore retains its actual energy and uses the full evidenced elapsed
+time. A configurable meter-specific plausibility ceiling (100 kW by default)
+rejects suspicious interval averages before they enter the calculation engine.
+Rejected or ambiguous energy is not redistributed across time or quarter
+boundaries and cannot create a confirmed contractual exceedance. Mode D exposes
+the accepted result as an interval average with explicit start/end timestamps,
+not as instantaneous live power. Its instantaneous and sustained forecasts are
+unsupported.

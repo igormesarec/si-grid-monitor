@@ -192,6 +192,153 @@ def test_mode_d_net_counter_rejects_suspicious_discontinuity_conservatively() ->
     assert recovered.normalized.signed_kw == pytest.approx(1.0)
 
 
+def test_mode_d_short_quantized_delta_does_not_publish_402_kw_spike() -> None:
+    start = datetime(2026, 10, 21, 10, 0, tzinfo=UTC)
+    converter = CounterPowerConverter(
+        behavior=COUNTER_IMPORT_ONLY,
+        minimum_observation_seconds=30,
+        maximum_plausible_power_kw=20,
+    )
+    baseline = CounterReading(100.0, "kWh", start)
+    spike_report = CounterReading(100.01, "kWh", start + timedelta(seconds=0.08954))
+    settled_report = CounterReading(100.01, "kWh", start + timedelta(seconds=30))
+
+    assert converter.update(baseline) is None
+    assert converter.update(spike_report) is None
+    assert "accumulating" in str(converter.last_status_reason)
+    interval = converter.update(settled_report)
+
+    assert interval is not None
+    assert interval.normalized.import_kw == pytest.approx(1.2)
+    assert interval.import_kwh == pytest.approx(0.01)
+    assert interval.observation_seconds == pytest.approx(30)
+    assert converter.rejected_interval_count == 0
+
+
+def test_mode_d_fast_unchanged_reports_do_not_lose_quantized_energy() -> None:
+    start = datetime(2026, 10, 21, 10, 0, tzinfo=UTC)
+    converter = CounterPowerConverter(minimum_observation_seconds=30)
+    assert converter.update(CounterReading(5.0, "kWh", start)) is None
+    assert converter.update(CounterReading(5.0, "kWh", start + timedelta(seconds=2))) is None
+    assert converter.update(CounterReading(5.005, "kWh", start + timedelta(seconds=3))) is None
+    assert converter.update(CounterReading(5.005, "kWh", start + timedelta(seconds=20))) is None
+    interval = converter.update(CounterReading(5.005, "kWh", start + timedelta(seconds=30)))
+    assert interval is not None
+    assert interval.import_kwh == pytest.approx(0.005)
+    assert interval.normalized.import_kw == pytest.approx(0.6)
+
+
+def test_mode_d_zero_change_after_minimum_window_is_interval_average_zero() -> None:
+    start = datetime(2026, 10, 21, 10, 0, tzinfo=UTC)
+    converter = CounterPowerConverter(minimum_observation_seconds=30)
+    assert converter.update(CounterReading(2.0, "kWh", start)) is None
+    interval = converter.update(CounterReading(2.0, "kWh", start + timedelta(seconds=30)))
+    assert interval is not None
+    assert interval.import_kwh == pytest.approx(0.0)
+    assert interval.normalized.import_kw == pytest.approx(0.0)
+    assert interval.quality == "counter_interval_average"
+
+
+def test_mode_d_configured_physical_plausibility_rejects_anomaly() -> None:
+    start = datetime(2026, 10, 21, 10, 0, tzinfo=UTC)
+    converter = CounterPowerConverter(
+        minimum_observation_seconds=30,
+        maximum_plausible_power_kw=5,
+    )
+    assert converter.update(CounterReading(1.0, "kWh", start)) is None
+    with pytest.raises(AdapterError, match=r"exceeds configured 5\.00 kW"):
+        converter.update(CounterReading(1.1, "kWh", start + timedelta(seconds=30)))
+    assert converter.rejected_interval_count == 1
+    # The rejected observation is a safety baseline. Later valid evidence does
+    # not reintroduce or spread the anomalous 0.1 kWh across a billing quarter.
+    recovered = converter.update(CounterReading(1.125, "kWh", start + timedelta(seconds=60)))
+    assert recovered is not None
+    assert recovered.import_kwh == pytest.approx(0.025)
+    assert recovered.normalized.import_kw == pytest.approx(3.0)
+
+
+def test_mode_d_rejected_anomaly_leaves_quarter_incomplete_not_confirmed() -> None:
+    start = datetime(2026, 10, 21, 10, 0, tzinfo=UTC)
+    converter = CounterPowerConverter(
+        minimum_observation_seconds=30,
+        maximum_plausible_power_kw=5,
+    )
+    engine = FixedQuarterEngine(
+        stale_after_seconds=900,
+        source_id="mode=cumulative_energy|counter_behavior=import_only",
+        completed_quality=DataQuality.COUNTER_DERIVED,
+    )
+    assert converter.update(CounterReading(1.0, "kWh", start)) is None
+    with pytest.raises(AdapterError, match="rejected suspicious"):
+        converter.update(CounterReading(1.1, "kWh", start + timedelta(seconds=30)))
+    completed = ()
+    value = 1.1
+    for step in range(2, 31):
+        if step == 2:
+            value += 0.025
+        interval = converter.update(
+            CounterReading(value, "kWh", start + timedelta(seconds=30 * step))
+        )
+        assert interval is not None
+        completed = engine.ingest_interval_average(
+            start=interval.start,
+            end=interval.end,
+            signed_kw=interval.normalized.signed_kw,
+            import_kw=interval.normalized.import_kw,
+            export_kw=interval.normalized.export_kw,
+        )
+    assert len(completed) == 1
+    assert completed[0].quality == DataQuality.INCOMPLETE
+    assert completed[0].gap_seconds == pytest.approx(30)
+    assert completed[0].import_kwh == pytest.approx(0.025)
+
+
+def test_mode_d_quantized_counter_preserves_accurate_quarter_energy() -> None:
+    start = datetime(2026, 10, 21, 10, 0, tzinfo=UTC)
+    converter = CounterPowerConverter(minimum_observation_seconds=30)
+    engine = FixedQuarterEngine(
+        stale_after_seconds=900,
+        source_id="mode=cumulative_energy|counter_behavior=import_only",
+        completed_quality=DataQuality.COUNTER_DERIVED,
+    )
+    assert converter.update(CounterReading(10.0, "kWh", start)) is None
+    completed = ()
+    for step in range(1, 31):
+        interval = converter.update(
+            CounterReading(
+                10.0 + step * 0.001,
+                "kWh",
+                start + timedelta(seconds=30 * step),
+            )
+        )
+        assert interval is not None
+        completed = engine.ingest_interval_average(
+            start=interval.start,
+            end=interval.end,
+            signed_kw=interval.normalized.signed_kw,
+            import_kw=interval.normalized.import_kw,
+            export_kw=interval.normalized.export_kw,
+        )
+    assert len(completed) == 1
+    assert completed[0].import_kwh == pytest.approx(0.03)
+    assert completed[0].import_demand_kw == pytest.approx(0.12)
+    assert completed[0].quality == DataQuality.COUNTER_DERIVED
+
+
+def test_mode_d_bidirectional_net_requires_total_state_class() -> None:
+    start = datetime(2026, 10, 21, 10, 0, tzinfo=UTC)
+    converter = CounterPowerConverter(behavior=COUNTER_NET)
+    with pytest.raises(AdapterError, match="must use state class total"):
+        converter.update(
+            CounterReading(
+                1.0,
+                "kWh",
+                start,
+                state_class="total_increasing",
+            )
+        )
+
+
 def test_mode_d_separate_counters_join_asynchronous_cadences_once() -> None:
     converter = CounterPowerConverter(behavior=COUNTER_SEPARATE, export_expected=True)
     assert converter.update_intervals(reading(0, "kWh", 0), reading(0, "kWh", 0)) == ()

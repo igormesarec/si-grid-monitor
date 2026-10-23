@@ -8,6 +8,7 @@ import {
   blockChartModel,
   calendarDateLabel,
   chartViewStateForRender,
+  counterIntervalChartModel,
   dayStatusLabel,
   defaultTodayQuarter,
   energyAxisScale,
@@ -32,6 +33,56 @@ import {
   todayChartModel,
   todayQuarterAction,
 } from "../custom_components/si_grid_monitor/frontend/dashboard-model.mjs";
+
+test("Mode D interval chart renders accepted averages without connecting gaps", () => {
+  const model = counterIntervalChartModel({
+    quarterStartUtc: "2026-10-21T10:00:00Z",
+    quarterEndUtc: "2026-10-21T10:15:00Z",
+    contractualTargetKw: 4.8,
+    intervals: [
+      {start_utc: "2026-10-21T10:00:00Z", end_utc: "2026-10-21T10:00:30Z",
+        import_average_kw: 1.2, export_average_kw: null, export_known: false,
+        quality: "counter_interval_average"},
+      {start_utc: "2026-10-21T10:05:00Z", end_utc: "2026-10-21T10:06:00Z",
+        import_average_kw: 0, export_average_kw: 0.4, export_known: true,
+        quality: "counter_interval_average"},
+      {start_utc: "2026-10-21T10:06:00Z", end_utc: "2026-10-21T10:06:01Z",
+        import_average_kw: 402.06, export_average_kw: 0, export_known: true,
+        quality: "rejected_anomaly"},
+    ],
+  });
+  assert.equal(model.actualImportSegments.length, 2);
+  assert.equal(model.actualExportSegments.length, 1);
+  assert.equal(model.actualImportSegments[0][0].kw, 1.2);
+  assert.equal(model.actualImportSegments[0][1].timestamp, "2026-10-21T10:00:30.000Z");
+  assert.equal(model.actualImportSegments.flat().some(point => point.kw === 402.06), false);
+  assert.equal(model.domainMinKw < 0, true);
+  assert.equal(model.domainMaxKw >= 4.8, true);
+});
+
+test("Mode D cumulative energy follows evidenced intervals and authoritative total", () => {
+  const model = quarterEnergyModel({
+    trace: [],
+    counterIntervals: [
+      {start_utc: "2026-10-21T10:00:00Z", end_utc: "2026-10-21T10:00:30Z",
+        import_average_kw: 0.6},
+      {start_utc: "2026-10-21T10:00:30Z", end_utc: "2026-10-21T10:01:00Z",
+        import_average_kw: 0.48},
+    ],
+    quarterStartUtc: "2026-10-21T10:00:00Z",
+    quarterEndUtc: "2026-10-21T10:15:00Z",
+    nowUtc: "2026-10-21T10:01:00Z",
+    importKwh: 0.009,
+    contractualTargetKw: 4.8,
+    contractualSafetyTargetKw: null,
+    operationalTargetKw: 4.8,
+    forecastSmoothedKw: null,
+  });
+  assert.equal(model.trajectoryMode, "full");
+  assert.equal(model.actual.at(-1).kwh, 0.009);
+  assert.equal(model.actual.at(-1).timestamp, "2026-10-21T10:01:00.000Z");
+  assert.deepEqual(model.projection, []);
+});
 
 test("shared period selector serializes standard and custom filters", () => {
   assert.deepEqual(periodRequest({

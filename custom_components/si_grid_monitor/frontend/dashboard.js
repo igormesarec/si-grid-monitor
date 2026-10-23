@@ -6,6 +6,7 @@ import {
   blockChartModel,
   calendarDateLabel,
   chartViewStateForRender,
+  counterIntervalChartModel,
   dayStatusLabel,
   defaultTodayQuarter,
   energyAxisScale,
@@ -28,8 +29,8 @@ import {
   selectTimelineHour,
   todayChartModel,
   todayQuarterAction,
-} from "./dashboard-model.mjs?v=0.9.5";
-import {dashboardLanguage, localizeDashboard, translateDashboard} from "./dashboard-i18n.mjs?v=0.9.5";
+} from "./dashboard-model.mjs?v=0.9.6";
+import {dashboardLanguage, localizeDashboard, translateDashboard} from "./dashboard-i18n.mjs?v=0.9.6";
 
 const fmt = (value, digits = 2) => value == null ? "—" : Number(value).toFixed(digits);
 const fmtEnergyReference = value => value == null ? "—" : Number(value).toFixed(3);
@@ -617,6 +618,9 @@ export class SIGridMonitorPanel extends HTMLElement {
   }
 
   _liveChart(live) {
+    if (live?.power?.measurement_kind === "counter_derived_interval_average") {
+      return this._counterIntervalChart(live);
+    }
     const trace = live?.trace || [];
     if (!trace.length) return `<div class="empty">No measured samples yet. Missing data is not drawn as zero.</div>`;
     const start = Date.parse(live.quarter.start_utc);
@@ -697,11 +701,58 @@ export class SIGridMonitorPanel extends HTMLElement {
     return `<div class="live-chart"><div class="chart-scroll" data-chart-scroll="power" tabindex="0" aria-label="Scrollable live power chart"><svg viewBox="0 0 1120 260" role="img" aria-label="Live import and export power with measured smoothing, future import-power assumption, one-kilowatt support lines, and separate contractual and operational targets">${grid}${contractual}${contractualSafety}${simulation}${operational}${paths(model.actualImportSegments, "import-trace")}${paths(model.actualExportSegments, "export-trace")}${paths(model.smoothedImportSegments, "smoothed-trace")}${future}${detachedAnchor}<text class="axis-title" x="8" y="14">Power (kW)</text><text class="time-label" x="44" y="246">${esc(localTime(live.quarter.start_utc))}</text><text class="time-label" x="1080" y="246" text-anchor="end">${esc(localTime(live.quarter.end_utc))}</text></svg></div><div class="chart-legend">${legend}</div><p class="chart-key">${forecastNote}${anchorNote}</p></div>`;
   }
 
+  _counterIntervalChart(live) {
+    const intervals = live?.counter_intervals || [];
+    if (!intervals.length) {
+      return `<div class="empty">No accepted counter intervals yet. SI Grid Monitor is accumulating cumulative-energy evidence; it does not fabricate instantaneous samples.</div>`;
+    }
+    const tariff = live.tariff;
+    const forecast = live.projection;
+    const model = counterIntervalChartModel({
+      intervals,
+      quarterStartUtc: live.quarter.start_utc,
+      quarterEndUtc: live.quarter.end_utc,
+      contractualTargetKw: tariff.contractual_target_kw,
+      contractualSafetyTargetKw: tariff.safety_margin_kw > 0
+        ? tariff.contractual_operational_target_kw : null,
+      operationalTargetKw: forecast.operational_target_kw,
+      simulationTargetKw: tariff.simulation_enabled ? tariff.simulation_target_kw : null,
+    });
+    const start = Date.parse(live.quarter.start_utc);
+    const end = Date.parse(live.quarter.end_utc);
+    const x = timestamp => 44 + (Date.parse(timestamp) - start) / (end - start) * 1036;
+    const plotTop = 24;
+    const plotBottom = 220;
+    const span = model.domainMaxKw - model.domainMinKw;
+    const y = value => plotBottom
+      - (Number(value) - model.domainMinKw) / span * (plotBottom - plotTop);
+    const path = points => points.map(point => `${x(point.timestamp)},${y(point.kw)}`).join(" ");
+    const paths = (segments, className) => segments
+      .map(points => `<polyline class="${className}" points="${path(points)}"/>`).join("");
+    const reference = (value, className) => value == null ? "" :
+      `<line class="${className}" x1="44" x2="1080" y1="${y(value)}" y2="${y(value)}"/>`;
+    const grid = model.gridValues.map(value => `<g><line class="power-grid ${value === 0 ? "zero" : ""}" x1="44" x2="1080" y1="${y(value)}" y2="${y(value)}"/><text x="5" y="${y(value) + 4}">${value > 0 ? "+" : value < 0 ? "−" : ""}${fmtAxis(Math.abs(value))} kW</text></g>`).join("");
+    const contractual = reference(tariff.contractual_target_kw, "contractual-target");
+    const safety = tariff.safety_margin_kw > 0
+      ? reference(tariff.contractual_operational_target_kw, "contractual-safety-target") : "";
+    const simulation = tariff.simulation_enabled
+      ? reference(tariff.simulation_target_kw, "simulation-target") : "";
+    const legend = this._chartLegend([
+      ["import", "Evidenced import interval average"],
+      ...(model.hasExport ? [["export", "Evidenced export interval average"]] : []),
+      ...(tariff.contractual_target_kw == null ? [] : [["contract", `Distributor limit ${fmt(tariff.contractual_target_kw)} kW`]]),
+      ...(tariff.safety_margin_kw > 0 ? [["contract-safety", `Contract safety reference ${fmt(tariff.contractual_operational_target_kw)} kW`]] : []),
+      ...(tariff.simulation_enabled ? [["simulation", `SIMULATION threshold ${fmt(tariff.simulation_target_kw)} kW`]] : []),
+    ]);
+    return `<div class="live-chart counter-interval-chart"><div class="chart-scroll" data-chart-scroll="power" tabindex="0" aria-label="Counter-derived interval-average power chart; no instantaneous samples are shown"><svg viewBox="0 0 1120 260" role="img" aria-label="Accepted cumulative-counter intervals shown as interval-average power with gaps and rejected observations left undisguised">${grid}${contractual}${safety}${simulation}${paths(model.actualImportSegments, "import-trace counter-interval")}${paths(model.actualExportSegments, "export-trace counter-interval")}<text class="axis-title" x="8" y="14">Interval-average power (kW)</text><text class="time-label" x="44" y="246">${esc(localTime(live.quarter.start_utc))}</text><text class="time-label" x="1080" y="246" text-anchor="end">${esc(localTime(live.quarter.end_utc))}</text></svg></div><div class="chart-legend">${legend}</div><p class="chart-key">Horizontal segments are evidenced averages over the displayed start/end times. Gaps, accumulating quantized changes, and rejected anomalies are not bridged. Instantaneous and sustained forecasts are unsupported for Mode D.</p></div>`;
+  }
+
   _energyChart(live) {
     const quarter = live.quarter;
     const forecast = live.projection;
     const energy = quarterEnergyModel({
       trace: live.trace || [],
+      counterIntervals: live.counter_intervals || [],
       quarterStartUtc: quarter.start_utc,
       quarterEndUtc: quarter.end_utc,
       nowUtc: live.now_utc,
@@ -780,6 +831,8 @@ export class SIGridMonitorPanel extends HTMLElement {
     const tariff = live.tariff;
     const forecast = live.projection;
     const sustained = live.sustained || {};
+    const counterMode = power.measurement_kind === "counter_derived_interval_average";
+    const intervalAverage = power.latest_interval_average;
     const instantProjectionConsistent = forecast.forecast_instant_kw != null
       && forecast.forecast_instant_kw * 0.25 + 0.001 >= quarter.import_kwh;
     const smoothedProjectionConsistent = forecast.forecast_smoothed_kw != null
@@ -802,8 +855,8 @@ export class SIGridMonitorPanel extends HTMLElement {
       ? `Available · ${fmt(sustained.coverage_seconds, 0)} s coverage`
       : `Unavailable: ${sustained.reason || "insufficient valid measurement history"}`;
     return `<section class="card hero"><div class="herohead"><div><p class="eyebrow">CURRENT FIXED 15-MINUTE INTERVAL</p><h2>${esc(quarter.start_local.slice(0, 10))} · ${esc(quarter.start_local.slice(11, 16))}–${esc(quarter.end_local.slice(11, 16))}</h2><p>B${esc(tariff.block)} · ${fmt(tariff.target_kw)} kW · ${esc(quarter.quality)}</p></div><div class="count" data-countdown>--:--</div></div>
-      <div class="direction"><div class="import"><span>IMPORT</span><b>${fmt(power.import_kw)} kW</b></div><div class="export"><span>EXPORT</span><b>${fmt(power.export_kw)} kW</b></div></div>${this._liveChart(live)}${this._energyChart(live)}
-      <div class="grid">${this._metric("Signed grid power", fmt(power.signed_kw), "kW")}${this._metric("Source measurement age", fmt(power.source_age_seconds, 0), "seconds")}${this._metric("Imported so far", fmt(quarter.import_kwh, 3), "kWh")}${this._metric("Exported so far", power.export_known === false ? "Unknown" : fmt(quarter.export_kwh, 3), power.export_known === false ? "" : "kWh")}${this._metric("Import average", fmt(quarter.import_average_kw), "kW")}${this._metric("Instant projected final quarter average", fmt(displayedInstantForecast), "kW")}${this._metric("Smoothed projected final quarter average", fmt(displayedSmoothedForecast), "kW")}${this._metric("Current-quarter forecast status", currentForecastStatus)}${this._metric("Utilization", fmt(forecast.current_utilization_pct), "%")}${this._metric("Remaining budget", fmt(forecast.budget_remaining_kwh, 3), "kWh")}${this._metric("Allowed remainder", fmt(forecast.allowed_remaining_import_kw), "kW")}${this._metric("CAN ADD THIS QUARTER", fmt(forecast.can_add_kw), "kW", "good")}${this._metric("MUST REDUCE THIS QUARTER", fmt(forecast.must_reduce_kw), "kW", forecast.must_reduce_kw > 0 ? "bad" : "")}${this._metric("SUSTAINED CAN ADD", fmt(sustained.can_add_kw), "kW", "accent")}${this._metric("SUSTAINED MUST REDUCE", fmt(sustained.must_reduce_kw), "kW", sustained.must_reduce_kw > 0 ? "bad" : "")}${this._metric("Sustained forecast quality", sustainedStatus)}${this._metric("Sustained horizon", sustained.horizon_minutes, "minutes")}</div>${projectionWarning}
+      <div class="direction"><div class="import"><span>${counterMode ? "LATEST INTERVAL-AVERAGE IMPORT" : "IMPORT"}</span><b>${fmt(counterMode ? intervalAverage?.import_kw : power.import_kw)} kW</b></div><div class="export"><span>${counterMode ? "LATEST INTERVAL-AVERAGE EXPORT" : "EXPORT"}</span><b>${fmt(counterMode ? intervalAverage?.export_kw : power.export_kw)} kW</b></div></div>${this._liveChart(live)}${this._energyChart(live)}
+      <div class="grid">${this._metric(counterMode ? "Current instantaneous grid power" : "Signed grid power", counterMode ? "Unsupported by Mode D" : fmt(power.signed_kw), counterMode ? "" : "kW")}${counterMode ? this._metric("Latest counter interval", intervalAverage ? `${localTime(intervalAverage.start_utc)}–${localTime(intervalAverage.end_utc)}` : "Waiting for evidence") : ""}${counterMode ? this._metric("Counter interval quality", intervalAverage?.quality || "Unavailable") : ""}${counterMode ? this._metric("Counter source status", power.source_status_reason || "Waiting for evidence") : ""}${counterMode ? this._metric("Minimum counter observation", fmt(power.counter_policy?.minimum_observation_seconds, 0), "seconds") : ""}${counterMode ? this._metric("Counter plausibility ceiling", fmt(power.counter_policy?.maximum_plausible_power_kw), "kW") : ""}${counterMode ? this._metric("Rejected counter intervals", power.counter_policy?.rejected_interval_count ?? 0) : ""}${this._metric("Source observation age", fmt(power.source_age_seconds, 0), "seconds")}${this._metric("Imported so far", fmt(quarter.import_kwh, 3), "kWh")}${this._metric("Exported so far", power.export_known === false ? "Unknown" : fmt(quarter.export_kwh, 3), power.export_known === false ? "" : "kWh")}${this._metric("Import average", fmt(quarter.import_average_kw), "kW")}${this._metric("Instant projected final quarter average", counterMode ? "Unsupported" : fmt(displayedInstantForecast), counterMode ? "" : "kW")}${this._metric("Smoothed projected final quarter average", counterMode ? "Unsupported" : fmt(displayedSmoothedForecast), counterMode ? "" : "kW")}${this._metric("Current-quarter forecast status", currentForecastStatus)}${this._metric("Utilization", fmt(forecast.current_utilization_pct), "%")}${this._metric("Remaining budget", fmt(forecast.budget_remaining_kwh, 3), "kWh")}${this._metric("Allowed remainder", fmt(forecast.allowed_remaining_import_kw), "kW")}${this._metric("CAN ADD THIS QUARTER", fmt(forecast.can_add_kw), "kW", "good")}${this._metric("MUST REDUCE THIS QUARTER", fmt(forecast.must_reduce_kw), "kW", forecast.must_reduce_kw > 0 ? "bad" : "")}${this._metric("SUSTAINED CAN ADD", fmt(sustained.can_add_kw), "kW", "accent")}${this._metric("SUSTAINED MUST REDUCE", fmt(sustained.must_reduce_kw), "kW", sustained.must_reduce_kw > 0 ? "bad" : "")}${this._metric("Sustained forecast quality", sustainedStatus)}${this._metric("Sustained horizon", sustained.horizon_minutes, "minutes")}</div>${projectionWarning}
       <p class="safety"><strong>Electrical safety:</strong> CAN ADD and sustained headroom are billing-energy-budget estimates only. They are not permission or assurance that the breaker, phases, grid connection, wiring, or inverter can carry that instantaneous load.</p></section>
       ${this._transitionCard()}<section class="card"><div class="row"><h2>Quarter archive</h2><button data-prev>Previous quarter</button><button data-next>Next quarter</button><button data-live>Current / live</button></div>${this._historicalCard()}</section>`;
   }
