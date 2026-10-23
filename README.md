@@ -1,27 +1,47 @@
 # SI Grid Monitor
 
-SI Grid Monitor is a HACS-compatible Home Assistant integration for Slovenian
-fixed 15-minute grid-demand monitoring. V1.0 is intentionally focused on three
-live-power input modes and one shared, import-only calculation/archive engine.
+**Understand Slovenia's fixed 15-minute grid-import demand in Home Assistant.**
 
-The frozen master specification remains unchanged in
-[`SPECIFICATION.md`](SPECIFICATION.md). The approved V1.0 scope clarification is
-in [`SPECIFICATION_V1.6_V1_SCOPE_ADDENDUM.md`](SPECIFICATION_V1.6_V1_SCOPE_ADDENDUM.md).
-Earlier addenda and implementation reports remain as historical records; they
-do not override the V1.0 supported-mode list.
+SI Grid Monitor is an independent, HACS-compatible integration that monitors
+imported electricity, compares each fixed quarter with the applicable B1–B5
+contracted-power target, and preserves auditable quarter history. It is useful
+for homes and small sites with heat pumps, EV charging, solar PV or other loads
+that need clearer visibility into quarter-hour grid import.
 
-## Supported measurement modes
+**Release status:** V1.0.0 three-mode code is now merged into `main` (PR #16),
+but remains a **release candidate** pending real Home Assistant acceptance.
+V0.9.6 is the preceding published development version; do not assume V1.0 is installed.
 
-| Mode | Source | Import | Export | Live forecasts |
-|---|---|---:|---:|---:|
-| A | One signed W/kW grid-power sensor | Measured | Measured | Yes |
-| B | Separate nonnegative import and export W/kW sensors | Measured | Measured | Yes |
-| C | One nonnegative import-only W/kW sensor | Measured | Unknown | Yes, conservatively |
+This is monitoring and decision-support software—not a distributor-certified
+meter, guaranteed bill calculation, physical protection device or automatic
+load controller.
 
-Positive internal power always means grid import; negative means grid export.
-Mode B retains separate import and export evidence, so exported energy never
-offsets imported contractual demand. Mode C reports export as unknown, never as
-measured zero.
+## V1.0 capabilities
+
+- Import-only contractual demand for exact local `:00/:15/:30/:45` quarters.
+- Five B1–B5 tariff blocks and date-bound contracted-power assignments.
+- Instantaneous, time-weighted smoothed and sustained load forecasts when their
+  measurement and contract prerequisites are satisfied.
+- Clear CAN ADD / MUST REDUCE estimates for billing-energy budgets.
+- Seven-tab authenticated Home Assistant sidebar dashboard.
+- Permanent, per-meter schema-6 SQLite history with quality and provenance.
+- Multiple independent meter entries behind one shared sidebar panel.
+- Three-decimal kW/kWh presentation without reducing stored precision.
+- English and Slovenian configuration and dashboard terminology.
+
+Exported energy is recorded separately where the selected source measures it.
+It never offsets imported energy when calculating contractual quarter demand.
+
+## Supported V1.0 measurement modes
+
+| Mode | Source | Import | Export | Forecasting |
+|---|---|---|---|---|
+| **A** | One signed W/kW grid-power sensor | Measured | Measured | Supported with valid fresh coverage |
+| **B** | Separate nonnegative import and export W/kW sensors | Measured separately | Measured separately | Supported when both inputs are valid and aligned |
+| **C** | One nonnegative import-only W/kW sensor | Measured | **Unknown** | Supported conservatively, without export-surplus credit |
+
+Positive normalized power means grid import; negative means grid export. Mode C
+does not turn unknown export into measured `0.000`.
 
 ### Future functionality: cumulative energy counters
 
@@ -31,129 +51,115 @@ reserved for future development. It requires additional research into
 measurement intervals, quarter-boundary alignment, counter resets, quantization
 and contractual demand accuracy. No implementation date is committed.
 
-Mode D was experimental in V0.9.5/V0.9.6 and is not selectable or active in
-V1.0. Historical counter-derived archive rows remain readable with their
-original quality and provenance.
+Mode D was experimental in V0.9.5/V0.9.6. It is not selectable or active in the
+V1.0 release candidate. Historical counter-derived rows remain readable with
+their original quality and provenance.
 
-## Installation
+## Start here
 
-1. Install SI Grid Monitor through HACS and restart Home Assistant.
-2. Add it from **Settings → Devices & services**.
-3. Name the meter, choose Mode A, B or C, and select W/kW grid sensor(s).
-4. Confirm direction and configure the dated B1–B5 contracted-power assignment.
-5. Open **SI Grid Monitor** from the automatically registered sidebar entry.
+- **[Documentation home](docs/index.md)** — project introduction and complete manual.
+- **[Installation and safe upgrades](docs/installation.md)** — HACS installation,
+  V0.9.6 → V1.0 migration, backup and rollback.
+- **[Getting started](docs/getting-started.md)** — configure and verify the first quarter.
+- **[Source Modes A/B/C](docs/source-modes.md)** — choose the correct live-power input.
+- **[Configuration reference](docs/configuration.md)** — contracts, margins,
+  smoothing, simulation, retention and removal.
+- **[Dashboard guide](docs/dashboard-guide.md)** — Overview, Today, Period,
+  Blocks, Exceedances, History and Tariff Calendar.
+- **[Calculations](docs/calculations.md)** and **[forecasts](docs/forecasts.md)** —
+  equations, quality gates and limitations.
+- **[History and archive safety](docs/history-and-archive.md)**,
+  **[data quality](docs/data-quality.md)** and
+  **[troubleshooting](docs/troubleshooting.md)**.
+- **[Slovenščina: hiter začetek](docs/sl/zacetek.md)** and
+  **[slovenski vodnik](docs/sl/vodnik.md)**.
 
-No Lovelace YAML, JavaScript resource registration, external database, or Home
-Assistant credentials are required. Multiple config entries share one sidebar
-panel while keeping independent entry IDs, entities, configuration epochs and
-SQLite archives. The active meter selector is sticky, remembers the last valid
-selection in local browser storage, and clears entry-specific state before a
-switch.
+No project screenshots are currently committed to the repository. The included
+brand icons are not presented as Home Assistant screenshots.
 
-## Upgrade from a V0.9.5/V0.9.6 Mode D entry
+## Installation summary
 
-V1.0 recognizes `source_mode=cumulative_energy` before runtime construction. It
-does not open a Mode D measurement pipeline, subscribe to the Wh/kWh entity,
-reinterpret the counter as W/kW, mutate the config entry, or rewrite/delete its
-schema-6 archive. Home Assistant shows a repair notice explaining that the
-meter needs a supported live-power source.
+1. In **HACS → Custom repositories**, add
+   `https://github.com/igormesarec/si-grid-monitor` as an **Integration**.
+2. Install SI Grid Monitor and restart Home Assistant.
+3. Open **Settings → Devices & services → Add integration → SI Grid Monitor**.
+4. Name the meter, choose Mode A, B or C, and select the real grid W/kW sensor(s).
+5. Configure the actual validity dates and B1–B5 contracted-power values.
+6. Open **SI Grid Monitor** from the automatically registered sidebar entry.
 
-Use the integration's **Reconfigure** action to select Mode A, B or C. This
-preserves the existing config-entry ID and archive namespace while subsequent
-accepted live-power measurements begin a new source/configuration epoch. The
-config-entry `unique_id` is rebound to the canonical identity of the selected
-live-power source only after checking every other SI Grid Monitor entry for that
-same source. A duplicate is rejected; entries and source histories are never
-merged. Legacy counter fields, checkpoints and historical rows remain preserved.
-If reconfiguration is not appropriate, create a separate supported meter and
-keep the legacy database; deletion is never required for upgrade.
+No Lovelace YAML, manual JavaScript registration, external database or Home
+Assistant credentials are required.
 
-## Dashboard
+## V0.9.6 → V1.0 upgrade
 
-The authenticated dashboard contains seven tabs:
+Back up Home Assistant and `.storage/si_grid_monitor_*.db` before testing the
+release candidate. Existing Mode A/B/C entries retain their entry identity,
+entities and archive namespace.
 
-- **Overview:** live quarter, import/export, forecasts, energy budgets, CAN ADD
-  and MUST REDUCE, archive navigation and upcoming tariff transitions.
-- **Today:** 92/96/100 fixed quarters, live/upcoming/missing states, five block
-  summaries and exact quarter selection.
-- **Period:** Hour/Day/Week/Month/Year/Custom aggregation with truthful coverage.
-- **Blocks:** B1–B5 statistics and paginated quarter analysis using original targets.
-- **Exceedances:** confirmed events, near-limit diagnostics and unconfirmed quality.
-- **History:** paginated schema-6 archive, provenance, coverage and exact-quarter detail.
-- **Tariff Calendar:** Europe/Ljubljana block classification, DST and rule status.
+A legacy Mode D entry is detected before runtime construction. V1.0 does not
+poll its Wh/kWh source or reinterpret it as W/kW. Its configuration, schema-6
+database, checkpoints, epochs and historical rows remain preserved, and Home
+Assistant displays an unsupported-mode notice.
 
-Completed valid, incomplete, unavailable, missing after monitoring began,
-pre-monitoring, live and upcoming intervals are kept distinct. Partial observed
-energy is separate from confirmed totals. Pre-monitoring intervals are not
-counted as missing. Contractual utilization and valid-quarter coverage are not
-presented as measurement-time coverage.
+Use **Reconfigure** to explicitly choose Mode A, B or C. The integration
+validates the new W/kW source and rejects it if another SI Grid Monitor entry
+already owns the same canonical source identity. A successful migration keeps
+the existing config-entry ID and archive namespace, updates `entry.unique_id`
+to the accepted live source, and begins a new source epoch. Old Mode D rows are
+not merged into the new epoch or silently promoted to confirmed measurements.
+Deleting the entry is not required.
 
-Power and energy values display with three decimals (for example `4.200 kW` and
-`0.024 kWh`) while calculations and SQLite storage retain full precision.
-Percentages and integer counts retain their appropriate formats. Unknown values
-remain unavailable, never `0.000`.
+See the [full backup-first migration procedure](docs/installation.md).
 
-## Billing method and safety
+## Dashboard and evidence
 
-- Fixed quarters follow local `:00/:15/:30/:45` boundaries with canonical UTC
-  identity across Europe/Ljubljana DST transitions.
-- Contractual demand is imported quarter energy divided by 0.25 h.
-- Export is recorded separately and never cancels import.
-- Rolling signed 15-minute power remains a separate flow metric.
-- Stale or missing readings are not filled with zero or fabricated consumption.
-- Confirmed exceedances require valid measurements, known historical target and
-  confirmed tariff/configuration provenance.
-- **CAN ADD is remaining 15-minute energy-budget headroom, not physical breaker,
-  phase, wiring, connection or inverter capacity.**
+The dashboard provides:
 
-The official 2026/2027 Slovenian tariff schedules are versioned. Years without a
-verified official schedule are unavailable by default; explicitly enabled
-provisional rules remain visibly provisional and cannot create confirmed legal
-statistics. Dated contracted-power assignments do not silently carry forward.
+1. **Overview** — live quarter, import/export, forecasts and budget advice.
+2. **Today** — 92/96/100 DST-aware quarter slots and B1–B5 summaries.
+3. **Period** — hour/day/week/month/year/custom aggregation.
+4. **Blocks** — historical block statistics and quarter drill-down.
+5. **Exceedances** — confirmed events, near-limit and unconfirmed records.
+6. **History** — paginated schema-6 archive, quality and provenance.
+7. **Tariff Calendar** — block schedule, rule status and transitions.
 
-## Archive safety
+Completed valid, incomplete, unavailable, missing-after-monitoring,
+pre-monitoring, live and upcoming intervals remain distinct. Partial observed
+energy is separate from confirmed totals. Unknown values remain unavailable,
+never manufactured as zero.
 
-The integration-owned SQLite schema remains version 6, WAL-backed and isolated
-per config entry. Normal restart, reload, HACS update, source unavailability and
-integration removal do not delete the archive. Permanent deletion requires the
-entry-specific workflow, exact fresh confirmation and optional backup; the
-authorization expires after ten minutes.
+## Safety and limitations
 
-Old rows retain original source epoch, target, tariff rule, simulation state,
-coverage, quality and exceedance eligibility. V1.0 does not recalculate or
-promote historical Mode D data.
+- **CAN ADD is a mathematical 15-minute energy-budget estimate.** It is not
+  permission to exceed breaker, phase, cable, inverter or connection ratings.
+- Forecasts repeat recent or current behavior; they do not predict weather,
+  appliance schedules or PV production.
+- Home Assistant samples can produce reconstructed estimates that differ from
+  official distributor measurements.
+- Official 2026/2027 tariff tables are versioned. Unverified future years are
+  unavailable by default; opt-in provisional rules cannot create confirmed
+  contractual statistics.
+- Ordinary integration removal retains the archive. Permanent deletion requires
+  fresh entry-specific confirmation and can create a backup.
 
-## Development validation
+## Technical and project documentation
 
-```powershell
-.venv\Scripts\python -m pytest --basetemp=.test-v10
-.venv\Scripts\python -m ruff check .
-.venv\Scripts\python -m ruff format --check .
-.venv\Scripts\python -m compileall custom_components tests
-node --test frontend_tests/*.test.mjs
-npm run test:layout
-```
+- [Tariff rules and dated contracts](docs/tariffs.md)
+- [Multiple meters](docs/multiple-meters.md)
+- [FAQ](docs/faq.md) and [glossary](docs/glossary.md)
+- [Developer architecture](docs/developer-architecture.md)
+- [Testing and validation](docs/testing-and-validation.md)
+- [Limitations and roadmap](docs/limitations-and-roadmap.md)
+- [Historical V0.8 implementation status](V0.8_IMPLEMENTATION_STATUS.md)
+- [V1.0 source-mode capability matrix](SOURCE_MODE_CAPABILITY_MATRIX.md)
+- [Frozen master specification](SPECIFICATION.md)
+- V1.0 scope clarification in `SPECIFICATION_V1.6_V1_SCOPE_ADDENDUM.md`
+  (introduced by PR #16)
 
-GitHub Actions additionally run hassfest and HACS validation. Automated success
-does not prove real Home Assistant, Android Companion App, HACS upgrade or live
-meter acceptance; follow [`MANUAL_TEST_PLAN.md`](MANUAL_TEST_PLAN.md).
-
-## Branding note
-
-Transparent 256×256 and 512×512 repository assets are included. This does not
-claim to fix the known HACS custom-integration icon issue; see
-[`hacs/frontend#949`](https://github.com/hacs/frontend/pull/949).
-
-## Release status
-
-V1.0.0 remains a release candidate until the manual Home Assistant upgrade and
-clean-install checklist passes. No release, tag, deployment or merge is implied
-by CI success. See [`V1.0_IMPLEMENTATION_STATUS.md`](V1.0_IMPLEMENTATION_STATUS.md).
-Earlier milestone evidence remains available in
-[`V0.8_IMPLEMENTATION_STATUS.md`](V0.8_IMPLEMENTATION_STATUS.md) and the other
-versioned status reports; those files describe historical releases, not the
-current V1.0 feature scope.
+The Markdown guides are readable directly on GitHub. A workflow may build a
+Pages preview artifact, but this documentation task does **not** publish or
+enable GitHub Pages.
 
 ## License
 
-MIT — see [`LICENSE`](LICENSE).
+MIT — see [LICENSE](LICENSE).

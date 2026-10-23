@@ -24,7 +24,7 @@ V0.9.5/V0.9.6 cumulative-energy entries are recognized only for safe upgrade.
 They are not started, polled, converted or shown as a selectable V1.0 mode. Their
 configuration, checkpoint metadata, source epochs and archived rows are retained.
 Explicit reconfiguration to A/B/C preserves the entry/archive identity and starts
-a new source epoch.
+a new source epoch. A duplicate source is rejected rather than merged.
 
 ## Future functionality
 
