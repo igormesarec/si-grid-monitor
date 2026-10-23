@@ -19,6 +19,9 @@
 6. Use **Reconfigure** on the copied Mode D entry and select a W/kW Mode A, B or
    C source. Confirm the entry ID/database filename remain unchanged, old rows
    retain counter-derived provenance and new data begins a distinct source epoch.
+   Confirm the config-entry unique ID now identifies the new live source. Attempt
+   the same source already owned by another meter and confirm reconfiguration is
+   rejected without changing either entry or archive.
 7. Check all seven tabs on desktop and Android. Distinguish valid, incomplete,
    unavailable, missing after monitoring began, pre-monitoring, live and upcoming
    intervals. Pre-monitoring must not increase missing counts.
@@ -33,6 +36,10 @@
 11. Remove a copied entry without arming deletion and confirm its archive remains.
     Test permanent deletion only on a disposable meter with fresh exact
     confirmation and backup; no other database may change.
+12. With a disabled legacy Mode D entry, run reload, restart, a failed setup retry
+    and normal removal. Confirm no missing-runtime exception occurs, another A/B/C
+    meter remains active, and the Mode D schema-6 database, checkpoint, epochs and
+    rows remain unchanged after default removal.
 
 Passing CI does not replace these tests. Do not tag or publish stable V1.0 until
 the real Home Assistant and Android checks above are recorded.

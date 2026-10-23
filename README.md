@@ -61,9 +61,12 @@ meter needs a supported live-power source.
 Use the integration's **Reconfigure** action to select Mode A, B or C. This
 preserves the existing config-entry ID and archive namespace while subsequent
 accepted live-power measurements begin a new source/configuration epoch. The
-legacy counter fields and historical rows remain preserved. If reconfiguration
-is not appropriate, create a separate supported meter and keep the legacy
-database; deletion is never required for upgrade.
+config-entry `unique_id` is rebound to the canonical identity of the selected
+live-power source only after checking every other SI Grid Monitor entry for that
+same source. A duplicate is rejected; entries and source histories are never
+merged. Legacy counter fields, checkpoints and historical rows remain preserved.
+If reconfiguration is not appropriate, create a separate supported meter and
+keep the legacy database; deletion is never required for upgrade.
 
 ## Dashboard
 

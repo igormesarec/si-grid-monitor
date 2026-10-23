@@ -15,6 +15,13 @@ All notable changes to SI Grid Monitor will be documented here.
   reinterpreted as W/kW.
 - Added an explicit same-entry A/B/C reconfiguration path and bilingual repair
   notice while retaining historical counter-derived provenance.
+- Reconfiguration now rejects a live source already owned by another entry,
+  preserves the entry/archive namespace, and safely rebinds the config-entry
+  unique ID to the accepted source. Disabled legacy entries now unload/reload
+  without requiring a runtime object, while removal retains archives by default.
+- Added genuine V0.9.6 schema-6 archive coverage proving that counter-derived
+  rows, configuration epochs, checkpoints, targets and provenance survive the
+  V1 transition without silent reclassification.
 - Kept all seven dashboards, import-only billing methodology, B1–B5 targets,
   forecasts, multi-meter isolation, archive safety and three-decimal power/energy
   presentation.

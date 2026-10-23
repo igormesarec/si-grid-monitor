@@ -121,6 +121,70 @@ def _ensure_homeassistant_stubs() -> None:
     )
 
 
+def _ensure_config_flow_stubs() -> None:
+    """Extend the lifecycle stubs enough to execute the reconfigure step."""
+
+    _ensure_homeassistant_stubs()
+    voluptuous = sys.modules.get("voluptuous")
+    if voluptuous is None:
+        voluptuous = types.ModuleType("voluptuous")
+
+    class Schema:
+        def __init__(self, value: Any) -> None:
+            self.schema = value
+
+    def marker(key: Any, **_kwargs: Any) -> Any:
+        return key
+
+    voluptuous.Schema = Schema  # type: ignore[attr-defined]
+    voluptuous.Required = marker  # type: ignore[attr-defined]
+    voluptuous.Optional = marker  # type: ignore[attr-defined]
+    sys.modules["voluptuous"] = voluptuous
+    config_entries = sys.modules["homeassistant.config_entries"]
+    const = sys.modules["homeassistant.const"]
+    const.STATE_UNAVAILABLE = "unavailable"  # type: ignore[attr-defined]
+    const.STATE_UNKNOWN = "unknown"  # type: ignore[attr-defined]
+
+    class ConfigFlow:
+        def __init_subclass__(cls, **_kwargs: Any) -> None:
+            return super().__init_subclass__()
+
+    class OptionsFlow:
+        pass
+
+    config_entries.ConfigFlow = ConfigFlow  # type: ignore[attr-defined]
+    config_entries.OptionsFlow = OptionsFlow  # type: ignore[attr-defined]
+    data_entry_flow = types.ModuleType("homeassistant.data_entry_flow")
+    data_entry_flow.FlowResult = dict  # type: ignore[attr-defined]
+    selector = types.ModuleType("homeassistant.helpers.selector")
+
+    class DummySelector:
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            pass
+
+    class DummyMode:
+        BOX = "box"
+        DROPDOWN = "dropdown"
+
+    for name in (
+        "BooleanSelector",
+        "DateSelector",
+        "EntitySelector",
+        "EntitySelectorConfig",
+        "NumberSelector",
+        "NumberSelectorConfig",
+        "SelectSelector",
+        "SelectSelectorConfig",
+        "TextSelector",
+    ):
+        setattr(selector, name, DummySelector)
+    selector.NumberSelectorMode = DummyMode  # type: ignore[attr-defined]
+    selector.SelectSelectorMode = DummyMode  # type: ignore[attr-defined]
+    sys.modules["homeassistant.data_entry_flow"] = data_entry_flow
+    sys.modules["homeassistant.helpers.selector"] = selector
+    sys.modules["homeassistant.helpers"].selector = selector  # type: ignore[attr-defined]
+
+
 class _Entry:
     entry_id = "beta-meter"
     title = "Beta meter"
@@ -277,6 +341,64 @@ def test_legacy_mode_d_is_disabled_without_mutation_and_other_meter_starts(
     supported.data = {CONF_SOURCE_MODE: "signed_power", CONF_POWER_ENTITY: "sensor.grid_w"}
     assert _run(async_setup_entry(hass, supported)) is True
     assert _Runtime.instances[-1].entry is supported
+
+
+def test_legacy_mode_d_unload_without_runtime_keeps_other_meter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _install_lifecycle_doubles(monkeypatch)
+    hass = _Hass()
+    other_runtime = SimpleNamespace()
+    hass.data = {DOMAIN: {"runtimes": {"supported-meter": other_runtime}}}
+    legacy = _Entry()
+    legacy.entry_id = "legacy-mode-d"
+    legacy.data = {CONF_SOURCE_MODE: SOURCE_CUMULATIVE_ENERGY}
+    legacy.runtime_data = None
+
+    assert _run(async_unload_entry(hass, legacy)) is True
+    assert hass.config_entries.unloaded == 1
+    assert hass.data[DOMAIN]["runtimes"] == {"supported-meter": other_runtime}
+    assert legacy.runtime_data is None
+    assert calls["unregister"] == 0
+
+
+def test_legacy_mode_d_unload_without_any_runtime_is_safe(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls = _install_lifecycle_doubles(monkeypatch)
+    hass = _Hass()
+    hass.data = {DOMAIN: {"runtimes": {}}}
+    legacy = _Entry()
+    legacy.data = {CONF_SOURCE_MODE: SOURCE_CUMULATIVE_ENERGY}
+
+    assert _run(async_unload_entry(hass, legacy)) is True
+    assert legacy.runtime_data is None
+    assert calls["unregister"] == 1
+
+
+def test_legacy_mode_d_failed_setup_unload_and_retry_are_repeatable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """HA may unload and retry an intentionally unsupported entry repeatedly."""
+
+    _install_lifecycle_doubles(monkeypatch)
+    _Runtime.instances.clear()
+    hass = _Hass()
+    legacy = _Entry()
+    legacy.entry_id = "legacy-retry"
+    legacy.data = {
+        CONF_SOURCE_MODE: SOURCE_CUMULATIVE_ENERGY,
+        "import_energy_entity": "sensor.total_import",
+    }
+    original = dict(legacy.data)
+
+    assert _run(async_setup_entry(hass, legacy)) is False
+    assert _run(async_unload_entry(hass, legacy)) is True
+    assert _run(async_setup_entry(hass, legacy)) is False
+    assert legacy.runtime_data is None
+    assert legacy.data == original
+    assert _Runtime.instances == []
+    assert hass.data.get(DOMAIN, {}).get("runtimes", {}) == {}
 
 
 def test_failed_platform_setup_rolls_back_runtime_and_panel(
@@ -696,6 +818,118 @@ def test_upgrade_reopen_and_reinstall_preserve_each_meter_namespace(tmp_path: Pa
     reopened.close()
 
 
+def test_v096_mode_d_schema6_archive_survives_disable_and_source_migration(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A real schema-6 counter archive remains immutable across the V1 transition."""
+
+    namespace = "legacy-mode-d"
+    path = tmp_path / ".storage" / f"si_grid_monitor_{namespace}.db"
+    start = datetime(2026, 10, 22, 18, 0, tzinfo=UTC)
+    legacy_source_id = (
+        "mode=cumulative_energy|counter_type=import_only|import=sensor.total_import_energy|export="
+    )
+    legacy_checkpoint = {
+        "schema": 3,
+        "quarter_start_utc": start.isoformat(),
+        "source_id": legacy_source_id,
+        "import_kwh": 0.127,
+        "export_kwh": None,
+        "quality": "counter_derived",
+    }
+
+    archive = QuarterArchive(path)
+    archive.open()
+    epoch = archive.register_configuration_epoch(
+        namespace=namespace,
+        source_id=legacy_source_id,
+        positive_means_import=True,
+        contractual_target_kw=3.9,
+        safety_margin_kw=0.2,
+        block_targets_kw=(3.5, 3.9, 4.1, 4.2, 4.2),
+        allow_provisional_tariff=False,
+        effective_utc=datetime(2026, 1, 1, tzinfo=UTC),
+    )
+    archive.upsert_quarter(
+        replace(
+            _archive_record(namespace, start),
+            import_kwh=0.127,
+            export_kwh=0.0,
+            signed_average_kw=0.508,
+            import_demand_kw=0.508,
+            coverage_seconds=780,
+            gap_seconds=120,
+            quality="counter_derived",
+            provenance="counter_derived_live:export_unknown",
+            source_id=legacy_source_id,
+            source_epoch=epoch.epoch,
+            configuration_status="known",
+            contractual_target_kw=3.9,
+            safety_margin_kw=0.2,
+            operational_target_kw=3.7,
+            utilization_pct=None,
+            exceeded=None,
+            excess_kw=None,
+            contractual_status="unconfirmed",
+            contractual_status_reason="counter interval did not prove quarter alignment",
+            confirmed_exceeded=None,
+        )
+    )
+    archive.save_checkpoint(namespace, legacy_checkpoint)
+    original_row = dict(archive.list_quarters(namespace, start, start + timedelta(minutes=15))[0])
+    original_epochs = archive.list_configuration_epochs(namespace)
+    archive.close()
+
+    _install_lifecycle_doubles(monkeypatch)
+    _Runtime.instances.clear()
+    hass = _Hass()
+    entry = _Entry()
+    entry.entry_id = namespace
+    entry.unique_id = "cumulative_energy:sensor.total_import_energy"
+    entry.data = {
+        CONF_SOURCE_MODE: SOURCE_CUMULATIVE_ENERGY,
+        "import_energy_entity": "sensor.total_import_energy",
+    }
+    assert _run(async_setup_entry(hass, entry)) is False
+    assert _run(async_unload_entry(hass, entry)) is True
+    assert _Runtime.instances == []
+
+    migrated = QuarterArchive(path)
+    migrated.open()
+    assert migrated.schema_version == 6
+    assert dict(migrated.list_quarters(namespace, start, start + timedelta(minutes=15))[0]) == (
+        original_row
+    )
+    assert migrated.list_configuration_epochs(namespace) == original_epochs
+    assert migrated.load_checkpoint(namespace) == legacy_checkpoint
+
+    new_epoch = migrated.register_configuration_epoch(
+        namespace=namespace,
+        source_id="sensor.solaredge_grid",
+        positive_means_import=True,
+        contractual_target_kw=3.9,
+        safety_margin_kw=0.2,
+        block_targets_kw=(3.5, 3.9, 4.1, 4.2, 4.2),
+        allow_provisional_tariff=False,
+        effective_utc=datetime(2026, 10, 22, 18, 15, tzinfo=UTC),
+    )
+    assert new_epoch.epoch == epoch.epoch + 1
+
+    def must_not_reclassify(_start: datetime) -> Any:
+        raise AssertionError("legacy counter-derived quarter was passed to classification")
+
+    assert migrated.classify_existing_quarters(namespace, must_not_reclassify) == 0
+    preserved = dict(migrated.list_quarters(namespace, start, start + timedelta(minutes=15))[0])
+    assert preserved == original_row
+    assert preserved["quality"] == "counter_derived"
+    assert preserved["provenance"] == "counter_derived_live:export_unknown"
+    assert preserved["source_epoch"] == epoch.epoch
+    assert preserved["tariff_rule_version"] is None
+    assert migrated.load_checkpoint(namespace) == legacy_checkpoint
+    migrated.close()
+
+
 def test_beta_version_frontend_and_hacs_package_are_consistent() -> None:
     manifest = json.loads(
         (ROOT / "custom_components/si_grid_monitor/manifest.json").read_text(encoding="utf-8")
@@ -730,12 +964,194 @@ def test_only_three_source_modes_are_wired() -> None:
 
 
 def test_mode_a_keeps_legacy_unique_id_and_duplicate_guard() -> None:
+    from custom_components.si_grid_monitor.source_identity import source_unique_id
+
     config_flow = (ROOT / "custom_components/si_grid_monitor/config_flow.py").read_text(
         encoding="utf-8"
     )
-    assert 'f"signed:{source_ids[0]}"' in config_flow
+    assert source_unique_id("signed_power", {CONF_POWER_ENTITY: "sensor.grid"}) == (
+        "signed:sensor.grid"
+    )
+    assert "source_unique_id(mode, self._values)" in config_flow
     assert "await self.async_set_unique_id(unique_id)" in config_flow
     assert "self._abort_if_unique_id_configured()" in config_flow
+
+
+@pytest.mark.parametrize(
+    ("mode", "configured", "expected"),
+    (
+        ("signed_power", {CONF_POWER_ENTITY: "sensor.signed"}, "signed:sensor.signed"),
+        (
+            SOURCE_SEPARATE_POWER,
+            {
+                CONF_IMPORT_POWER_ENTITY: "sensor.import_power",
+                CONF_EXPORT_POWER_ENTITY: "sensor.export_power",
+            },
+            "separate_power:sensor.import_power|sensor.export_power",
+        ),
+        (
+            SOURCE_IMPORT_ONLY,
+            {CONF_IMPORT_POWER_ENTITY: "sensor.import_only"},
+            "import_only:sensor.import_only",
+        ),
+    ),
+)
+def test_all_supported_reconfiguration_sources_have_duplicate_safe_identities(
+    mode: str, configured: dict[str, Any], expected: str
+) -> None:
+    from custom_components.si_grid_monitor.source_identity import (
+        find_duplicate_source_entry,
+        source_unique_id,
+    )
+
+    target = source_unique_id(mode, configured)
+    assert target == expected
+    current = SimpleNamespace(
+        entry_id="legacy", unique_id="cumulative_energy:old", data={}, options={}
+    )
+    existing = SimpleNamespace(
+        entry_id="existing",
+        unique_id=None,
+        data={CONF_SOURCE_MODE: mode, **configured},
+        options={},
+    )
+    assert (
+        find_duplicate_source_entry(
+            [current, existing], current_entry_id=current.entry_id, target_unique_id=target
+        )
+        is existing
+    )
+
+
+def test_legacy_mode_d_reconfigure_rebinds_unique_id_and_reloads_same_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _ensure_config_flow_stubs()
+    sys.modules.pop("custom_components.si_grid_monitor.config_flow", None)
+    from custom_components.si_grid_monitor.config_flow import SIGridMonitorConfigFlow
+
+    entry = SimpleNamespace(
+        entry_id="legacy-entry-id",
+        title="Legacy counter",
+        unique_id="cumulative_energy:sensor.total_import",
+        data={
+            CONF_SOURCE_MODE: SOURCE_CUMULATIVE_ENERGY,
+            "import_energy_entity": "sensor.total_import",
+            CONF_TARGET_KW: 4.8,
+        },
+        options={},
+    )
+
+    class Entries:
+        def __init__(self) -> None:
+            self.reload_calls = 0
+
+        @staticmethod
+        def async_entries(_domain: str) -> list[Any]:
+            return [entry]
+
+        @staticmethod
+        def async_update_entry(target: Any, **changes: Any) -> None:
+            for key, value in changes.items():
+                setattr(target, key, value)
+
+    entries = Entries()
+    flow = SIGridMonitorConfigFlow()
+    flow.hass = SimpleNamespace(
+        config_entries=entries, states=SimpleNamespace(get=lambda _id: None)
+    )
+    flow._values = {
+        "meter_name": "Main grid",
+        CONF_SOURCE_MODE: "signed_power",
+    }
+    flow._get_reconfigure_entry = lambda: entry  # type: ignore[method-assign]
+    flow._validate_source_input = lambda _input: {}  # type: ignore[method-assign]
+
+    async def set_unique_id(value: str) -> None:
+        flow.flow_unique_id = value
+
+    def update_reload(target: Any, **changes: Any) -> dict[str, Any]:
+        entries.reload_calls += 1
+        if "data_updates" in changes:
+            target.data = {**target.data, **changes["data_updates"]}
+        if "options_updates" in changes:
+            target.options = {**target.options, **changes["options_updates"]}
+        return {"type": "abort", "reason": changes["reason"]}
+
+    flow.async_set_unique_id = set_unique_id  # type: ignore[method-assign]
+    flow.async_update_reload_and_abort = update_reload  # type: ignore[method-assign]
+    flow.async_abort = lambda **kwargs: {"type": "abort", **kwargs}  # type: ignore[method-assign]
+
+    result = _run(
+        flow.async_step_reconfigure_meter(
+            {CONF_POWER_ENTITY: "sensor.solaredge_grid", CONF_POSITIVE_MEANS_IMPORT: True}
+        )
+    )
+
+    assert result == {"type": "abort", "reason": "reconfigure_successful"}
+    assert entry.entry_id == "legacy-entry-id"
+    assert entry.unique_id == "signed:sensor.solaredge_grid"
+    assert entry.data[CONF_SOURCE_MODE] == "signed_power"
+    assert entry.data[CONF_POWER_ENTITY] == "sensor.solaredge_grid"
+    assert entry.data["import_energy_entity"] == "sensor.total_import"
+    assert entries.reload_calls == 1
+
+
+def test_legacy_mode_d_reconfigure_rejects_duplicate_target_source() -> None:
+    _ensure_config_flow_stubs()
+    sys.modules.pop("custom_components.si_grid_monitor.config_flow", None)
+    from custom_components.si_grid_monitor.config_flow import SIGridMonitorConfigFlow
+
+    legacy = SimpleNamespace(
+        entry_id="legacy-entry-id",
+        title="Legacy counter",
+        unique_id="cumulative_energy:sensor.total_import",
+        data={CONF_SOURCE_MODE: SOURCE_CUMULATIVE_ENERGY},
+        options={},
+    )
+    existing = SimpleNamespace(
+        entry_id="existing-live-entry",
+        title="Existing live source",
+        unique_id=None,
+        data={CONF_SOURCE_MODE: "signed_power", CONF_POWER_ENTITY: "sensor.grid_power"},
+        options={},
+    )
+
+    class Entries:
+        updated = False
+
+        @staticmethod
+        def async_entries(_domain: str) -> list[Any]:
+            return [legacy, existing]
+
+        def async_update_entry(self, _target: Any, **_changes: Any) -> None:
+            self.updated = True
+
+    entries = Entries()
+    flow = SIGridMonitorConfigFlow()
+    flow.hass = SimpleNamespace(
+        config_entries=entries, states=SimpleNamespace(get=lambda _id: None)
+    )
+    flow._values = {"meter_name": "Legacy", CONF_SOURCE_MODE: "signed_power"}
+    flow._get_reconfigure_entry = lambda: legacy  # type: ignore[method-assign]
+    flow._validate_source_input = lambda _input: {}  # type: ignore[method-assign]
+
+    async def set_unique_id(value: str) -> None:
+        flow.flow_unique_id = value
+
+    flow.async_set_unique_id = set_unique_id  # type: ignore[method-assign]
+    flow.async_abort = lambda **kwargs: {"type": "abort", **kwargs}  # type: ignore[method-assign]
+
+    result = _run(
+        flow.async_step_reconfigure_meter(
+            {CONF_POWER_ENTITY: "sensor.grid_power", CONF_POSITIVE_MEANS_IMPORT: True}
+        )
+    )
+
+    assert result == {"type": "abort", "reason": "already_configured"}
+    assert not entries.updated
+    assert legacy.unique_id == "cumulative_energy:sensor.total_import"
+    assert legacy.data == {CONF_SOURCE_MODE: SOURCE_CUMULATIVE_ENERGY}
 
 
 def test_runtime_modes_expose_stable_sources_and_truthful_capabilities(tmp_path: Path) -> None:

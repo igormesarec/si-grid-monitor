@@ -291,7 +291,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry, (Platform.SENSOR, Platform.BINARY_SENSOR)
     )
     if unload_ok:
-        runtime: Any = entry.runtime_data
+        runtimes = hass.data.get(DOMAIN, {}).get(DATA_RUNTIMES, {})
+        runtime: Any = getattr(entry, "runtime_data", None) or runtimes.get(entry.entry_id)
+        if runtime is None:
+            # Unsupported legacy Mode D entries intentionally have no runtime
+            # and no forwarded entities. Unload/reload/removal must therefore
+            # be a safe no-op rather than dereferencing None.
+            entry.runtime_data = None
+            if not runtimes:
+                async_unregister_panel(hass)
+            return True
         stopped = False
         try:
             await runtime.async_stop()
@@ -299,7 +308,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         finally:
             cleanup_complete = stopped or bool(getattr(runtime, "shutdown_complete", False))
             if cleanup_complete:
-                runtimes = hass.data.get(DOMAIN, {}).get(DATA_RUNTIMES, {})
                 if runtimes.get(entry.entry_id) is runtime:
                     runtimes.pop(entry.entry_id, None)
                 if getattr(entry, "runtime_data", None) is runtime:

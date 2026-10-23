@@ -62,6 +62,7 @@ from .contracted_power import (
     ContractedPowerSchedule,
     contracted_power_schedule_from_json,
 )
+from .source_identity import find_duplicate_source_entry, source_unique_id
 
 SOURCE_MODES = SUPPORTED_SOURCE_MODES
 
@@ -219,8 +220,22 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             if not errors:
                 updates = {**self._values, **user_input}
                 entry = self._get_reconfigure_entry()
+                target_unique_id = source_unique_id(mode, updates)
+                await self.async_set_unique_id(target_unique_id)
+                duplicate = find_duplicate_source_entry(
+                    self.hass.config_entries.async_entries(DOMAIN),
+                    current_entry_id=entry.entry_id,
+                    target_unique_id=target_unique_id,
+                )
+                if duplicate is not None:
+                    return self.async_abort(reason="already_configured")
+                # The source owns the config-entry unique ID. Rebinding updates
+                # it only after collision checks; entry_id/archive namespace is
+                # deliberately unchanged.
                 self.hass.config_entries.async_update_entry(
-                    entry, title=str(updates[CONF_METER_NAME])
+                    entry,
+                    title=str(updates[CONF_METER_NAME]),
+                    unique_id=target_unique_id,
                 )
                 update_target = (
                     {"options_updates": updates}
@@ -525,11 +540,7 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 if self._values.get(key)
             ]
             entity_id = ", ".join(source_ids)
-            unique_id = (
-                f"signed:{source_ids[0]}"
-                if mode == SOURCE_SIGNED_POWER
-                else f"{mode}:{'|'.join(source_ids)}"
-            )
+            unique_id = source_unique_id(mode, self._values)
             await self.async_set_unique_id(unique_id)
             self._abort_if_unique_id_configured()
             meter_name = str(self._values.get(CONF_METER_NAME) or entity_id)

@@ -25,7 +25,10 @@ Legacy V0.9.5/V0.9.6 entries are recognized before runtime startup and disabled
 without interpreting Wh/kWh as power, opening a counter pipeline, rewriting
 configuration, or deleting/reclassifying archive rows. An explicit A/B/C
 reconfiguration preserves the entry/archive namespace and begins a new source
-epoch.
+epoch. The config-entry ID remains the archive identity. After duplicate-source
+validation, its `unique_id` is updated to the canonical A/B/C source identity so
+future setup cannot claim that same source; historical source epochs remain
+separate and immutable.
 
 ## Future functionality
 
