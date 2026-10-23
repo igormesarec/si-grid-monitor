@@ -1,4 +1,4 @@
-# V0.9.5 source-mode capability matrix
+# V0.9.6 source-mode capability matrix
 
 | Capability | Signed power | Separate power | Import-only power | Energy counters |
 |---|---:|---:|---:|---:|
@@ -18,3 +18,11 @@ counters keep independent timestamps and baselines. The Mode D entities belong
 to the SI Grid Monitor config entry, use stable unique IDs, and are recreated by
 normal platform setup without creating Home Assistant helpers or modifying HA
 `.storage` internals.
+
+Counter conversion requires a minimum evidenced observation interval (default
+30 seconds) and applies a user-configurable physical plausibility ceiling
+(default 100 kW). Fast quantized reports accumulate against the earlier baseline
+instead of producing a trusted derivative spike. Rejected discontinuities create
+an explicit incomplete gap and anomaly provenance; their uncertain energy is not
+spread into a billing quarter. The generated power entities and chart are
+interval averages with start/end timestamps, never instantaneous samples.

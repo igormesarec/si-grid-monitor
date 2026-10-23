@@ -30,6 +30,8 @@ from custom_components.si_grid_monitor.const import (
     CONF_ARCHIVE_REMOVAL_CONFIRMED_AT,
     CONF_CONTRACTED_POWER_PERIODS,
     CONF_COUNTER_BEHAVIOR,
+    CONF_COUNTER_MAX_PLAUSIBLE_POWER_KW,
+    CONF_COUNTER_MIN_OBSERVATION_SECONDS,
     CONF_EXPORT_ENERGY_ENTITY,
     CONF_EXPORT_POWER_ENTITY,
     CONF_IMPORT_ENERGY_ENTITY,
@@ -680,9 +682,9 @@ def test_beta_version_frontend_and_hacs_package_are_consistent() -> None:
         encoding="utf-8"
     )
     hacs = json.loads((ROOT / "hacs.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == VERSION == "0.9.5"
-    assert "dashboard-model.mjs?v=0.9.5" in dashboard
-    assert "dashboard-i18n.mjs?v=0.9.5" in dashboard
+    assert manifest["version"] == VERSION == "0.9.6"
+    assert "dashboard-model.mjs?v=0.9.6" in dashboard
+    assert "dashboard-i18n.mjs?v=0.9.6" in dashboard
     assert hacs["name"] == "SI Grid Monitor"
     assert not any(ROOT.joinpath(name).exists() for name in ("release.zip", "dist.zip"))
 
@@ -774,18 +776,59 @@ def test_runtime_modes_expose_stable_sources_and_truthful_capabilities(tmp_path:
         hass,
         SimpleNamespace(
             entry_id="d",
+            title="Counters",
             data={
                 **common,
                 CONF_SOURCE_MODE: SOURCE_CUMULATIVE_ENERGY,
                 CONF_IMPORT_ENERGY_ENTITY: "sensor.import_total",
                 CONF_EXPORT_ENERGY_ENTITY: "sensor.export_total",
             },
-            options={},
+            options={
+                CONF_COUNTER_MIN_OBSERVATION_SECONDS: 45,
+                CONF_COUNTER_MAX_PLAUSIBLE_POWER_KW: 12.5,
+            },
         ),
     )
     assert counters.source_entities == ("sensor.import_total", "sensor.export_total")
     assert not counters.instantaneous_power_known
     assert not counters.export_known  # Unknown until an aligned export delta exists.
+    assert counters.counter_converter.minimum_observation_seconds == pytest.approx(45)
+    assert counters.counter_converter.maximum_plausible_power_kw == pytest.approx(12.5)
+
+    from custom_components.si_grid_monitor.sources import CounterReading
+
+    interval_start = datetime(2026, 10, 21, 10, 0, tzinfo=UTC)
+    assert counters.counter_converter.update(CounterReading(1.0, "kWh", interval_start)) is None
+    interval = counters.counter_converter.update(
+        CounterReading(1.01, "kWh", interval_start + timedelta(seconds=45))
+    )
+    assert interval is not None
+    counters.engine.ingest_interval_average(
+        start=interval.start,
+        end=interval.end,
+        signed_kw=interval.normalized.signed_kw,
+        import_kw=interval.normalized.import_kw,
+        export_kw=interval.normalized.export_kw,
+    )
+    counters.counter_intervals.append(interval)
+    counters.derived_import_power_kw = interval.normalized.import_kw
+    counters.derived_timestamp_utc = interval.end
+    counters.counter_last_observation_utc = interval.end
+    counters.source_available = True
+    counters.source_status_reason = (
+        "counter-derived interval average; instantaneous and sustained forecasts unavailable"
+    )
+    counters._last_checkpoint_utc = interval.end
+    counters._refresh(interval.end)
+    live = counters.dashboard_current()
+    assert live["power"]["signed_kw"] is None
+    assert live["power"]["import_kw"] is None
+    assert live["power"]["input_stale"] is False
+    assert live["power"]["latest_interval_average"]["import_kw"] == pytest.approx(0.8)
+    assert live["counter_intervals"][0]["import_kwh"] == pytest.approx(0.01)
+    assert "unsupported" in live["projection"]["smoothed_future_reason"]
+    assert "stale" not in live["projection"]["smoothed_future_reason"]
+    assert "unsupported" in live["sustained"]["reason"]
 
     net_counter = GridMonitorRuntime(
         hass,
@@ -804,6 +847,43 @@ def test_runtime_modes_expose_stable_sources_and_truthful_capabilities(tmp_path:
     assert net_counter.export_known_by_design
     assert not net_counter.instantaneous_power_known
     assert net_counter.engine.completed_quality.value == "incomplete"
+
+
+def test_options_flow_scopes_counter_policy_to_mode_d_and_restores_values() -> None:
+    """Mode A must not show Mode D policy; Mode D reloads its stored values."""
+
+    source = (ROOT / "custom_components/si_grid_monitor/config_flow.py").read_text(encoding="utf-8")
+    signed_start = source.index(
+        "if mode == SOURCE_SIGNED_POWER:", source.index("class SIGridMonitorOptionsFlow")
+    )
+    separate_start = source.index("elif mode == SOURCE_SEPARATE_POWER:", signed_start)
+    cumulative_start = source.index(
+        "else:", source.index("elif mode == SOURCE_IMPORT_ONLY:", separate_start)
+    )
+    form_end = source.index("return self.async_show_form(", cumulative_start)
+
+    signed_fields = source[signed_start:separate_start]
+    cumulative_fields = source[cumulative_start:form_end]
+    for key in (
+        "CONF_COUNTER_MIN_OBSERVATION_SECONDS",
+        "CONF_COUNTER_MAX_PLAUSIBLE_POWER_KW",
+    ):
+        assert key not in signed_fields
+        assert key in cumulative_fields
+        assert f"current.get(\n                            {key}" in cumulative_fields
+
+
+def test_kw_kwh_entities_publish_full_precision_with_three_digit_display_hint() -> None:
+    source = (ROOT / "custom_components/si_grid_monitor/sensor.py").read_text(encoding="utf-8")
+    assert "UnitOfPower.KILO_WATT,\n            UnitOfEnergy.KILO_WATT_HOUR," in source
+    assert "precision = 3" in source
+    native_value = source[
+        source.index("    def native_value(") : source.index(
+            "    def extra_state_attributes", source.index("    def native_value(")
+        )
+    ]
+    assert "round_for_display" not in native_value
+    assert "return value" in native_value
 
 
 def test_v09_entry_migrates_to_mode_a_without_changing_identity() -> None:

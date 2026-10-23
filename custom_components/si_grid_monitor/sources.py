@@ -11,6 +11,7 @@ from .adapters import AdapterError, NormalizedPower, energy_to_kwh
 from .const import COUNTER_BEHAVIORS, COUNTER_IMPORT_ONLY, COUNTER_NET
 
 MAX_COUNTER_DERIVED_ABS_KW = 10_000.0
+COUNTER_DELTA_EPSILON_KWH = 1e-12
 
 
 def counter_archive_provenance(
@@ -19,6 +20,9 @@ def counter_archive_provenance(
     *,
     export_coverage_seconds: float | None = None,
     export_unknown_seconds: float | None = None,
+    rejected_anomaly_count: int = 0,
+    minimum_observation_seconds: float | None = None,
+    maximum_plausible_power_kw: float | None = None,
 ) -> str:
     """Encode export evidence in existing schema-6 provenance text."""
 
@@ -35,6 +39,12 @@ def counter_archive_provenance(
         parts.append(f"export_known_seconds={export_coverage_seconds:.3f}")
     if export_unknown_seconds is not None:
         parts.append(f"export_unknown_seconds={export_unknown_seconds:.3f}")
+    if rejected_anomaly_count:
+        parts.append(f"rejected_counter_anomalies={rejected_anomaly_count}")
+    if minimum_observation_seconds is not None:
+        parts.append(f"counter_min_observation_seconds={minimum_observation_seconds:.3f}")
+    if maximum_plausible_power_kw is not None:
+        parts.append(f"counter_max_plausible_power_kw={maximum_plausible_power_kw:.3f}")
     return ":".join(parts)
 
 
@@ -55,6 +65,7 @@ class CounterReading:
     unit: str
     timestamp: datetime
     last_reset_utc: datetime | None = None
+    state_class: str | None = None
 
     @property
     def kwh(self) -> float:
@@ -71,6 +82,8 @@ class DerivedInterval:
     import_kwh: float
     export_kwh: float | None
     contractual_import_evidence: bool = True
+    observation_seconds: float = 0.0
+    quality: str = "counter_interval_average"
 
 
 @dataclass(frozen=True, slots=True)
@@ -78,6 +91,17 @@ class _ChannelInterval:
     start: datetime
     end: datetime
     average_kw: float
+
+
+@dataclass(frozen=True, slots=True)
+class RejectedCounterInterval:
+    """One counter interval rejected before billing integration."""
+
+    channel: str
+    start: datetime
+    end: datetime
+    average_kw: float
+    reason: str
 
 
 class CounterPowerConverter:
@@ -94,18 +118,29 @@ class CounterPowerConverter:
         behavior: str = COUNTER_IMPORT_ONLY,
         positive_means_import: bool = True,
         export_expected: bool = False,
+        minimum_observation_seconds: float = 30.0,
+        maximum_plausible_power_kw: float = 100.0,
     ) -> None:
         if behavior not in COUNTER_BEHAVIORS:
             raise ValueError(f"unsupported counter behavior: {behavior}")
         self.behavior = behavior
         self.positive_means_import = positive_means_import
         self.export_expected = export_expected
+        if minimum_observation_seconds <= 0:
+            raise ValueError("minimum_observation_seconds must be positive")
+        if not 0 < maximum_plausible_power_kw <= MAX_COUNTER_DERIVED_ABS_KW:
+            raise ValueError("maximum_plausible_power_kw is outside the supported range")
+        self.minimum_observation_seconds = float(minimum_observation_seconds)
+        self.maximum_plausible_power_kw = float(maximum_plausible_power_kw)
         self._previous: dict[str, CounterReading | None] = {"import": None, "export": None}
         self._queues: dict[str, deque[_ChannelInterval]] = {
             "import": deque(),
             "export": deque(),
         }
         self.last_warnings: tuple[str, ...] = ()
+        self.last_status_reason: str | None = None
+        self.rejected_interval_count = 0
+        self.last_rejected_interval: RejectedCounterInterval | None = None
 
     @staticmethod
     def _validate(reading: CounterReading) -> None:
@@ -126,9 +161,15 @@ class CounterPowerConverter:
         allow_negative: bool,
     ) -> _ChannelInterval | None:
         self._validate(reading)
+        if self.behavior == COUNTER_NET and reading.state_class not in {None, "total"}:
+            raise AdapterError(
+                "bidirectional net-energy counter must use state class total, "
+                "because total_increasing cannot represent legitimate reverse flow"
+            )
         previous = self._previous[channel]
         if previous is None:
             self._previous[channel] = reading
+            self.last_status_reason = f"established cumulative {channel} counter baseline"
             return None
         start = previous.timestamp.astimezone(UTC)
         end = reading.timestamp.astimezone(UTC)
@@ -138,24 +179,55 @@ class CounterPowerConverter:
             if reading.kwh == previous.kwh:
                 return None
             raise AdapterError(f"conflicting duplicate-timestamp cumulative {channel} reading")
-        self._previous[channel] = reading
         if previous.last_reset_utc != reading.last_reset_utc and (
             previous.last_reset_utc is not None or reading.last_reset_utc is not None
         ):
+            self._previous[channel] = reading
             self._queues[channel].clear()
+            self.rejected_interval_count += 1
             raise AdapterError(f"cumulative {channel} counter reported a reset")
         delta = reading.kwh - previous.kwh
         if delta < 0 and not allow_negative:
+            self._previous[channel] = reading
             self._queues[channel].clear()
+            self.rejected_interval_count += 1
             raise AdapterError(f"cumulative {channel} counter reset or rolled over")
-        hours = (end - start).total_seconds() / 3600.0
-        average_kw = delta / hours
-        if abs(average_kw) > MAX_COUNTER_DERIVED_ABS_KW:
-            self._queues[channel].clear()
-            raise AdapterError(
-                f"suspicious cumulative {channel} discontinuity "
-                f"({average_kw:.1f} kW interval average)"
+        observation_seconds = (end - start).total_seconds()
+        if observation_seconds < self.minimum_observation_seconds:
+            # Keep the previous baseline so the evidenced energy is retained
+            # and averaged over a later, sufficiently long observation.
+            self.last_status_reason = (
+                f"accumulating cumulative {channel} counter evidence "
+                f"({observation_seconds:.1f}/{self.minimum_observation_seconds:.1f} seconds)"
             )
+            return None
+        if abs(delta) <= COUNTER_DELTA_EPSILON_KWH:
+            # A sufficiently long unchanged observation is useful zero-power
+            # evidence. Advancing only after the minimum window prevents a
+            # near-immediate quantized step from becoming a derivative spike.
+            self._previous[channel] = reading
+            self.last_status_reason = None
+            return _ChannelInterval(start, end, 0.0)
+        hours = observation_seconds / 3600.0
+        average_kw = delta / hours
+        if abs(average_kw) > self.maximum_plausible_power_kw:
+            self._previous[channel] = reading
+            self._queues[channel].clear()
+            self.rejected_interval_count += 1
+            reason = (
+                f"implausible interval average ({average_kw:.2f} kW exceeds configured "
+                f"{self.maximum_plausible_power_kw:.2f} kW)"
+            )
+            self.last_rejected_interval = RejectedCounterInterval(
+                channel=channel,
+                start=start,
+                end=end,
+                average_kw=average_kw,
+                reason=reason,
+            )
+            raise AdapterError(f"rejected suspicious cumulative {channel} discontinuity; {reason}")
+        self._previous[channel] = reading
+        self.last_status_reason = None
         return _ChannelInterval(start, end, average_kw)
 
     @staticmethod
@@ -179,6 +251,7 @@ class CounterPowerConverter:
             import_kwh=import_kw * duration_hours,
             export_kwh=None if export_kw is None else export_kw * duration_hours,
             contractual_import_evidence=contractual_import_evidence,
+            observation_seconds=(interval.end - interval.start).total_seconds(),
         )
 
     def _join_separate_queues(self) -> list[DerivedInterval]:
@@ -223,6 +296,8 @@ class CounterPowerConverter:
         """Accept new states and return every newly evidenced interval once."""
 
         warnings: list[str] = []
+        self.last_status_reason = None
+        self.last_rejected_interval = None
         if self.behavior == COUNTER_NET:
             try:
                 interval = self._channel_delta("import", primary_reading, allow_negative=True)

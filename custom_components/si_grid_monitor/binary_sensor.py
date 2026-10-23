@@ -101,10 +101,26 @@ class SIGridBinarySensor(BinarySensorEntity):
         snapshot = self.runtime.snapshot
         if snapshot is None:
             return None
+        if (
+            self.entity_description.key == "input_stale"
+            and not self.runtime.instantaneous_power_known
+        ):
+            # Mode D has no instantaneous sample to become stale. Its status is
+            # based on cumulative-counter observations instead.
+            return not self.runtime.source_available
         return self.entity_description.value_fn(snapshot)
 
     @property
     def extra_state_attributes(self) -> dict[str, Any]:
+        if self.entity_description.key == "input_stale":
+            return {
+                "measurement_kind": (
+                    "instantaneous"
+                    if self.runtime.instantaneous_power_known
+                    else "counter_observation"
+                ),
+                "source_status_reason": self.runtime.source_status_reason,
+            }
         if self.entity_description.key not in {
             "projected_exceedance",
             "unrecoverable_interval",

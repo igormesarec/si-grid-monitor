@@ -1,7 +1,7 @@
 # SI Grid Monitor
 
 SI Grid Monitor is a HACS-compatible Home Assistant custom integration for
-Slovenian fixed 15-minute grid-demand monitoring. V0.9.5 beta provides guided setup,
+Slovenian fixed 15-minute grid-demand monitoring. V0.9.6 beta provides guided setup,
 an automatically registered sidebar dashboard, import-only live calculations,
 sustained-load forecasting, and a permanent
 SQLite quarter archive, a paginated HISTORY explorer, controlled Recorder
@@ -27,8 +27,10 @@ Home Assistant beta procedure are in
 The approved four-mode scope that supersedes the older source-mode roadmap is
 documented without changing the master specification in
 [`SPECIFICATION_V1.5_SOURCE_MODES_ADDENDUM.md`](SPECIFICATION_V1.5_SOURCE_MODES_ADDENDUM.md).
+The V0.9.6 counter hotfix status and remaining real-device checks are recorded in
+[`V0.9.6_IMPLEMENTATION_STATUS.md`](V0.9.6_IMPLEMENTATION_STATUS.md).
 
-## V0.9.5 beta installation and dashboard
+## V0.9.6 beta installation and dashboard
 
 1. Install from HACS and restart Home Assistant.
 2. Add SI Grid Monitor from Settings > Devices & services.
@@ -145,6 +147,30 @@ A net delta can hide reversals between readings and therefore never proves a
 confirmed import-only contractual result. Gaps and intervals that cross a fixed
 quarter boundary without sufficient allocation evidence are retained as
 incomplete rather than confirmed billing measurements.
+
+V0.9.6 also protects quantized counters that publish many fast, unchanged state
+reports followed by one energy step. It retains the original counter baseline
+until the configured minimum observation time (30 seconds by default), so a
+small energy step is averaged over the evidenced interval instead of appearing
+as a subsecond power spike. A configurable meter-specific plausibility ceiling
+(100 kW by default) rejects suspicious discontinuities before billing
+integration. Rejection preserves the archived gap/anomaly provenance; it does
+not redistribute uncertain energy or create a confirmed exceedance.
+
+The generated Mode D power entities and Overview trace are explicitly
+**interval-average** measurements with start/end timestamps. They are not
+instantaneous readings. Instantaneous and sustained forecasts remain unavailable
+for Mode D, while accepted interval energy continues to contribute to the
+quarter using its actual evidenced timestamps. The cumulative-energy chart is
+anchored to the engine's authoritative imported-energy total and shows only
+supported interval segments; gaps are never bridged.
+
+Mode D's minimum observation and meter-specific plausibility ceiling are edited
+in that meter's Options and survive reloads. Counter intervals that straddle a
+fixed quarter boundary conserve their evidenced energy, but both affected
+quarters remain incomplete because the counter does not reveal the energy split.
+Dashboard and Home Assistant kW/kWh values use three-decimal display precision;
+the calculation engine and SQLite archive retain full precision.
 
 ### Removing a meter safely
 
