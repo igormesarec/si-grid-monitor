@@ -58,6 +58,7 @@ The project includes four input modes, a guided wizard, separate dated B1–B5 c
 - [Current limitations / roadmap](docs/limitations-and-roadmap.md)
 - [Detailed manual test plan](MANUAL_TEST_PLAN.md)
 - [V0.9 beta acceptance status](V0.9_BETA_ACCEPTANCE.md)
+- [V0.8 implementation status](V0.8_IMPLEMENTATION_STATUS.md) — historical milestone evidence
 - [Source-mode V1.5 addendum](SPECIFICATION_V1.5_SOURCE_MODES_ADDENDUM.md)
 - [Frozen master specification](SPECIFICATION.md) — unchanged
 
