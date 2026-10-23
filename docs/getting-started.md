@@ -12,7 +12,7 @@ Check:
 - The **unit**: V1.0 sources must report live power in W or kW. A Wh/kWh
   cumulative-energy entity is not a supported V1.0 setup source.
 - **Sign or direction**: on some SolarEdge grid sensors a positive reading is **export**, negative is **import**. Confirm with a known household load.
-- **Freshness**: a source that goes without a new timestamp for over 60 seconds may create data gaps in V0.9.5.
+- **Freshness**: a source that goes without a new timestamp for over 60 seconds may create data gaps.
 
 Select a live W/kW grid sensor. Cumulative Wh/kWh counters were experimental in
 V0.9.5/V0.9.6 and are not active in the V1.0 release candidate.
