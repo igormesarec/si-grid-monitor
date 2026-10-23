@@ -150,6 +150,7 @@ never manufactured as zero.
 - [Developer architecture](docs/developer-architecture.md)
 - [Testing and validation](docs/testing-and-validation.md)
 - [Limitations and roadmap](docs/limitations-and-roadmap.md)
+- [Historical V0.8 implementation status](V0.8_IMPLEMENTATION_STATUS.md)
 - [V1.0 source-mode capability matrix](SOURCE_MODE_CAPABILITY_MATRIX.md)
 - [Frozen master specification](SPECIFICATION.md)
 - V1.0 scope clarification in `SPECIFICATION_V1.6_V1_SCOPE_ADDENDUM.md`
