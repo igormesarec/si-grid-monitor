@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "si_grid_monitor"
-VERSION = "0.9.6"
+VERSION = "1.0.0"
 PANEL_URL_PATH = "si-grid-monitor"
 PANEL_TITLE = "SI Grid Monitor"
 PANEL_ICON = "mdi:transmission-tower"
@@ -13,12 +13,7 @@ CONF_SOURCE_MODE = "source_mode"
 CONF_POWER_ENTITY = "power_entity"
 CONF_IMPORT_POWER_ENTITY = "import_power_entity"
 CONF_EXPORT_POWER_ENTITY = "export_power_entity"
-CONF_IMPORT_ENERGY_ENTITY = "import_energy_entity"
-CONF_EXPORT_ENERGY_ENTITY = "export_energy_entity"
 CONF_POSITIVE_MEANS_IMPORT = "positive_means_import"
-CONF_COUNTER_BEHAVIOR = "counter_behavior"
-CONF_COUNTER_MIN_OBSERVATION_SECONDS = "counter_min_observation_seconds"
-CONF_COUNTER_MAX_PLAUSIBLE_POWER_KW = "counter_max_plausible_power_kw"
 CONF_METER_NAME = "meter_name"
 CONF_ARCHIVE_REMOVAL_ACTION = "archive_removal_action"
 CONF_ARCHIVE_REMOVAL_BACKUP = "archive_removal_backup"
@@ -52,19 +47,17 @@ CONF_SUSTAINED_HORIZON_MINUTES = "sustained_horizon_minutes"
 SOURCE_SIGNED_POWER = "signed_power"
 SOURCE_SEPARATE_POWER = "separate_power"
 SOURCE_IMPORT_ONLY = "import_only"
-SOURCE_CUMULATIVE_ENERGY = "cumulative_energy"
-
-COUNTER_IMPORT_ONLY = "import_only"
-COUNTER_NET = "net"
-COUNTER_SEPARATE = "separate"
-COUNTER_BEHAVIORS = (COUNTER_IMPORT_ONLY, COUNTER_NET, COUNTER_SEPARATE)
+SOURCE_CUMULATIVE_ENERGY = "cumulative_energy"  # Legacy/unsupported in V1.0.
+SUPPORTED_SOURCE_MODES = (
+    SOURCE_SIGNED_POWER,
+    SOURCE_SEPARATE_POWER,
+    SOURCE_IMPORT_ONLY,
+)
 
 DEFAULT_TARGET_KW = 4.8
 DEFAULT_SAFETY_MARGIN_KW = 0.0
 DEFAULT_SMOOTHING_SECONDS = 120
 DEFAULT_STALE_AFTER_SECONDS = 60
-DEFAULT_COUNTER_MIN_OBSERVATION_SECONDS = 30
-DEFAULT_COUNTER_MAX_PLAUSIBLE_POWER_KW = 100.0
 DEFAULT_RETENTION = "forever"
 DEFAULT_SUSTAINED_HORIZON_MINUTES = 60
 DEFAULT_TARGET_MODE = "shared"

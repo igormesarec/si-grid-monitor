@@ -25,7 +25,6 @@ class SourceMode(StrEnum):
     SIGNED_POWER = "signed_power"
     SEPARATE_POWER = "separate_power"
     IMPORT_ONLY = "import_only"
-    CUMULATIVE_ENERGY = "cumulative_energy"
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,18 +35,6 @@ class NormalizedPower:
     import_kw: float
     export_kw: float | None
     export_known: bool
-
-
-@dataclass(frozen=True, slots=True)
-class CounterDelta:
-    """Validated cumulative energy delta."""
-
-    start: datetime
-    end: datetime
-    import_kwh: float
-    export_kwh: float | None
-    quality: DataQuality
-    aligned_to_one_quarter: bool
 
 
 def _finite_number(value: object, field: str) -> float:
@@ -148,61 +135,6 @@ class ImportOnlyPowerAdapter:
             import_kw=import_kw,
             export_kw=None,
             export_known=False,
-        )
-
-
-class CumulativeEnergyAdapter:
-    """Validate deltas from cumulative import and optional export counters.
-
-    V0.1 deliberately does not distribute a counter delta across more than one
-    fixed quarter. Such a delta is returned as ``incomplete`` for a later archive
-    stage to apportion only when supporting timestamp evidence exists.
-    """
-
-    def delta(
-        self,
-        *,
-        previous_import: object,
-        current_import: object,
-        import_unit: str,
-        start: datetime,
-        end: datetime,
-        previous_export: object | None = None,
-        current_export: object | None = None,
-        export_unit: str | None = None,
-    ) -> CounterDelta:
-        _require_aware_utc_convertible(start, "start")
-        _require_aware_utc_convertible(end, "end")
-        if end <= start:
-            raise AdapterError("counter end must be after start")
-
-        import_delta = energy_to_kwh(current_import, import_unit) - energy_to_kwh(
-            previous_import, import_unit
-        )
-        if import_delta < 0:
-            raise AdapterError("cumulative import counter reset or rolled over")
-
-        export_delta: float | None = None
-        if previous_export is not None or current_export is not None:
-            if previous_export is None or current_export is None or export_unit is None:
-                raise AdapterError("both export counter values and unit are required")
-            export_delta = energy_to_kwh(current_export, export_unit) - energy_to_kwh(
-                previous_export, export_unit
-            )
-            if export_delta < 0:
-                raise AdapterError("cumulative export counter reset or rolled over")
-
-        start_utc = start.astimezone(UTC)
-        end_utc = end.astimezone(UTC)
-        bounds = quarter_bounds(start_utc)
-        aligned = start_utc == bounds.start_utc and end_utc == bounds.end_utc
-        return CounterDelta(
-            start=start_utc,
-            end=end_utc,
-            import_kwh=import_delta,
-            export_kwh=export_delta,
-            quality=DataQuality.COUNTER_DERIVED if aligned else DataQuality.INCOMPLETE,
-            aligned_to_one_quarter=aligned,
         )
 
 

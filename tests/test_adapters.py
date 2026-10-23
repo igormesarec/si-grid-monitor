@@ -7,7 +7,6 @@ import pytest
 from custom_components.si_grid_monitor.adapters import (
     AdapterError,
     AlignedQuarterAdapter,
-    CumulativeEnergyAdapter,
     ImportOnlyPowerAdapter,
     SeparatePowerAdapter,
     SignedPowerAdapter,
@@ -49,40 +48,6 @@ def test_bad_units_and_non_numeric_values_fail() -> None:
         adapter.normalize(10, "A")
     with pytest.raises(AdapterError, match="numeric"):
         adapter.normalize("unavailable", "W")
-
-
-def test_counter_delta_alignment_and_reset() -> None:
-    adapter = CumulativeEnergyAdapter()
-    start = datetime(2026, 10, 18, 8, 0, tzinfo=UTC)
-    aligned = adapter.delta(
-        previous_import=1000,
-        current_import=1125,
-        import_unit="Wh",
-        start=start,
-        end=start + timedelta(minutes=15),
-    )
-    assert aligned.import_kwh == pytest.approx(0.125)
-    assert aligned.quality == DataQuality.COUNTER_DERIVED
-    assert aligned.aligned_to_one_quarter
-
-    unaligned = adapter.delta(
-        previous_import=1,
-        current_import=1.2,
-        import_unit="kWh",
-        start=start + timedelta(minutes=1),
-        end=start + timedelta(minutes=16),
-    )
-    assert unaligned.quality == DataQuality.INCOMPLETE
-    assert not unaligned.aligned_to_one_quarter
-
-    with pytest.raises(AdapterError, match="reset"):
-        adapter.delta(
-            previous_import=2,
-            current_import=1,
-            import_unit="kWh",
-            start=start,
-            end=start + timedelta(minutes=15),
-        )
 
 
 def test_aligned_quarter_adapter() -> None:
