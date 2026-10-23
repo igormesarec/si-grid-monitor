@@ -21,17 +21,24 @@ The **15, 30, 60 or 120-minute horizon** checks every intersected fixed quarter;
 
 ## Quality gates and examples
 
-- §smoothing_window_incomplete§: fewer than the configured (default 120) seconds are valid in the recent window.
-- §source_measurement_stale§: last supported live source timestamp is older than the 60-second freshness threshold.
-- §current_quarter_energy_incomplete§: at least part of the current quarter lacks valid imported-energy evidence; a complete recent smoothing window alone does not repair the earlier gap.
-- §no_valid_measurement§: no usable latest live measurement.
-- §scheduled_reduction_cannot_recover_limiting_quarter§: under the assumptions, a proposed reduction cannot bring the relevant quarter within the constraint.
+- **Smoothing window incomplete:** fewer than the configured (default 120)
+  seconds are valid in the recent window.
+- **Source measurement stale:** the last supported live-source timestamp is
+  older than the 60-second freshness threshold.
+- **Current-quarter energy incomplete:** part of the quarter lacks valid
+  imported-energy evidence; a complete recent smoothing window does not repair
+  that earlier gap.
+- **No valid measurement:** no usable latest live reading exists.
+- **Reduction cannot recover the limiting quarter:** the quarter already
+  contains too much imported energy to become compliant retrospectively.
 
 **Real Mode C example:** after adding a new import-only meter shortly before 23:00, sustained CAN ADD was unavailable for the startup-affected quarter; after a new quarter began and coverage was sufficient, it returned automatically. This is intended coverage gating, not lack of Mode C capability.
 
-## Mode D capability
+## Supported sources
 
-A cumulative counter provides energy differences **after** observation intervals. Mode D does not provide a trustworthy instantaneous power stream from these differences and sustained projections should not be represented as supported in V0.9.5. If an apparently live power or forecast card appears, check the measurement-kind semantics before acting on it.
+Forecasts use live-power Modes A/B/C only. Mode C remains conservative because
+export is unknown. Legacy Mode D entries are disabled in V1.0 and do not expose
+counter-derived instantaneous or sustained forecasts.
 
 ## What forecasts do not do
 

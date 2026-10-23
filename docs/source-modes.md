@@ -1,64 +1,82 @@
-# Choosing a measurement source — Modes A, B, C and D
+# Choosing a V1.0 measurement source — Modes A, B and C
 
-Start with what your **grid connection** can actually report. Modes are configuration choices, not accuracy grades.
+Start with what the **grid connection** actually reports. V1.0 accepts live
+power in W or kW. Source modes describe evidence and direction; they are not
+accuracy grades.
 
-| Mode | Required HA sensors | Can know export? | Real-time forecasting? | Main caution |
+| Mode | Required HA sensors | Export evidence | Forecasting | Main caution |
 |---|---|---|---|---|
-| **A — signed power** | 1 × W/kW signed grid power | Yes, sign indicates direction | Yes, with complete fresh data | Verify sign convention |
-| **B — separate power** | Import W/kW + export W/kW | Yes | Yes, with synchronized valid inputs | Different timestamps and simultaneous positives |
-| **C — import-only power** | 1 × nonnegative import W/kW | **No** | Yes, with fresh complete readings | Never treat unknown export as measured zero |
-| **D — cumulative energy** | 1 or 2 × Wh/kWh counters | Depends on counter behavior | **Not instantaneous; sustained advice unsupported** | Differences describe past intervals, not current power |
+| **A — signed power** | 1 × signed grid W/kW | Measured by sign | Supported with fresh complete data | Verify polarity |
+| **B — separate power** | Nonnegative import W/kW + export W/kW | Measured separately | Supported when inputs are valid and aligned | Timestamps and simultaneous positives |
+| **C — import-only power** | 1 × nonnegative import W/kW | **Unknown** | Supported conservatively | Unknown export is not measured zero |
 
-**Recommended:** A when you have suitable signed grid power; B when real import/export power entities are available; C when only live import power exists; D when you have only cumulative energy totals.
+Choose A when a suitable signed grid-power entity exists, B when the grid meter
+provides separate live import/export entities, and C when only live import power
+is available. Do not select house consumption, PV production or a cumulative
+Wh/kWh total in place of grid power.
 
-## Mode A — one signed live power entity
+## Mode A — one signed live-power entity
 
-Select the grid-signed sensor, unit W or kW. The SI Grid engine normalizes **positive import**, **negative export**. For SolarEdge installations that encode positive export and negative import, disable **Positive source values mean IMPORT**. This is an example, not a universal SolarEdge guarantee; verify your own sensor by switching on a known load.
+Select a grid sensor reporting W or kW. Internally SI Grid Monitor normalizes
+**positive = import** and **negative = export**. Configure whether the raw
+source's positive value means import. Some SolarEdge installations use the
+opposite sign, but this is not universal—verify your actual entity by observing
+a known household load.
 
-A supports live charts, rolling 15-minute and smoothed estimates, current-quarter advice and sustained forecasts when all data and contractual targets are valid.
+Mode A supports import/export charts, rolling signed power, fixed-quarter
+import-only demand, current-quarter forecasts and sustained advice when the
+measurement and contractual quality gates pass.
 
-## Mode B — separate live import and export sensors
+## Mode B — separate live import and export entities
 
-Both sources must be nonnegative W/kW readings of **the same grid connection**. The converter rejects conflicting positive simultaneous import and export and checks that source timestamps are reasonably aligned. Export at a different time never subtracts from import-only quarter energy. A stale or unavailable source prevents confident combined evidence.
+Select two nonnegative W/kW sources representing the **same physical grid
+connection**. The adapter preserves separate import and export evidence and
+normalizes signed grid power as import minus export for flow displays.
 
-## Mode C — one import-only power entity
+The inputs have independent timestamps. Stale, unavailable, misaligned or
+contradictory simultaneous positive readings are handled conservatively rather
+than paired into false evidence. Export never subtracts from imported energy in
+the contractual quarter calculation.
 
-Select a nonnegative grid-import sensor W/kW. Export is **unknown**, which is not the same as zero. The system can still integrate measured import and calculate supported **current-quarter and sustained CAN ADD/MUST REDUCE**, provided the meter remains fresh and the current quarter has complete coverage.
+## Mode C — one import-only live-power entity
 
-A freshly configured Mode C entry may show `current_quarter_energy_incomplete` for the remainder of a quarter that started before monitoring. It can recover automatically on the next fully covered quarter; 120 seconds of smoothing coverage alone do not replace a whole quarter of import-energy evidence. A real HA test has verified this recovery; not all hardware cadences have been tested.
+Select a nonnegative grid-import W/kW source. Export is **unknown**, not zero.
+The system can still integrate import-only demand and calculate current-quarter
+and sustained advice, but it never grants additional headroom based on an
+unmeasured export surplus.
 
-## Mode D — energy counters
+A new Mode C entry started mid-quarter may report incomplete current-quarter
+energy. It can recover on the next fully observed quarter after sufficient fresh
+smoothing coverage. A full 120-second smoothing window does not reconstruct
+earlier missing quarter energy.
 
-Mode D automatically calculates an **interval-average** power from cumulative-energy changes. Home Assistant Template or Derivative helpers are **not required**.
+## Validation performed by setup
 
-### D1. Import-only cumulative counter
+The wizard checks that selected entities exist, have supported W/kW units and
+contain usable numeric states. Modes B/C reject negative source values. Mode B
+also checks contradictory inputs. The preview shows normalized direction and
+export capability; verify it against a known load before relying on results.
 
-One Wh/kWh entity with state class `total` or `total_increasing`. The number increases with imported grid energy and does not decrease when exporting. Export remains **unknown**.
+## Legacy Mode D upgrade behavior
 
-### D2. Bidirectional cumulative *net* counter
+Mode D cumulative-energy input was experimental in V0.9.5/V0.9.6. It is not a
+selectable or active V1.0 mode. Existing entries are disabled before runtime
+construction, their archives remain intact, and Home Assistant displays an
+unsupported-mode notice. Explicit reconfiguration to A/B/C preserves the entry
+and archive namespace while creating a new source epoch. A source already owned
+by another entry is rejected rather than merged.
 
-One Wh/kWh entity whose value can **increase and decrease**. Choose whether increasing means **IMPORT** (default) or **EXPORT**. A negative delta is normally valid reverse flow, not automatically a counter reset.
+## Future functionality
 
-**Fundamental limit:** Import and export can cancel between counter updates. An interval with zero net-energy change may contain nonzero import *and* export. Thus the app cannot confirm exact **import-only contractual demand** from net deltas alone. No configuration setting can recover that missing physical information.
+Cumulative energy-counter support, including import-only counters,
+bidirectional net-energy counters and separate import/export counters, is
+reserved for future development. It requires additional research into
+measurement intervals, quarter-boundary alignment, counter resets, quantization
+and contractual demand accuracy. No implementation date is committed.
 
-### D3. Separate cumulative import and export counters
+Historical counter-derived records remain visible with their original quality
+and provenance. That preservation does not make cumulative counters an active
+V1.0 configuration option.
 
-Use two distinct energy totals (optional export: import-only when absent). Independent updates are paired only where both channels provide evidence. Lost, misaligned or reset updates can lead to incomplete or unknown export intervals without necessarily invalidating properly evidenced import.
-
-### Conversion and example
-
-```text
-Average power (kW) = energy change (kWh) / elapsed time (hours)
-If the import counter changes by 0.050 kWh in 60 seconds:
-0.050 / (60 / 3600) = 3.000 kW average over those 60 seconds.
-```
-
-That **does not** establish the power at the last second. The first reading only creates a baseline. The integration preserves counter direction and timestamps, deals conservatively with duplicates and explicit resets, and does not promote unsupported cross-quarter allocation into confirmed measurements.
-
-**Known V0.9.5 field observation:** An implausible ~402 kW counter-derived spike appeared briefly on a new Mode D dashboard. Extremely short deltas and reporting resolution require investigation. Do not rely on an implausible derived value for a billing or safety decision. See [Troubleshooting](troubleshooting.md).
-
-## How to verify a selected entity
-
-Open Developer Tools → States and inspect ID, unit, current value, `state_class` and update cadence. Live W/kW is *power*; cumulative Wh/kWh is *energy*. Do not select house consumption or PV yield in place of grid import. For every mode, compare a measured 15-minute interval with trusted meter data when practical.
-
-Continue to [Configuration](configuration.md).
+Continue to [Configuration](configuration.md) and
+[Getting started](getting-started.md).

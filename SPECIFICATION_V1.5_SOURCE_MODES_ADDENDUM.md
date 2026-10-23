@@ -1,5 +1,10 @@
 # SI Grid Monitor source-mode scope addendum (V0.9.5)
 
+> **Historical experimental specification.** This document records the
+> V0.9.5/V0.9.6 Mode D experiment. It is superseded for V1.0 by
+> `SPECIFICATION_V1.6_V1_SCOPE_ADDENDUM.md`; cumulative-energy input is not an
+> active or selectable V1.0 feature.
+
 This approved addendum supersedes the earlier input-mode roadmap only. The
 frozen `SPECIFICATION.md` remains unchanged.
 
@@ -58,3 +63,15 @@ Unavailable or delayed readings remain explicit.
 An interval that cannot be allocated across a fixed quarter from source evidence
 must not create a confirmed contractual result. Instantaneous or sustained
 forecasts are unavailable when the source cannot support them.
+
+V0.9.6 clarification: cumulative energy is converted only after a configurable
+minimum observation interval (30 seconds by default). Unchanged high-frequency
+state reports do not advance the derivative baseline; a later quantized energy
+step therefore retains its actual energy and uses the full evidenced elapsed
+time. A configurable meter-specific plausibility ceiling (100 kW by default)
+rejects suspicious interval averages before they enter the calculation engine.
+Rejected or ambiguous energy is not redistributed across time or quarter
+boundaries and cannot create a confirmed contractual exceedance. Mode D exposes
+the accepted result as an interval average with explicit start/end timestamps,
+not as instantaneous live power. Its instantaneous and sustained forecasts are
+unsupported.

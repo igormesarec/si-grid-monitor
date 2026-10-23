@@ -1,4 +1,4 @@
-# Developer architecture (V0.9.5)
+# Developer architecture (V1.0 release candidate)
 
 The repository's source code and unit tests are the authoritative implementation reference. This document describes modules and invariants; it is not a commitment that every possible edge case has been validated on live hardware.
 
@@ -8,8 +8,8 @@ The repository's source code and unit tests are the authoritative implementation
 HA state changes / state reports  +  runtime clock
       |
       v
-runtime.py → adapters.py / sources.py
-(source mode, polarity, W/kW/Wh/kWh, timestamps)
+runtime.py → adapters.py
+(A/B/C source mode, polarity, W/kW, timestamps)
       |
       v
 engine.py / sustained.py
@@ -31,10 +31,9 @@ engine.py / sustained.py
 
 | Area | Responsibility |
 |---|---|
-| `config_flow.py` | Guided setup and Options, unit/source validation, dated limits, archive removal confirmation |
+| `config_flow.py` | Guided A/B/C setup and reconfiguration, duplicate-source validation, dated limits, archive removal confirmation |
 | `runtime.py` | HA lifecycle, source listeners, snapshot publication, archival tasks and recoverable shutdown |
 | `adapters.py` | Pure sign/unit normalization for W/kW and source-mode semantics |
-| `sources.py` | Cumulative-counter baselines, interval deltas, reset and export-evidence provenance |
 | `engine.py` | Fixed quarters, time-weighted input, quality, checkpoints and import energy |
 | `sustained.py` | Conservative forward evaluation of constant extra load over intersecting quarters |
 | `sensor.py` | Home Assistant entity exposure and availability rules |
@@ -48,15 +47,19 @@ Inspect exact file names when extending functionality; this overview intentional
 1. A normalized positive signed W/kW reading is **import**. Negative is export.
 2. Confirmed 15-minute contractual demand is derived from **imported** energy, not import minus export.
 3. Gaps, startup, restart and stale samples are not populated with invented zeros.
-4. A bidirectional net-energy counter is not evidence of exact separate import/export when both directions occurred within an interval.
-5. The archive preserves original source, quality, tariff and contracted-power provenance.
-6. Different meter entries have separate IDs, settings, databases and historic queries.
-7. Mode D interval-average-derived kW is *not* instantaneous power.
+4. The archive preserves original source, quality, tariff and contracted-power provenance.
+5. Different meter entries have separate IDs, settings, databases and historic queries.
+6. A canonical live source cannot be claimed by two entries during setup or reconfiguration.
+7. Legacy counter-derived rows are preserved but never promoted to active V1.0 evidence.
 8. Simulated and provisional thresholds never create confirmed contractual exceedance statistics.
 
 ## Restart and checkpoints
 
-Completed quarters are stored durably; the in-progress quarter can be restored from checkpoint if it matches the same source identity and quarter. Unknown downtime remains a gap. Legacy Mode A identity compatibility was specifically addressed in V0.9.5.
+Completed quarters are stored durably; the in-progress quarter can be restored
+from checkpoint if it matches the same source identity and quarter. Unknown
+downtime remains a gap. Mode A identity compatibility is preserved. A legacy
+Mode D → A/B/C migration keeps the archive namespace but begins a distinct
+source epoch.
 
 ## Time and DST
 
@@ -65,7 +68,10 @@ Persist UTC quarter keys; use Europe/Ljubljana local calendar classification for
 ## Source-specific constraints
 
 - A/B/C sample state freshness is currently capped at 60 seconds.
-- Counter interval deltas have different evidence semantics and independent source timestamps.
-- Mode D derivative plausibility needs additional field hardening; do not relax contractual confirmation because a numeric value exists.
+- Mode B input channels retain independent timestamps and are combined only
+  when their evidence is valid.
+- Mode C export capability is unknown by design.
+- Counter conversion code is not an active V1.0 pipeline; only minimal legacy
+  recognition/provenance compatibility remains.
 
 See [Testing](testing-and-validation.md), [Limitations](limitations-and-roadmap.md) and the unchanged root `SPECIFICATION.md` plus versioned addenda.

@@ -10,7 +10,10 @@ The project stores per-entry history in separate SQLite namespaces and uses per-
 
 ## Two entries on the same physical grid connection
 
-You can test different source modes against the same grid connection, but this does **not** give you two independent electricity contracts. Configure matching **real** contracted limits where appropriate, or clearly mark a scenario as simulation. Comparing two modes is useful to learn sensor behavior but does not make a net-energy counter equal to a utility-import meter.
+Two entries observing the same physical connection do **not** create two
+electricity contracts. V1.0 rejects a duplicate canonical source during setup or
+legacy reconfiguration. Use genuinely separate sources/meters, or decide which
+entry owns the source; never merge archives or delete history to bypass the guard.
 
 ## What to verify
 
@@ -24,6 +27,9 @@ You can test different source modes against the same grid connection, but this d
 
 ## Limitations
 
-The automatic selector and multi-entry configuration are implemented in V0.9.5 but still warrant full real-world cross-meter acceptance. If you see another meter's tariff or source values after switching, capture a redacted screenshot and report it.
+The automatic selector and multi-entry configuration are implemented but still
+require release-candidate acceptance on real Home Assistant and Android. If you
+see another meter's tariff or source values after switching, capture a redacted
+screenshot and report it.
 
 See [Installation](installation.md), [Configuration](configuration.md), [History](history-and-archive.md).

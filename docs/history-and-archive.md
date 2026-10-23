@@ -1,6 +1,9 @@
 # History, archive, checkpointing and recovery
 
-SI Grid Monitor stores completed 15-minute quarter **summaries** in an integration-owned SQLite database (V0.9.5 uses schema **6**). Archive namespaces are specific to the configuration entry, and retained data survives ordinary Home Assistant Recorder purges.
+SI Grid Monitor stores completed 15-minute quarter **summaries** in an
+integration-owned SQLite schema-6 database. Archive namespaces are specific to
+the configuration entry, and retained data survives ordinary Home Assistant
+Recorder purges.
 
 ## What it stores
 
@@ -19,6 +22,11 @@ If a new meter begins at 22:22, earlier completed quarters are **before monitori
 ## Source and target changes
 
 Source/sign and dated contract changes have stored epochs/provenance. A change that makes an interval ambiguous must not manufacture a confirmed exceedance. Past rows retain the values and rule status known when recorded.
+
+Reconfiguring a legacy Mode D entry to A/B/C keeps the config-entry ID and
+archive namespace but starts a new source epoch. Historical counter-derived
+quality, targets and provenance are preserved; V1.0 does not relabel those rows
+as confirmed live-power measurements.
 
 ## Home Assistant Recorder audit
 
@@ -42,6 +50,8 @@ The documentation cannot substitute for a tested restore procedure on your speci
 
 ## Retention
 
-The only exposed retention choice in V0.9.5 is **forever**. This is useful for long-term reports but requires disk monitoring and independent backups. "Forever" does not mean immune to filesystem failure, deliberate deletion or lost HA backups.
+The exposed retention choice is **forever**. This is useful for long-term
+reports but requires disk monitoring and independent backups. "Forever" does
+not mean immune to filesystem failure, deliberate deletion or lost HA backups.
 
 See [Multiple meters](multiple-meters.md), [Dashboard guide](dashboard-guide.md), [Testing](testing-and-validation.md).

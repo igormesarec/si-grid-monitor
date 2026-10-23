@@ -7,10 +7,9 @@ A meter's configuration is **independent of other SI Grid Monitor meters**. Repl
 | Field | What to enter | Why it matters |
 |---|---|---|
 | Friendly meter name | e.g. Main Grid, Workshop | Visible in the shared dashboard selector and Devices & services |
-| Source mode | A/B/C/D | Determines units, sign and supported forecasts; [comparison](source-modes.md) |
+| Source mode | A/B/C | Determines direction and export capability; [comparison](source-modes.md) |
 | Source entity/entities | Real HA `sensor.*` identifiers | Must measure the intended grid connection |
 | Positive means import | On or off based on actual sensor behavior | Normalizes sign; wrong polarity reverses import and export |
-| Counter behavior (D) | Import-only, bidirectional net, or separate counters | Distinguishes resets from legitimate reverse flow and measured vs inferred export |
 | Contract validity start/end | Actual inclusive local dates | Prevents silently applying an old contract to a new year |
 | B1–B5 target entry | Five kW values or shared value | Limits are **average imported power per fixed quarter**, not breaker rating |
 | Provenance / record date | Name/source of distributor assignment, optional issue date | Supports reproducible historic interpretations |
@@ -19,7 +18,7 @@ A meter's configuration is **independent of other SI Grid Monitor meters**. Repl
 
 ## Calculation settings
 
-| Option | Default / choices in V0.9.5 | Explanation |
+| Option | Default / V1.0 choices | Explanation |
 |---|---|---|
 | Safety margin | 0.000 kW | Reduces *operational advice* threshold beneath the confirmed contract limit; doesn't change the contract stored in history |
 | Forecast smoothing | **120 seconds**, choose 30/60/90/120/180 | Requires enough fresh data in that *rolling* window; different from a complete 15-minute quarter |
@@ -35,19 +34,30 @@ A screen may still display a simulation threshold field even when simulation is 
 
 - **120-second smoothing**: determines the recent import-power estimate for forecasts.
 - **60-minute sustained horizon**: how long a hypothetical additional constant load is assessed against each intersected 15-minute tariff quarter.
-- **60-second staleness**: in V0.9.5 a live power reading held beyond this limit no longer justifies assumed coverage.
+- **60-second staleness**: a live power reading held beyond this limit no longer justifies assumed coverage.
 
 ### Dated contracted-power assignments
 
 2026 and 2027 have their own rule versions; assigned **contracted-power values** must also carry their true effective dates. Options provide an editor for multiple non-overlapping assignments. Do not extrapolate a 2026 assignment into 2027 without a real new record. The illustrative test values `[3.500, 3.900, 4.100, 4.200, 4.200] kW` are **not default values** or a claim about your installation.
 
-### Changing a source
+### Changing or migrating a source
 
-A sensor, polarity or target change can create a new source/configuration epoch. Historical rows preserve their original context, and ambiguous transition quarters cannot create a confirmed exceedance. When changing from signed power to a cumulative counter, understand that the latter cannot provide equivalent instantaneous evidence.
+A sensor, polarity or target change can create a new source/configuration epoch.
+Historical rows preserve their original context, and ambiguous transition
+quarters cannot create a confirmed exceedance.
+
+For a legacy V0.9.6 Mode D entry, **Reconfigure** explicitly selects A/B/C and
+validates the replacement W/kW source. The same entry ID and SQLite namespace
+remain, while the config-entry unique ID changes to the accepted source identity
+and new measurements use a new epoch. If another entry already owns that source,
+the flow rejects it instead of merging entries or archives.
 
 ### Archive removal
 
-Default ordinary entry removal **keeps** the SQLite archive. Explicit permanent deletion requires a separate entry-scoped confirmation valid for ten minutes; optionally create a backup first. Do not confuse uninstallation with erasing your data. See [History and archives](history-and-archive.md).
+Default ordinary entry removal **keeps** the SQLite archive. Explicit permanent
+deletion requires a separate entry-scoped confirmation valid for ten minutes;
+optionally create a backup first. Removing or deleting an entry is not required
+to migrate a legacy source. See [History and archives](history-and-archive.md).
 
 ## Verifying every setting
 

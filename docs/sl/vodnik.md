@@ -7,9 +7,10 @@
 | **A** | En predznačen senzor moči omrežja W/kW | Preverite, ali pozitivno pomeni **odjem** ali **oddajo** |
 | **B** | Ločen senzor moči odjema in oddaje W/kW | Senzorja morata prikazovati isto omrežno povezavo in dovolj usklajene čase |
 | **C** | En nenegativen senzor moči odjema W/kW | Oddaja je **neznana**, ne izmerjena ničla |
-| **D** | En ali dva števca skupne energije Wh/kWh | Iz razlik izračuna povprečno moč preteklega intervala, ne trenutne moči |
 
-Pri načinu **D** lahko izberete števec, ki narašča samo ob odjemu, en predznačen neto števec (ob odjemu narašča ali pada — izbirna smer), ali ločena števca odjema in oddaje. Neto števec ne more dokazati dejanske ločene uvožene energije, če se smer toka med meritvama spreminja.
+V1.0 podpira samo A/B/C z živimi senzorji moči W/kW. Način D s kumulativnimi
+števci Wh/kWh je bil poskusen v V0.9.5/V0.9.6 in v V1.0 ni izbira za novo
+nastavitev.
 
 ## Osnovni izračuni
 
@@ -39,6 +40,19 @@ Privzeto glajenje je **120 sekund**, časovno obzorje daljše napovedi **60 minu
 
 Vrednost **CAN ADD** se nanaša na matematično energijsko rezervo pri 15-minutnem obračunu. **Ni dovoljenje za večjo trenutno obremenitev** priključka, varovalk, faz, kablov ali inverterja.
 
-Pri načinu D so med testiranjem V0.9.5 opazili kratkotrajno nerealno izpeljano moč približno **402 kW**. To je predmet nadaljnje preveritve; navodila napake ne odpravijo.
+## Nadgradnja starega načina D
+
+V1.0 starega vnosa D ne zažene in ne razlaga Wh/kWh kot W/kW. Nastavitve,
+kontrolna točka, obdobja vira in SQLite arhiv ostanejo ohranjeni. Home Assistant
+prikaže opozorilo. Z dejanjem **Reconfigure** lahko isti vnos izrecno spremenite
+na A/B/C; ID vnosa in arhivski prostor ostaneta enaka, nove meritve pa dobijo
+novo obdobje vira. Če drug vnos že uporablja isti vir, je sprememba zavrnjena.
+
+## Prihodnja funkcionalnost
+
+Podpora kumulativnim števcem energije (samo odjem, predznačen neto števec ali
+ločena števca odjema/oddaje) je rezervirana za prihodnje raziskave intervalov,
+mej četrtin, ponastavitev, kvantizacije in obračunske natančnosti. Datum ponovne
+uvedbe ni določen.
 
 Več podrobnosti v [angleškem priročniku](../index.md), posebej [Troubleshooting](../troubleshooting.md) in [Data quality](../data-quality.md).

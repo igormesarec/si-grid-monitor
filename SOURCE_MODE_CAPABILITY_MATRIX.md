@@ -1,20 +1,35 @@
-# V0.9.5 source-mode capability matrix
+# V1.0 source-mode capability matrix
 
-| Capability | Signed power | Separate power | Import-only power | Energy counters |
-|---|---:|---:|---:|---:|
-| Input units | W/kW | W/kW | W/kW | Wh/kWh |
-| Signed grid power | Measured/normalized | Import minus export | Import (nonnegative) | Derived interval average; signed for net-counter mode |
-| Import power | Known | Known separately | Known | Derived from import counter; inferred only in net mode |
-| Export power | Known | Known separately | Unknown | Unknown for import-only; measured separately or inferred from net delta |
-| Quarter import demand | Supported | Supported, never netted | Supported | Counter-derived when separately evidenced; unconfirmed for net deltas |
-| Instant forecast | Supported when fresh | Supported when both fresh | Supported conservatively | Unavailable |
-| Sustained forecast | Supported when covered | Supported when covered | Conservative; no surplus claim | Unavailable |
-| Generated entities | None | None | None | Derived import/export power |
-| Recorder startup backfill | Existing Mode A behavior | Not automatic | Not automatic | Not automatic |
+| Capability | A: signed power | B: separate power | C: import-only power |
+|---|---:|---:|---:|
+| Required HA unit | W/kW | W/kW + W/kW | W/kW |
+| Direct live power | Yes | Yes | Yes |
+| Imported power/energy | Measured | Measured separately | Measured |
+| Exported power/energy | Measured | Measured separately | Unknown |
+| Configurable sign | Yes | Not needed | Not needed |
+| Import-only contractual demand | Yes | Yes; export never nets import | Yes |
+| Instant forecast | Yes | Yes | Yes |
+| Smoothed forecast | Yes | Yes | Yes |
+| Sustained forecast | Yes | Yes | Yes, without export-surplus credit |
+| Historical archive | Schema 6 | Schema 6 | Schema 6 |
 
-Mode D behavior choices are **import-only**, **bidirectional net** (selectable
-polarity, default increase = import), and **separate import/export**. Separate
-counters keep independent timestamps and baselines. The Mode D entities belong
-to the SI Grid Monitor config entry, use stable unique IDs, and are recreated by
-normal platform setup without creating Home Assistant helpers or modifying HA
-`.storage` internals.
+All modes use the same engine, tariff calendar, fixed-quarter boundaries,
+forecast code and per-entry SQLite archive. Mode B rejects contradictory
+simultaneous positive import/export samples and treats asynchronously timestamped
+channels conservatively. Mode C never manufactures export evidence.
+
+## Unsupported legacy Mode D
+
+V0.9.5/V0.9.6 cumulative-energy entries are recognized only for safe upgrade.
+They are not started, polled, converted or shown as a selectable V1.0 mode. Their
+configuration, checkpoint metadata, source epochs and archived rows are retained.
+Explicit reconfiguration to A/B/C preserves the entry/archive identity and starts
+a new source epoch. A duplicate source is rejected rather than merged.
+
+## Future functionality
+
+Cumulative energy-counter support, including import-only counters,
+bidirectional net-energy counters and separate import/export counters, is
+reserved for future development. It requires additional research into
+measurement intervals, quarter-boundary alignment, counter resets, quantization
+and contractual demand accuracy. No implementation date is committed.

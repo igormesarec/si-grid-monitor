@@ -7,7 +7,9 @@
 - Ability to restart Home Assistant and create a full backup.
 - For contractual advice: real B1–B5 limits and their validity dates from your electricity distributor.
 
-The integration calculates locally. It does not require user-provided cloud credentials, an additional database server, manually pasted Lovelace YAML, or a manually created derivative helper for Mode D.
+The integration calculates locally. It does not require user-provided cloud
+credentials, an additional database server, manually pasted Lovelace YAML or
+JavaScript resource registration.
 
 ## Install through HACS
 
@@ -36,7 +38,57 @@ For a disposable test system only, copy the repository's `custom_components/si_g
 5. Verify that historical completed quarters and source epochs remain intact.
 6. Allow a full new 15-minute quarter to complete and inspect coverage.
 
-V0.9.5 preserves legacy Mode A entry IDs and source identity in code, but a successful automated test is not a guarantee that your specific installation has been accepted. Test with a backup.
+The V1.0 release candidate preserves Mode A/B/C entry IDs, entity identities and
+schema-6 archives in automated tests, but that does not establish acceptance on
+your Home Assistant installation. Test with a backup.
+
+## V0.9.6 → V1.0 release-candidate migration
+
+V0.9.6 is the current merged version. V1.0.0 in PR #16 is not released yet.
+Use a copied/test Home Assistant instance until the release candidate is accepted.
+
+### Backup first
+
+1. Create a full Home Assistant backup.
+2. Record every SI Grid Monitor entry ID, friendly name, entity unique IDs,
+   source mode, source entity, polarity and B1–B5 assignments.
+3. Preserve `.storage/si_grid_monitor_<entry_id>.db` and its associated WAL/SHM
+   files using a consistent stopped-HA or supported backup procedure.
+4. Record archive row counts, oldest/newest quarter, source epochs and current
+   checkpoint information where available.
+
+### Existing Mode A/B/C entries
+
+Upgrade through HACS, restart Home Assistant and confirm the same entry, entities
+and archive reopen. Check sign/direction, target assignment, current checkpoint,
+history totals and the next completed quarter. Do not remove and recreate the
+entry as an upgrade step.
+
+### Legacy experimental Mode D entries
+
+V1.0 detects `source_mode=cumulative_energy` before constructing a runtime. It:
+
+1. disables the old Mode D measurement runtime;
+2. preserves the configuration, schema-6 database, completed rows, checkpoint
+   and source/configuration epochs;
+3. displays an unsupported Mode D notice in Home Assistant;
+4. does not interpret Wh/kWh values as W/kW;
+5. does not silently reclassify historical counter-derived rows.
+
+Use the entry's **Reconfigure** action to select Mode A, B or C and a valid live
+W/kW source. Successful reconfiguration retains the same config-entry ID and
+SQLite namespace. The config-entry unique ID is rebound to the accepted live
+source, and subsequent measurements start a new source epoch, separate from the
+legacy Mode D history.
+
+If another SI Grid Monitor entry already owns the selected canonical source,
+reconfiguration is rejected as a duplicate. Nothing is merged. Select a genuinely
+different grid sensor, or decide which existing entry should own that source;
+do not delete archives merely to bypass the guard.
+
+If in-place reconfiguration is unsuitable, keep the old database and create a
+separate supported meter. A newly created entry has a new archive namespace and
+does not automatically attach the old database.
 
 ## Multiple meters
 
@@ -48,7 +100,11 @@ Restoring an earlier integration version may not understand newly written metada
 
 ## Uninstall / archive deletion
 
-Native removal **retains the archive by default**. Explicit permanent deletion is possible using an entry-specific Options confirmation, valid for 10 minutes, with optional SQLite backup before actual removal. It should not be used casually. See [History and archives](history-and-archive.md).
+Native removal **retains the archive by default**, including a disabled legacy
+Mode D archive. Explicit permanent deletion is possible using an entry-specific
+Options confirmation, valid for 10 minutes, with optional SQLite backup before
+actual removal. It should not be used casually and is never required for an
+upgrade. See [History and archives](history-and-archive.md).
 
 ## Documentation and security
 

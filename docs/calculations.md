@@ -1,6 +1,7 @@
 # How SI Grid Monitor calculates demand and headroom
 
-This is a code-oriented explanation of V0.9.5 behavior, not an official bill calculation. Input measurement cadence and validity determine accuracy.
+This explains the proposed V1.0 release-candidate behavior, not an official bill
+calculation. Input measurement cadence and validity determine accuracy.
 
 ## Fixed time boundaries
 
@@ -59,21 +60,25 @@ It is a repeat/persistence estimate, **not** a weather, PV-production, tariff-pr
 
 ## Sampling, staleness and gaps
 
-Live power is integrated piecewise-constant while fresh, **up to 60 seconds** from its timestamp in V0.9.5. Beyond this the remainder becomes a gap, rather than an invented zero or indefinite power hold. The usual smoothing window is 120 seconds and must have full valid coverage for a supported smoothed prediction.
+Live power is integrated piecewise-constant while fresh, **up to 60 seconds**
+from its timestamp. Beyond this the remainder becomes a gap, rather than an
+invented zero or indefinite power hold. The usual smoothing window is 120
+seconds and must have full valid coverage for a supported smoothed prediction.
 
 A new setup or restart mid-quarter can make that quarter incomplete. A fully observed later quarter can restore sustained forecasting in A/B/C. The archive records incomplete and missing separately.
 
-## Mode D: counter-delta averages
+## Historical counter-derived records
 
-For a cumulative import counter:
-**P-average (kW) = ΔE (kWh) / Δt (hours)**.
-
-If the counter rises 0.050 kWh across 60 seconds, past-interval average import = **3.000 kW**, *not* the instantaneous power at interval end. Independent import/export counter channels have their own timestamps. Bidirectional net counters cannot reconstruct separate import and export inside their update interval, so contractual demand cannot be confidently confirmed from net alone.
-
-Mode D's short-interval quantization and derivative spikes remain a V0.9.5 test concern.
+V0.9.5/V0.9.6 experimented with counter-delta averages. V1.0 does not accept
+cumulative-energy counters as active sources. Existing rows keep their
+`counter_derived` or incomplete quality and must not be silently converted to
+confirmed live-power measurements. This historical provenance is separate from
+the A/B/C calculation path described above.
 
 ## Precision
 
-Use internal numeric values for calculations; a display rounded to 0.000 kWh is **not** evidence of physically zero energy. V0.9.5 currently shows mixed two- and three-decimal UI values. A universal three-decimal presentation is a **future application change**, not part of this documentation PR.
+Use internal numeric values for calculations; a display rounded to `0.000 kWh`
+is not evidence of physically zero energy. V1.0 presents kW/kWh with three
+decimals while calculations and archive storage retain full precision.
 
 Continue to [Forecasts](forecasts.md), [Data quality](data-quality.md), [Tariffs](tariffs.md).

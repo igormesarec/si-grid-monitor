@@ -26,8 +26,8 @@
 | Checkpoint | Saved in-progress state for recovery after restart |
 | HACS | Home Assistant Community Store, which installs supported community integrations |
 | DST | Daylight saving time; causes 92/100-quarter local days at switchovers |
-| Counter-derived | Average power inferred from changes in cumulative energy |
-| Net counter | One signed cumulative value representing net import-minus-export over a period |
+| Counter-derived | Historical V0.9.5/V0.9.6 provenance inferred from cumulative-energy changes; not an active V1.0 source |
+| Legacy Mode D | Preserved experimental cumulative-counter configuration/history disabled in V1.0 |
 | Provisional | Assumption for an unverified future tariff period, never a confirmed official rule |
 | Simulation | Hypothetical threshold used for testing rather than official contract statistics |
 

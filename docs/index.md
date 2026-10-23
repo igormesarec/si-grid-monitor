@@ -2,7 +2,10 @@
 
 **SI Grid Monitor** is an independent, HACS-compatible Home Assistant integration for monitoring Slovenia's fixed 15-minute imported-electricity demand. It helps you understand how much power you have imported in each billing interval, how this relates to your contracted power in tariff blocks B1–B5, and whether additional demand is likely to fit within the remaining quarter.
 
-**Version documented: V0.9.5 beta.** This is monitoring and decision support, not a certified utility meter, automatic load controller, or electrical safety device.
+**Version documented: proposed V1.0.0 release candidate.** V0.9.6 remains the
+current merged application until PR #16 is accepted. This is monitoring and
+decision support, not a certified utility meter, automatic load controller, or
+electrical safety device.
 
 ## Why use it?
 
@@ -11,15 +14,15 @@ A household may have a heat pump, an EV charger, solar PV and ordinary appliance
 ### The workflow at a glance
 
 ```text
-Grid-connected sensor (W, kW, Wh or kWh)
-       ↓ choose one of four source modes
-Normalize sign, timestamps and units
+Grid-connected live-power sensor (W or kW)
+       ↓ choose Mode A, B or C
+Normalize direction, timestamps and units
        ↓
 Import-only fixed 15-minute energy calculation
        ↓
 Apply dated B1–B5 contracted limits and tariff rules
        ↓
-Overview · Today · Period · Blocks · Exceedances · History · Calendar
+Overview · Today · Period · Blocks · Exceedances · History · Tariff Calendar
        ↓
 Permanent per-meter SQLite archive and measurement-quality audit
 ```
@@ -36,7 +39,7 @@ Permanent per-meter SQLite archive and measurement-quality audit
 
 | Display | Meaning |
 |---|---|
-| Import / export power | Current source-based value for live-power modes; a **past-interval estimate** for cumulative counters |
+| Import / export power | Current source-based value; export is explicitly unknown in Mode C |
 | Quarter import (kWh) | Recorded imported energy so far in the current :00/:15/:30/:45 quarter |
 | Quarter demand (kW) | Imported energy divided by 0.25 hour, when complete evidence exists |
 | CAN ADD THIS QUARTER | Modelled additional load for the remainder of this one interval, **not** electrical connection capacity |
@@ -57,5 +60,13 @@ Permanent per-meter SQLite archive and measurement-quality audit
 **Slovenščina:** [Hiter začetek](sl/zacetek.md) · [Uporaba in razlaga](sl/vodnik.md)
 
 Source: [GitHub repository](https://github.com/igormesarec/si-grid-monitor). The normative specification remains in the root `SPECIFICATION.md` and versioned addenda. The manual explains the currently implemented behavior; it does not modify those specifications.
+
+## Future functionality
+
+Cumulative energy-counter support is not active in V1.0. Import-only,
+bidirectional-net and separate cumulative counters remain future research because
+interval allocation, resets, quantization and contractual accuracy require more
+work. No return version is promised. Historical V0.9.5/V0.9.6 Mode D archives
+remain preserved and visibly identified by their original provenance.
 
 > **Safety:** A positive CAN ADD estimate does not confirm that your wiring, breaker, meter connection, inverter, or individual phases can safely supply additional instantaneous power. Always follow electrical ratings and professional advice.

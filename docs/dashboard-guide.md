@@ -4,9 +4,15 @@ The single SI Grid Monitor sidebar panel shows the **active meter** in a selecto
 
 ## Overview
 
-The opening card covers the fixed quarter (e.g. 22:30–22:45) with a countdown. Its **IMPORT** and **EXPORT** readings represent live source power for Modes A/B/C, but Mode D can only derive **average power over past counter intervals**, not instantaneous load. A 0.000 kWh measurement is different from unknown.
+The opening card covers the fixed quarter (e.g. 22:30–22:45) with a countdown.
+Its **IMPORT** and **EXPORT** readings represent supported live-source power.
+Mode C reports export as unknown. A measured `0.000` is different from unknown.
 
-The live power chart (red import, green export where known, blue smoothing, dashed forecast, target reference) and quarter-energy progression are two different graphs: kW is a rate, kWh is accumulated energy. Missing traces must not be read as measured zero. Mode D's V0.9.5 rendering is still being improved; [known limits](limitations-and-roadmap.md).
+The live power chart (red import, green export where known, blue smoothing,
+dashed forecast and target references) and quarter-energy progression are two
+different graphs: kW is a rate, kWh is accumulated energy. Missing traces must
+not be read as measured zero. Values use three decimals while axes remain
+adaptively scaled.
 
 Other Overview fields:
 
@@ -43,7 +49,11 @@ Shows confirmed import-demand exceedances per **completed** quarter, not arbitra
 
 ## History
 
-Permanent SQLite explorer supports date, block, quality, source-epoch and exceedance filters, pagination and per-quarter details. **Completed intervals before monitoring** are counted separately from missing intervals after monitoring began. Source provenance strings may be long in V0.9.5 and are primarily diagnostics.
+Permanent SQLite explorer supports date, block, quality, source-epoch and
+exceedance filters, pagination and per-quarter details. **Completed intervals
+before monitoring** are counted separately from missing intervals after
+monitoring began. Historical counter-derived rows may remain visible, but their
+legacy provenance is not promoted to live-power evidence.
 
 An archive stores **quarter summaries**, not precise historical instantaneous peaks or an original second-by-second graph. The administrator Recorder audit is a separate, controlled reconstruction process; review candidates before any approved write.
 

@@ -9,19 +9,20 @@ In Home Assistant go to **Developer Tools → States** (or **Settings → Device
 Check:
 
 - The **entity ID** (such as `sensor.grid_power`): choose the actual entity from your system; examples are not default names.
-- The **unit**: live power is W/kW, cumulative energy is Wh/kWh.
-- **State class**: a Mode D counter should normally be `total` or `total_increasing`.
+- The **unit**: V1.0 sources must report live power in W or kW. A Wh/kWh
+  cumulative-energy entity is not a supported V1.0 setup source.
 - **Sign or direction**: on some SolarEdge grid sensors a positive reading is **export**, negative is **import**. Confirm with a known household load.
 - **Freshness**: a source that goes without a new timestamp for over 60 seconds may create data gaps in V0.9.5.
 
-A live W/kW grid sensor is usually preferable to a Wh/kWh counter if you need instantaneous forecasts.
+Select a live W/kW grid sensor. Cumulative Wh/kWh counters were experimental in
+V0.9.5/V0.9.6 and are not active in the V1.0 release candidate.
 
 ## 2. Add a meter
 
 Open **Settings → Devices & services → Add integration → SI Grid Monitor**.
 
 1. Give it a memorable name, e.g. `Main Grid`.
-2. Select [Mode A, B, C or D](source-modes.md) based on the **actual** sensor, not the features you hope to see.
+2. Select [Mode A, B or C](source-modes.md) based on the **actual** live-power sensor, not the features you hope to see.
 3. Select the sensor entity or entities and review any polarity preview.
 4. Enter the official five contracted-power targets B1–B5 or the shared target, with genuine local validity dates. A new meter does **not** automatically inherit an existing meter's contracted-power contract.
 5. Leave simulation **off** for normal monitoring. The 120-second smoothing and 60-minute sustained horizon are reasonable initial defaults.
@@ -31,7 +32,8 @@ Open **Settings → Devices & services → Add integration → SI Grid Monitor**
 
 For signed Mode A, check that an appliance switched on **increases imported grid power** when the home is drawing from the grid. If the reading goes toward export instead, change the polarity option. Check that the selected input is not in kWh when the setup expects kW. Incorrect direction invalidates the calculation; do not compensate with a different contracted limit.
 
-Mode C knows imported power but **does not know export**; the interface should show export as unknown rather than an asserted measured zero. Mode D's derived kW means *average between counter readings*, not power now.
+Mode C knows imported power but **does not know export**; the interface should
+show export as unknown rather than an asserted measured zero.
 
 ## 4. Let an uninterrupted full quarter pass
 
@@ -57,6 +59,9 @@ With a **2.600 kW** contracted limit, the quarter budget is **0.650 kWh**. If th
 
 ## 6. If something looks wrong
 
-If import shows **402 kW** at a normal home, stop treating that derived reading as trustworthy and inspect the source timestamps and units. Such short-interval counter spikes have been observed during V0.9.5 Mode D testing and are a known issue under investigation; see [Troubleshooting](troubleshooting.md).
+If a normal household displays an implausible power value, verify that the
+selected source is genuinely W/kW, has the expected scale and measures the grid
+connection. Do not select cumulative Wh/kWh energy, house consumption or PV
+production as a live grid-power source. See [Troubleshooting](troubleshooting.md).
 
 For help with a particular field, see [Configuration](configuration.md); for the tabs, see [Dashboard guide](dashboard-guide.md).

@@ -6,7 +6,7 @@ This is as important as the energy value. **A number on the screen is not by its
 |---|---|
 | Measured / aligned | Supported observations for the interval; source accuracy still depends on the hardware |
 | Reconstructed | Integrated from supported timestamped power readings, not certified billing-meter exact |
-| Counter-derived | Based on difference of cumulative energy totals across an observed time interval |
+| Counter-derived | Historical V0.9.5/V0.9.6 evidence based on cumulative-energy differences; not an active V1.0 source |
 | Incomplete | Part of required quarter evidence missing, ambiguous, or deliberately contractually unconfirmed |
 | Unavailable | The requisite source/target evidence cannot support a value |
 | Missing | Expected **completed monitored** quarter has no archived row |
@@ -14,8 +14,8 @@ This is as important as the energy value. **A number on the screen is not by its
 | Confirmed exceedance | Complete eligible quarter, genuine dated official target and sufficient import evidence |
 | Unconfirmed | Observation or contract rule cannot establish a legally definitive exceedance status |
 | Unknown export | Not measured; do not show as measured 0.000 kWh |
-| Inferred net export | Directional implication from net counter differences; not directly separate import/export totals |
-| Mixed known/unknown export | Export was measured for some portions of a quarter but not all |
+| Inferred net export | Historical net-counter implication; not directly measured separate export |
+| Mixed known/unknown export | Historical export evidence existed for only part of a quarter |
 | Provisional | Derived from an opt-in unverified future tariff rule and excluded from confirmed statistics |
 | Simulation | Based on hypothetical user threshold, not original contractual limits |
 
@@ -29,14 +29,18 @@ A **full 120-second smoothing window** is not the same as **complete quarter imp
 
 Mode C knows imported power but not exported power. That is enough to calculate import-only demand with suitable live input, not enough to claim exported energy was measured.
 
-## Net cumulative counters
+## Historical cumulative-counter provenance
 
-One signed net cumulative counter may conceal both import and export occurring between two samples. For example, 0.100 kWh import followed by 0.100 kWh export can produce a zero net change. Therefore net-derived contractual import-only demand is **not confirmed**, even if timestamps are valid.
+Mode D is not supported in V1.0, but its archived V0.9.5/V0.9.6 rows remain.
+A signed net cumulative counter could conceal import and export between samples;
+therefore those rows are not silently promoted to confirmed import-only demand.
+Unknown historical export remains unknown, never measured zero.
 
 ## Reconstructed and historical values
 
 The SQLite archive retains completed quarter summaries, stored rule and target provenance, source epochs, coverage, and quality. It does not preserve a certified second-by-second peak or let the UI reconstruct missing details.
 
-On 2026-10-22, real testing of a new Mode D meter showed two incomplete quarters with partial positive-net observations. This is correct caution, not proof of no exceedance.
+Historical Mode D rows can remain incomplete or counter-derived after upgrade.
+Preserving that quality is correct caution, not proof of no exceedance.
 
 See [History and archive](history-and-archive.md) and [Forecasts](forecasts.md).

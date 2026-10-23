@@ -27,7 +27,12 @@ Rendered Playwright layout needs compatible Chromium installation (GitHub Action
 - Test signed-power import/export polarity with known loads.
 - Test Mode B independent import/export source timestamps.
 - Test Mode C single import with export unknown; verify initial incomplete quarter and later recovery of sustained advice after a fully observed quarter.
-- Test Mode D import-only, bidirectional net and separate counters, including zero delta, reset, counter resolution, interval boundaries and unexpected derivatives.
+- Upgrade a copied V0.9.6 Mode D entry. Confirm no runtime starts, Wh/kWh is not
+  interpreted as power, its schema-6 rows/epochs/checkpoint remain unchanged,
+  and another A/B/C entry continues to run.
+- Reconfigure that copied entry to each supported mode. Confirm the entry/archive
+  namespace stays constant, the live source starts a new epoch, and a source
+  already owned by another entry is rejected without mutation.
 - Verify actual 2026/2027 dated block limits and next transitions.
 - Check completion, missing/pre-monitoring counts, simulated vs confirmed exceedances and provenance across History.
 - Try two independently configured meters, selector persistence, restart and sensor unavailability.
@@ -36,7 +41,10 @@ Rendered Playwright layout needs compatible Chromium installation (GitHub Action
 
 ## Documentation-only PR acceptance
 
-A documentation PR should change only `README.md`, `docs/**`, or documentation-only validation/preview configuration. It must not change runtime code, constants, database schema, forecasts, entity values or version number.
+A documentation PR should change only `README.md`, `docs/**`, root documentation
+references or documentation-only validation/preview configuration. It must not
+change runtime code, constants, database schema, forecasts, entity values or
+version number.
 
 Verify Markdown links resolve relative to their file locations. Verify there is no claim of a public GitHub Pages website unless Pages has actually been deployed. Do not include fabricated or uncited hardware screenshots.
 
