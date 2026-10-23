@@ -7,9 +7,7 @@
     "error": {
       "invalid_contracted_power_periods": "Contracted-power assignments are invalid, overlapping, or have an end date before the start date.",
       "source_not_found": "The selected sensor does not exist. Check the entity and try again.",
-      "invalid_source_unit": "The selected sensor has an unsupported unit. Power requires W or kW; energy counters require Wh or kWh.",
-      "invalid_counter_state_class": "The cumulative sensor must use Home Assistant state class total or total_increasing.",
-      "invalid_net_counter_state_class": "A bidirectional net-energy counter must use Home Assistant state class total. total_increasing cannot represent legitimate reverse-flow decreases.",
+      "invalid_source_unit": "The selected sensor has an unsupported unit. V1.0 live-power sources require W or kW.",
       "invalid_source_value": "The current sensor state is not numeric. Wait for a valid reading or select another sensor.",
       "negative_nonnegative_source": "This source must be nonnegative. Select a dedicated import/export sensor or use signed-power mode.",
       "conflicting_power_sources": "Import and export are both positive. The two readings cannot safely represent one grid connection.",
@@ -18,48 +16,58 @@
     "step": {
       "user": {
         "title": "Meter source",
-        "description": "Recommended: choose signed live grid power when available. Otherwise use separate import/export power, import-only power for a one-way sensor, or cumulative counters when only Wh/kWh energy entities exist. Every mode feeds the same import-only billing engine.",
+        "description": "Recommended: choose signed live grid power when available. Otherwise use separate import/export power or import-only power. V1.0 supports live W/kW sensors only.",
         "data": {
           "meter_name": "Friendly meter name",
           "source_mode": "Source mode"
         },
         "data_description": {
           "meter_name": "A clear name shown on every dashboard page, for example Main Grid, Garage or Workshop.",
-          "source_mode": "Choose signed power, separate import/export power, import-only power, or cumulative energy counters."
-        }
-      },
-      "counter_type": {
-        "title": "Cumulative counter type",
-        "description": "Choose how this counter behaves. SI Grid Monitor creates its own derived-power entities; no YAML, Template Sensor or Derivative helper is needed.",
-        "data": {
-          "counter_behavior": "Counter behavior",
-          "counter_min_observation_seconds": "Minimum counter observation time",
-          "counter_max_plausible_power_kw": "Maximum plausible interval-average power"
-        },
-        "data_description": {
-          "counter_behavior": "Import-only counters never decrease during export. Bidirectional net counters may increase or decrease; choose the direction on the next screen. Separate counters preserve independently measured import and export. A net counter may use state class total; an import-only or separate monotonic counter normally uses total_increasing.",
-          "counter_min_observation_seconds": "Counter changes observed sooner than this are accumulated instead of converted into a misleading spike. Default 30 seconds. Energy is retained until enough observation time exists.",
-          "counter_max_plausible_power_kw": "Meter-specific safety ceiling for a derived interval average. Values above it are rejected as anomalous and cannot create a confirmed exceedance. This is not the contractual target or breaker rating."
+          "source_mode": "Choose signed power, separate import/export power, or import-only power."
         }
       },
       "meter": {
         "title": "Measurement source",
-        "description": "Choose the sensor fields shown for this source mode. Power accepts W/kW; cumulative energy accepts Wh/kWh.",
+        "description": "Choose the live grid-power sensor fields shown for this source mode. V1.0 accepts W or kW.",
         "data": {
           "power_entity": "Grid power sensor",
           "positive_means_import": "Positive source values mean IMPORT",
           "import_power_entity": "Import power sensor",
-          "export_power_entity": "Export power sensor",
-          "import_energy_entity": "Cumulative imported-energy sensor",
-          "export_energy_entity": "Cumulative exported-energy sensor (optional)"
+          "export_power_entity": "Export power sensor"
         },
         "data_description": {
           "power_entity": "Select the grid-connection power sensor (W or kW), not total house consumption or PV production. Current readings will be normalized into import (+) and export (−).",
-          "positive_means_import": "For live power, enable if a positive reading means grid import. For a bidirectional net-energy counter, enable if the counter increases during import (default); disable if it increases during export. Review the preview before continuing.",
+          "positive_means_import": "Enable if a positive live-power reading means grid import; disable for reversed sensor polarity. Review the preview before continuing.",
           "import_power_entity": "A nonnegative W or kW grid-import reading.",
-          "export_power_entity": "A nonnegative W or kW grid-export reading.",
-          "import_energy_entity": "Select a Wh or kWh counter from Settings > Devices & services > Entities. For bidirectional-net mode this is the one signed/net counter; for the other counter modes it is cumulative import.",
-          "export_energy_entity": "For separate-counter mode only: an optional cumulative Wh or kWh export counter. Without it, export remains unknown."
+          "export_power_entity": "A nonnegative W or kW grid-export reading."
+        }
+      },
+      "reconfigure": {
+        "title": "Reconfigure measurement source",
+        "description": "Choose a supported V1.0 live-power mode. The same configuration entry and SQLite archive are preserved; accepted measurements begin a new source epoch.",
+        "data": {
+          "meter_name": "Friendly meter name",
+          "source_mode": "Supported source mode"
+        },
+        "data_description": {
+          "meter_name": "The existing meter title may be retained or changed without changing its archive namespace.",
+          "source_mode": "Choose one of the three supported live-power modes. Cumulative energy is not accepted in V1.0."
+        }
+      },
+      "reconfigure_meter": {
+        "title": "Select replacement live-power source",
+        "description": "Select W/kW entities only. Legacy Mode D counter settings and archived rows remain preserved and are never reinterpreted.",
+        "data": {
+          "power_entity": "Grid power sensor",
+          "positive_means_import": "Positive source values mean IMPORT",
+          "import_power_entity": "Import power sensor",
+          "export_power_entity": "Export power sensor"
+        },
+        "data_description": {
+          "power_entity": "Signed W/kW power at the grid connection.",
+          "positive_means_import": "Enable when positive values mean grid import; disable for reversed sensor polarity.",
+          "import_power_entity": "A nonnegative W/kW grid-import sensor.",
+          "export_power_entity": "A nonnegative W/kW grid-export sensor."
         }
       },
       "polarity_preview": {
@@ -169,25 +177,25 @@
         "title": "SI Grid Monitor settings",
         "menu_options": {
           "settings": "Calculation and meter settings",
+          "legacy_mode_d": "Legacy Mode D upgrade information",
           "assignments": "Manage contracted-power assignments",
           "add_assignment": "Add contracted-power assignment",
           "archive_removal": "Archive retention or permanent deletion"
         }
+      },
+      "legacy_mode_d": {
+        "title": "Mode D is not supported in V1.0",
+        "description": "{meter} uses a legacy cumulative-energy source. Its configuration and SQLite archive are preserved. Use the integration's Reconfigure action to select signed, separate import/export, or import-only live power; this keeps the entry and archive identity and creates a new source epoch."
       },
       "settings": {
         "title": "Calculation and meter settings",
         "description": "Changing source or polarity creates a new configuration epoch. Unavailable or stale advice is never converted to zero.",
         "data": {
           "meter_name": "Friendly meter name",
-          "counter_behavior": "Counter behavior",
-          "counter_min_observation_seconds": "Minimum counter observation time",
-          "counter_max_plausible_power_kw": "Maximum plausible interval-average power",
           "power_entity": "Grid power sensor",
           "positive_means_import": "Positive source values mean import",
           "import_power_entity": "Import power sensor",
           "export_power_entity": "Export power sensor",
-          "import_energy_entity": "Cumulative imported-energy sensor",
-          "export_energy_entity": "Cumulative exported-energy sensor (optional)",
           "allow_provisional_tariff": "Allow provisional continuation for unverified years",
           "safety_margin_kw": "Safety margin",
           "smoothing_seconds": "Forecast smoothing window",
@@ -198,15 +206,10 @@
         },
         "data_description": {
           "meter_name": "The name shown in the shared dashboard meter selector and on every tab.",
-          "counter_behavior": "Choose import-only, bidirectional net, or separate cumulative import/export counters. Changing this creates new source provenance; it does not rewrite history.",
-          "counter_min_observation_seconds": "Accumulate quantized counter changes for at least this many seconds before deriving an interval average.",
-          "counter_max_plausible_power_kw": "Reject a derived interval average above this meter-specific ceiling. Rejected energy remains unallocated and cannot confirm a contractual exceedance.",
           "power_entity": "Select the grid-connection power sensor (W or kW), not total house consumption or PV production. Current readings will be normalized into import (+) and export (−).",
-          "positive_means_import": "For live power, enable if a positive reading means grid import. For a bidirectional net-energy counter, enable if the counter increases during import (default); disable if it increases during export.",
+          "positive_means_import": "Enable if a positive live-power reading means grid import; disable for reversed sensor polarity.",
           "import_power_entity": "Nonnegative W/kW import source for this existing mode.",
           "export_power_entity": "Nonnegative W/kW export source for this existing mode.",
-          "import_energy_entity": "Wh/kWh total or total-increasing imported-energy counter.",
-          "export_energy_entity": "Optional Wh/kWh total or total-increasing exported-energy counter.",
           "allow_provisional_tariff": "Opt in to explicitly provisional continuation of the 2027 block pattern for unverified years 2028–2030. Without opt-in no future block/limit is claimed as confirmed.",
           "safety_margin_kw": "Optional planning buffer (kW) subtracted from the agreed limit when calculating operational headroom. Default 0.00 kW; does not change the contract.",
           "smoothing_seconds": "Averages recent signed power for the end-of-quarter forecast. 30 s reacts faster; 120 s is steadier but slower to follow changes.",
@@ -312,20 +315,18 @@
       }
     }
   },
+  "issues": {
+    "legacy_mode_d_unsupported": {
+      "title": "Legacy cumulative-energy meter needs reconfiguration",
+      "description": "{meter} uses Mode D cumulative energy counters, which are not supported in SI Grid Monitor V1.0. Your archived data and configuration have been preserved. Reconfigure this entry with a supported live power sensor using Mode A, B or C."
+    }
+  },
   "selector": {
     "source_mode": {
       "options": {
         "signed_power": "Signed live power",
         "separate_power": "Separate import/export power",
-        "import_only": "Import-only power",
-        "cumulative_energy": "Cumulative energy counters"
-      }
-    },
-    "counter_behavior": {
-      "options": {
-        "import_only": "Import-only cumulative counter",
-        "net": "Bidirectional net-energy counter",
-        "separate": "Separate cumulative import/export counters"
+        "import_only": "Import-only power"
       }
     },
     "archive_removal_action": {
@@ -345,12 +346,6 @@
     "sensor": {
       "source_mode": {
         "name": "Source mode"
-      },
-      "derived_import_power": {
-        "name": "Counter-derived import interval-average power"
-      },
-      "derived_export_power": {
-        "name": "Counter-derived export interval-average power"
       },
       "current_power": {
         "name": "Current signed grid power"

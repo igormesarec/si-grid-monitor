@@ -44,7 +44,7 @@ your Home Assistant installation. Test with a backup.
 
 ## V0.9.6 → V1.0 release-candidate migration
 
-V0.9.6 is the current merged version. V1.0.0 in PR #16 is not released yet.
+V1.0.0 code is now merged into `main` (PR #16), but has not yet passed real Home Assistant acceptance as a stable release.
 Use a copied/test Home Assistant instance until the release candidate is accepted.
 
 ### Backup first

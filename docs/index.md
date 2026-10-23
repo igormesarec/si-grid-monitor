@@ -2,8 +2,8 @@
 
 **SI Grid Monitor** is an independent, HACS-compatible Home Assistant integration for monitoring Slovenia's fixed 15-minute imported-electricity demand. It helps you understand how much power you have imported in each billing interval, how this relates to your contracted power in tariff blocks B1–B5, and whether additional demand is likely to fit within the remaining quarter.
 
-**Version documented: proposed V1.0.0 release candidate.** V0.9.6 remains the
-current merged application until PR #16 is accepted. This is monitoring and
+**Version documented: V1.0.0 release candidate.** V1.0 three-mode code is now
+merged into `main` via PR #16; it is not yet accepted as a stable release. This is monitoring and
 decision support, not a certified utility meter, automatic load controller, or
 electrical safety device.
 

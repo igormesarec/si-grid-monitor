@@ -4,6 +4,30 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+## [1.0.0] - release candidate
+
+- Reduced active input scope to three live-power modes: signed, separate
+  import/export, and import-only W/kW sensors.
+- Removed cumulative-counter setup, options, conversion runtime, listeners,
+  derived entities and live dashboard presentation.
+- Added safe legacy Mode D detection before runtime construction. Existing
+  configuration and schema-6 archives remain untouched; Wh/kWh values are never
+  reinterpreted as W/kW.
+- Added an explicit same-entry A/B/C reconfiguration path and bilingual repair
+  notice while retaining historical counter-derived provenance.
+- Reconfiguration now rejects a live source already owned by another entry,
+  preserves the entry/archive namespace, and safely rebinds the config-entry
+  unique ID to the accepted source. Disabled legacy entries now unload/reload
+  without requiring a runtime object, while removal retains archives by default.
+- Added genuine V0.9.6 schema-6 archive coverage proving that counter-derived
+  rows, configuration epochs, checkpoints, targets and provenance survive the
+  V1 transition without silent reclassification.
+- Kept all seven dashboards, import-only billing methodology, B1–B5 targets,
+  forecasts, multi-meter isolation, archive safety and three-decimal power/energy
+  presentation.
+- Added the V1 scope clarification, release-candidate status and documentation
+  coordination requirements for open PR #14.
+
 ## [0.9.6] - 2026-10-23
 
 - Moved the cumulative-counter minimum observation and plausibility-ceiling

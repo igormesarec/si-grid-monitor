@@ -4,8 +4,8 @@
 
 To je pripomoček za spremljanje in odločanje, **ne** uradni števec dobavitelja ali električna zaščitna naprava.
 
-Dokumentacija opisuje predlagano različico **V1.0.0 RC**. Trenutno združena
-različica je V0.9.6; V1.0 še ni objavljena kot stabilna izdaja.
+Dokumentacija opisuje **V1.0.0 RC**, katere koda je že združena v vejo `main`
+(PR #16). Različica še ni potrjena oziroma objavljena kot stabilna izdaja.
 
 ## Namestitev
 

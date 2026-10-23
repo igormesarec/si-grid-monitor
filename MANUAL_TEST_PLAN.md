@@ -1,4 +1,52 @@
-# SI Grid Monitor V0.9.6 Beta - Real Home Assistant Test Plan
+# SI Grid Monitor V1.0.0 Release-Candidate Manual Test Plan
+
+## V1.0 mandatory acceptance
+
+1. Back up `.storage/si_grid_monitor_*.db` and record config-entry IDs, entity
+   unique IDs, archive row counts, source epochs, checkpoints and B1–B5 targets
+   before upgrading a copied V0.9.6 installation.
+2. Upgrade a Mode A meter. Confirm the same entry/entities/archive load, signed
+   polarity is unchanged, import is positive and export is negative.
+3. Upgrade Mode B. Stagger import/export sensor reports, make one unavailable,
+   then recover it. Confirm no export is subtracted from imported quarter energy
+   and uncertain samples create gaps instead of fabricated evidence.
+4. Upgrade Mode C. Confirm export remains **Unknown**, current/sustained advice
+   recovers after sufficient fresh coverage, and no solar/export surplus is
+   invented.
+5. Upgrade a legacy Mode D entry. Confirm it does not load a measurement runtime,
+   exposes no derived-power entities or counter charts, and shows the bilingual
+   notice that its archive is preserved. Verify another A/B/C entry still loads.
+6. Use **Reconfigure** on the copied Mode D entry and select a W/kW Mode A, B or
+   C source. Confirm the entry ID/database filename remain unchanged, old rows
+   retain counter-derived provenance and new data begins a distinct source epoch.
+   Confirm the config-entry unique ID now identifies the new live source. Attempt
+   the same source already owned by another meter and confirm reconfiguration is
+   rejected without changing either entry or archive.
+7. Check all seven tabs on desktop and Android. Distinguish valid, incomplete,
+   unavailable, missing after monitoring began, pre-monitoring, live and upcoming
+   intervals. Pre-monitoring must not increase missing counts.
+8. Confirm all displayed kW/kWh measurements use three decimals, percentages use
+   their percentage format, counts remain integers and unknown values do not
+   appear as `0.000`.
+9. Test 23-, 24- and 25-hour Europe/Ljubljana days, dated target transitions,
+   provisional tariff disabled/enabled, simulation isolation and confirmed
+   exceedance eligibility.
+10. Test multiple meters, sticky selector persistence/fallback, reload, restart,
+    HACS update and WebSocket recovery without cross-meter data.
+11. Remove a copied entry without arming deletion and confirm its archive remains.
+    Test permanent deletion only on a disposable meter with fresh exact
+    confirmation and backup; no other database may change.
+12. With a disabled legacy Mode D entry, run reload, restart, a failed setup retry
+    and normal removal. Confirm no missing-runtime exception occurs, another A/B/C
+    meter remains active, and the Mode D schema-6 database, checkpoint, epochs and
+    rows remain unchanged after default removal.
+
+Passing CI does not replace these tests. Do not tag or publish stable V1.0 until
+the real Home Assistant and Android checks above are recorded.
+
+---
+
+## Historical V0.9.6 experimental Mode D plan (not active V1.0 functionality)
 
 ## V0.9.6 Mode D live-measurement hotfix acceptance
 

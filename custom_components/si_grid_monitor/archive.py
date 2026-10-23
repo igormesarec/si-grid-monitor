@@ -1570,7 +1570,9 @@ class QuarterArchive:
             rows = self._db.execute(
                 """SELECT start_utc,configuration_status,quality,exceeded
                    FROM quarters WHERE namespace=?
-                   AND tariff_rule_version IS NULL""",
+                   AND tariff_rule_version IS NULL
+                   AND COALESCE(source_id, '') NOT LIKE 'mode=cumulative_energy|%'
+                   AND provenance NOT LIKE 'counter_derived%'""",
                 (namespace,),
             ).fetchall()
             for row in rows:

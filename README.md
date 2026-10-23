@@ -8,9 +8,9 @@ contracted-power target, and preserves auditable quarter history. It is useful
 for homes and small sites with heat pumps, EV charging, solar PV or other loads
 that need clearer visibility into quarter-hour grid import.
 
-**Release status:** V0.9.6 is the version currently merged on `main`. V1.0.0 is
-a proposed three-mode **release candidate** in PR #16; it is not released or
-claimed as installed until real Home Assistant acceptance is complete.
+**Release status:** V1.0.0 three-mode code is now merged into `main` (PR #16),
+but remains a **release candidate** pending real Home Assistant acceptance.
+V0.9.6 is the preceding published development version; do not assume V1.0 is installed.
 
 This is monitoring and decision-support software—not a distributor-certified
 meter, guaranteed bill calculation, physical protection device or automatic

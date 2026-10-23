@@ -48,6 +48,7 @@ class PowerSample:
     signed_kw: float
     import_kw: float | None = None
     export_kw: float | None = None
+    export_known: bool = True
 
     def __post_init__(self) -> None:
         _require_aware(self.timestamp, "timestamp")
@@ -426,9 +427,6 @@ class FixedQuarterEngine:
         self.export_unknown_seconds = 0.0
         self.completed: list[CompletedQuarter] = []
         self._force_incomplete = False
-        self._unresolved_interval_active = False
-        self._interval_average_active = False
-        self._interval_export_known = True
 
     def checkpoint(self) -> dict[str, object] | None:
         """Serialize durable current-quarter state without smoothing history."""
@@ -451,6 +449,9 @@ class FixedQuarterEngine:
             ),
             "last_export_kw": (
                 self.last_sample.export_kw if self.last_sample is not None else None
+            ),
+            "last_export_known": (
+                self.last_sample.export_known if self.last_sample is not None else None
             ),
             "import_kwh": self.import_kwh,
             "export_kwh": self.export_kwh,
@@ -490,6 +491,12 @@ class FixedQuarterEngine:
                         if payload.get("last_export_kw") is not None
                         else None
                     ),
+                    bool(
+                        payload.get(
+                            "last_export_known",
+                            "mode=import_only" not in self.source_id,
+                        )
+                    ),
                 )
                 if last_utc is not None and last_kw is not None
                 else None
@@ -525,7 +532,11 @@ class FixedQuarterEngine:
 
     def ingest(self, sample: PowerSample) -> tuple[CompletedQuarter, ...]:
         sample = PowerSample(
-            sample.timestamp_utc, sample.signed_kw, sample.import_kw, sample.export_kw
+            sample.timestamp_utc,
+            sample.signed_kw,
+            sample.import_kw,
+            sample.export_kw,
+            sample.export_known,
         )
         before = len(self.completed)
         if self.bounds is None:
@@ -539,57 +550,6 @@ class FixedQuarterEngine:
         self.buffer.add(sample)
         self.last_sample = sample
         self.cursor_utc = sample.timestamp_utc
-        return tuple(self.completed[before:])
-
-    def ingest_interval_average(
-        self,
-        *,
-        start: datetime,
-        end: datetime,
-        signed_kw: float,
-        import_kw: float,
-        export_kw: float | None,
-    ) -> tuple[CompletedQuarter, ...]:
-        """Integrate one evidenced interval average without holding it into the future."""
-
-        _require_aware(start, "start")
-        _require_aware(end, "end")
-        start_utc = start.astimezone(UTC)
-        end_utc = end.astimezone(UTC)
-        if end_utc <= start_utc:
-            raise CalculationError("counter interval end must be after start")
-        if self.cursor_utc is not None and start_utc < self.cursor_utc:
-            raise CalculationError("counter intervals must not overlap or move backwards")
-        before = len(self.completed)
-        self._unresolved_interval_active = quarter_bounds(start_utc).end_utc < end_utc
-        if self._unresolved_interval_active and self.bounds is not None:
-            # A cumulative-counter delta spanning a fixed-quarter boundary does
-            # not reveal how its energy was distributed on either side. Keep
-            # both touched quarters incomplete even when their elapsed coverage
-            # would otherwise reach 900 seconds.
-            self._force_incomplete = True
-        if self.bounds is None:
-            self._initialize(start_utc)
-            self.gap_seconds = (start_utc - self.bounds.start_utc).total_seconds()
-        elif self.cursor_utc is not None and start_utc > self.cursor_utc:
-            self.last_sample = None
-            self.advance(start_utc)
-        self.cursor_utc = start_utc
-        self.last_sample = PowerSample(
-            start_utc,
-            signed_kw,
-            import_kw=import_kw,
-            export_kw=export_kw,
-        )
-        self._interval_average_active = True
-        self._interval_export_known = export_kw is not None
-        self.advance(end_utc)
-        # A counter delta describes the interval that just ended. It is not an
-        # instantaneous reading that may safely be held after ``end``.
-        self.last_sample = None
-        self._interval_average_active = False
-        self._interval_export_known = True
-        self._unresolved_interval_active = False
         return tuple(self.completed[before:])
 
     def advance(self, instant: datetime) -> tuple[CompletedQuarter, ...]:
@@ -688,7 +648,7 @@ class FixedQuarterEngine:
         self.gap_seconds = 0.0
         self.export_coverage_seconds = 0.0
         self.export_unknown_seconds = 0.0
-        self._force_incomplete = self._unresolved_interval_active
+        self._force_incomplete = False
 
     def _integrate_segment(self, start: datetime, end: datetime) -> None:
         if end <= start:
@@ -696,11 +656,7 @@ class FixedQuarterEngine:
         if self.last_sample is None:
             self.gap_seconds += (end - start).total_seconds()
             return
-        valid_until = (
-            end
-            if self._interval_average_active
-            else self.last_sample.timestamp_utc + self.stale_after
-        )
+        valid_until = self.last_sample.timestamp_utc + self.stale_after
         covered_end = min(end, valid_until)
         if covered_end > start:
             seconds = (covered_end - start).total_seconds()
@@ -710,7 +666,7 @@ class FixedQuarterEngine:
                 if self.last_sample.import_kw is not None
                 else max(0.0, self.last_sample.signed_kw)
             )
-            export_known = not self._interval_average_active or self._interval_export_known
+            export_known = self.last_sample.export_known
             export_kw = (
                 self.last_sample.export_kw
                 if self.last_sample.export_kw is not None

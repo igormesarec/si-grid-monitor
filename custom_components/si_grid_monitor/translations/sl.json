@@ -7,9 +7,7 @@
     "error": {
       "invalid_contracted_power_periods": "Obdobja dogovorjene moči niso veljavna, se prekrivajo ali imajo končni datum pred začetnim.",
       "source_not_found": "Izbrani senzor ne obstaja. Preverite entiteto in poskusite znova.",
-      "invalid_source_unit": "Izbrani senzor ima nepodprto enoto. Moč mora biti v W ali kW, energija pa v Wh ali kWh.",
-      "invalid_counter_state_class": "Kumulativni senzor mora uporabljati razred stanja Home Assistant total ali total_increasing.",
-      "invalid_net_counter_state_class": "Dvosmerni neto števec energije mora uporabljati razred stanja Home Assistant total. total_increasing ne more predstavljati upravičenega zmanjšanja pri obratnem toku.",
+      "invalid_source_unit": "Izbrani senzor ima nepodprto enoto. V1.0 za žive vire moči zahteva W ali kW.",
       "invalid_source_value": "Trenutno stanje senzorja ni številsko. Počakajte na veljavno meritev ali izberite drug senzor.",
       "negative_nonnegative_source": "Ta vir mora biti nenegativen. Izberite namenski senzor uvoza/izvoza ali način podpisane moči.",
       "conflicting_power_sources": "Uvoz in izvoz sta hkrati pozitivna. Meritvi ne predstavljata varno enega omrežnega priključka.",
@@ -18,48 +16,58 @@
     "step": {
       "user": {
         "title": "Vir meritev",
-        "description": "Priporočilo: izberite podpisano moč omrežja v živo, če je na voljo. Sicer uporabite ločena senzorja uvoza/izvoza, samo uvozni senzor za enosmerno meritev ali kumulativne števce, kadar so na voljo le entitete energije Wh/kWh. Vsi načini uporabljajo isti obračunski mehanizem samo za uvoz.",
+        "description": "Priporočilo: izberite podpisano moč omrežja v živo, če je na voljo. Sicer uporabite ločena senzorja uvoza/izvoza ali samo uvozni senzor. V1.0 podpira le žive senzorje W/kW.",
         "data": {
           "meter_name": "Prijazno ime merilnika",
           "source_mode": "Način vira"
         },
         "data_description": {
           "meter_name": "Jasno ime, prikazano na vseh straneh nadzorne plošče, na primer Glavni priključek, Garaža ali Delavnica.",
-          "source_mode": "Izberite podpisano moč, ločeno moč uvoza/izvoza, samo uvozno moč ali kumulativne števce energije."
-        }
-      },
-      "counter_type": {
-        "title": "Vrsta kumulativnega števca",
-        "description": "Izberite delovanje števca. SI Grid Monitor ustvari lastne izpeljane entitete moči; YAML, predloga ali pomočnik Derivative niso potrebni.",
-        "data": {
-          "counter_behavior": "Delovanje števca",
-          "counter_min_observation_seconds": "Najkrajši čas opazovanja števca",
-          "counter_max_plausible_power_kw": "Največja verjetna intervalna povprečna moč"
-        },
-        "data_description": {
-          "counter_behavior": "Samo uvozni števec se med izvozom ne zmanjšuje. Dvosmerni neto števec lahko narašča ali pada; smer izberete na naslednjem zaslonu. Ločena števca ohranita neodvisno izmerjen uvoz in izvoz. Neto števec lahko uporablja razred total, monotoni števec pa običajno total_increasing.",
-          "counter_min_observation_seconds": "Spremembe, opažene prej, se zbirajo in se ne pretvorijo v zavajajočo konico. Privzeto 30 sekund. Energija se ohrani do dovolj dolgega opazovanja.",
-          "counter_max_plausible_power_kw": "Varnostna meja za intervalno povprečje tega merilnika. Višje vrednosti se zavrnejo kot nepravilne in ne morejo ustvariti potrjene prekoračitve. To ni pogodbena meja ali nazivna moč varovalke."
+          "source_mode": "Izberite podpisano moč, ločeno moč uvoza/izvoza ali samo uvozno moč."
         }
       },
       "meter": {
         "title": "Vir meritev",
-        "description": "Izberite senzorje za izbrani način. Moč je lahko v W/kW, kumulativna energija pa v Wh/kWh.",
+        "description": "Izberite žive senzorje moči za izbrani način. V1.0 sprejema W ali kW.",
         "data": {
           "power_entity": "Senzor moči omrežja",
           "positive_means_import": "Pozitivna vrednost vira pomeni UVOZ",
           "import_power_entity": "Senzor uvozne moči",
-          "export_power_entity": "Senzor izvozne moči",
-          "import_energy_entity": "Kumulativni števec uvožene energije",
-          "export_energy_entity": "Kumulativni števec izvožene energije (neobvezno)"
+          "export_power_entity": "Senzor izvozne moči"
         },
         "data_description": {
           "power_entity": "Izberite senzor moči na priključku v omrežje (W ali kW), ne skupne porabe hiše ali proizvodnje elektrarne. Interno je uvoz pozitiven, izvoz negativen.",
-          "positive_means_import": "Pri moči v živo vključite, če pozitivna vrednost pomeni uvoz. Pri dvosmernem neto števcu vključite, če števec med uvozom narašča (privzeto); izključite, če narašča med izvozom. Pred nadaljevanjem preverite prikaz.",
+          "positive_means_import": "Vključite, če pozitivna vrednost žive moči pomeni uvoz; izključite pri obrnjenem predznaku senzorja. Pred nadaljevanjem preverite prikaz.",
           "import_power_entity": "Nenegativna meritev uvoza iz omrežja v W ali kW.",
-          "export_power_entity": "Nenegativna meritev izvoza v omrežje v W ali kW.",
-          "import_energy_entity": "Izberite števec Wh ali kWh v Nastavitve > Naprave in storitve > Entitete. Pri dvosmernem neto načinu je to en neto števec, pri drugih načinih pa kumulativni uvoz.",
-          "export_energy_entity": "Samo pri ločenih števcih: neobvezni kumulativni števec izvoza v Wh ali kWh. Brez njega izvoz ostane neznan."
+          "export_power_entity": "Nenegativna meritev izvoza v omrežje v W ali kW."
+        }
+      },
+      "reconfigure": {
+        "title": "Ponovna nastavitev merilnega vira",
+        "description": "Izberite podprt način žive moči V1.0. Isti konfiguracijski vnos in arhiv SQLite se ohranita; sprejete meritve začnejo novo obdobje vira.",
+        "data": {
+          "meter_name": "Prijazno ime merilnika",
+          "source_mode": "Podprt način vira"
+        },
+        "data_description": {
+          "meter_name": "Obstoječi naslov merilnika lahko ohranite ali spremenite, ne da bi spremenili njegov arhivski imenski prostor.",
+          "source_mode": "Izberite enega od treh podprtih načinov žive moči. Kumulativna energija v V1.0 ni sprejeta."
+        }
+      },
+      "reconfigure_meter": {
+        "title": "Izberite nadomestni vir žive moči",
+        "description": "Izberite samo entitete W/kW. Nastavitve podedovanega načina D in arhivske vrstice ostanejo ohranjene in niso nikoli drugače interpretirane.",
+        "data": {
+          "power_entity": "Senzor moči omrežja",
+          "positive_means_import": "Pozitivna vrednost vira pomeni UVOZ",
+          "import_power_entity": "Senzor uvozne moči",
+          "export_power_entity": "Senzor izvozne moči"
+        },
+        "data_description": {
+          "power_entity": "Podpisana moč W/kW na priključku v omrežje.",
+          "positive_means_import": "Vključite, ko pozitivne vrednosti pomenijo uvoz; izključite pri obrnjenem predznaku senzorja.",
+          "import_power_entity": "Nenegativni senzor uvoza iz omrežja v W/kW.",
+          "export_power_entity": "Nenegativni senzor izvoza v omrežje v W/kW."
         }
       },
       "polarity_preview": {
@@ -169,25 +177,25 @@
         "title": "Nastavitve SI Grid Monitor",
         "menu_options": {
           "settings": "Nastavitve meritev in izračuna",
+          "legacy_mode_d": "Informacije o nadgradnji podedovanega načina D",
           "assignments": "Upravljanje dodelitev dogovorjene moči",
           "add_assignment": "Dodaj dodelitev dogovorjene moči",
           "archive_removal": "Hramba ali trajni izbris arhiva"
         }
+      },
+      "legacy_mode_d": {
+        "title": "Način D v V1.0 ni podprt",
+        "description": "{meter} uporablja podedovani vir kumulativne energije. Njegova konfiguracija in arhiv SQLite sta ohranjena. Z dejanjem Ponovno konfiguriraj izberite podpisano moč, ločen uvoz/izvoz ali samo uvoz; s tem se ohranita identiteta vnosa in arhiva ter ustvari novo obdobje vira."
       },
       "settings": {
         "title": "Nastavitve meritev in izračuna",
         "description": "Sprememba vira ali predznaka ustvari novo konfiguracijsko obdobje. Nedostopen nasvet ni prikazan kot nič.",
         "data": {
           "meter_name": "Prijazno ime merilnika",
-          "counter_behavior": "Delovanje števca",
-          "counter_min_observation_seconds": "Najkrajši čas opazovanja števca",
-          "counter_max_plausible_power_kw": "Največja verjetna intervalna povprečna moč",
           "power_entity": "Senzor moči omrežja",
           "positive_means_import": "Pozitivna vrednost vira pomeni uvoz",
           "import_power_entity": "Senzor uvozne moči",
           "export_power_entity": "Senzor izvozne moči",
-          "import_energy_entity": "Kumulativni števec uvožene energije",
-          "export_energy_entity": "Kumulativni števec izvožene energije (neobvezno)",
           "allow_provisional_tariff": "Dovoli začasno nadaljevanje za nepotrjena leta",
           "safety_margin_kw": "Varnostna rezerva",
           "smoothing_seconds": "Okno glajenja napovedi",
@@ -198,15 +206,10 @@
         },
         "data_description": {
           "meter_name": "Ime, prikazano v skupnem izbirniku merilnika in na vsakem zavihku nadzorne plošče.",
-          "counter_behavior": "Izberite samo uvozni, dvosmerni neto ali ločena kumulativna števca. Sprememba ustvari novo provenienco vira in ne prepiše zgodovine.",
-          "counter_min_observation_seconds": "Kvantizirane spremembe števca zbiraj najmanj toliko sekund pred izračunom intervalnega povprečja.",
-          "counter_max_plausible_power_kw": "Zavrni intervalno povprečje nad to mejo merilnika. Zavrnjena energija ostane nerazporejena in ne more potrditi pogodbene prekoračitve.",
           "power_entity": "Izberite senzor moči na priključku v omrežje (W ali kW), ne skupne porabe hiše ali proizvodnje elektrarne. Interno je uvoz pozitiven, izvoz negativen.",
-          "positive_means_import": "Pri moči v živo vključite, če pozitivna vrednost pomeni uvoz. Pri dvosmernem neto števcu vključite, če števec med uvozom narašča (privzeto); izključite, če narašča med izvozom.",
+          "positive_means_import": "Vključite, če pozitivna vrednost žive moči pomeni uvoz; izključite pri obrnjenem predznaku senzorja.",
           "import_power_entity": "Nenegativni vir uvozne moči v W/kW za ta obstoječi način.",
           "export_power_entity": "Nenegativni vir izvozne moči v W/kW za ta obstoječi način.",
-          "import_energy_entity": "Števec skupne oziroma naraščajoče uvožene energije v Wh/kWh.",
-          "export_energy_entity": "Neobvezni števec skupne oziroma naraščajoče izvožene energije v Wh/kWh.",
           "allow_provisional_tariff": "Izrecno dovolite začasno nadaljevanje pravil 2027 za še nepotrjena leta 2028–2030. Brez potrditve se bloki ne prikazujejo kot uradni.",
           "safety_margin_kw": "Neobvezna rezerva (kW), odšteta od dogovorjene moči pri načrtovanju porabe. Privzeto 0,00 kW; pogodbe ne spreminja.",
           "smoothing_seconds": "Povprečenje zadnjih meritev za napoved ob koncu 15-minutnega intervala. 30 s se hitreje odziva, 120 s je bolj mirno.",
@@ -312,20 +315,18 @@
       }
     }
   },
+  "issues": {
+    "legacy_mode_d_unsupported": {
+      "title": "Podedovani merilnik kumulativne energije zahteva ponovno nastavitev",
+      "description": "{meter} uporablja kumulativne števce energije načina D, ki jih SI Grid Monitor V1.0 ne podpira. Arhivski podatki in konfiguracija so ohranjeni. Ta vnos ponovno konfigurirajte s podprtim živim senzorjem moči v načinu A, B ali C."
+    }
+  },
   "selector": {
     "source_mode": {
       "options": {
         "signed_power": "Podpisana trenutna moč",
         "separate_power": "Ločena moč uvoza/izvoza",
-        "import_only": "Samo uvozna moč",
-        "cumulative_energy": "Kumulativni števci energije"
-      }
-    },
-    "counter_behavior": {
-      "options": {
-        "import_only": "Kumulativni števec samo za uvoz",
-        "net": "Dvosmerni neto števec energije",
-        "separate": "Ločena kumulativna števca uvoza/izvoza"
+        "import_only": "Samo uvozna moč"
       }
     },
     "archive_removal_action": {
@@ -345,12 +346,6 @@
     "sensor": {
       "source_mode": {
         "name": "Način vira"
-      },
-      "derived_import_power": {
-        "name": "Iz števca izpeljana intervalna povprečna uvozna moč"
-      },
-      "derived_export_power": {
-        "name": "Iz števca izpeljana intervalna povprečna izvozna moč"
       },
       "current_power": {
         "name": "Trenutna podpisana moč omrežja"

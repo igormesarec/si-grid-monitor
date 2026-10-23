@@ -117,7 +117,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     from homeassistant.const import Platform
     from homeassistant.exceptions import ConfigEntryNotReady
 
-    from .const import DOMAIN
+    try:
+        from homeassistant.helpers import issue_registry as ir
+    except ImportError:  # Narrow lifecycle test doubles omit the Repairs registry.
+        ir = None
+
+    from .const import CONF_SOURCE_MODE, DOMAIN, SOURCE_CUMULATIVE_ENERGY
     from .dashboard import (
         DATA_RUNTIMES,
         async_register_panel,
@@ -125,6 +130,52 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_unregister_panel,
     )
     from .runtime import GridMonitorRuntime
+
+    configured = {**entry.data, **entry.options}
+    legacy_issue_id = f"legacy_mode_d_{entry.entry_id}"
+    if str(configured.get(CONF_SOURCE_MODE, "signed_power")) == SOURCE_CUMULATIVE_ENERGY:
+        # Deliberately stop before constructing a runtime, opening SQLite, or
+        # subscribing to the Wh/kWh entity. This prevents the former counter
+        # source from ever being interpreted as live W/kW after upgrade.
+        legacy_runtimes = hass.data.get(DOMAIN, {}).get(DATA_RUNTIMES, {})
+        registry_runtime = legacy_runtimes.get(entry.entry_id)
+        entry_runtime = getattr(entry, "runtime_data", None)
+        if (
+            registry_runtime is not None
+            and entry_runtime is not None
+            and registry_runtime is not entry_runtime
+        ):
+            raise ConfigEntryNotReady("Legacy Mode D runtime ownership is inconsistent")
+        legacy_runtime = entry_runtime or registry_runtime
+        if legacy_runtime is not None:
+            await legacy_runtime.async_stop()
+            if not bool(getattr(legacy_runtime, "shutdown_complete", False)):
+                raise ConfigEntryNotReady(
+                    "Legacy Mode D runtime is still closing its preserved archive"
+                )
+            entry.runtime_data = None
+            if legacy_runtimes.get(entry.entry_id) is legacy_runtime:
+                legacy_runtimes.pop(entry.entry_id, None)
+            if not legacy_runtimes:
+                async_unregister_panel(hass)
+        if ir is not None:
+            ir.async_create_issue(
+                hass,
+                DOMAIN,
+                legacy_issue_id,
+                is_fixable=False,
+                severity=ir.IssueSeverity.ERROR,
+                translation_key="legacy_mode_d_unsupported",
+                translation_placeholders={"meter": entry.title},
+            )
+        _LOGGER.error(
+            "Mode D cumulative energy counters are unsupported in V1.0 for %s; "
+            "the configuration and archive were preserved",
+            entry.title,
+        )
+        return False
+    if ir is not None:
+        ir.async_delete_issue(hass, DOMAIN, legacy_issue_id)
 
     await async_setup_dashboard(hass)
 
@@ -240,7 +291,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         entry, (Platform.SENSOR, Platform.BINARY_SENSOR)
     )
     if unload_ok:
-        runtime: Any = entry.runtime_data
+        runtimes = hass.data.get(DOMAIN, {}).get(DATA_RUNTIMES, {})
+        runtime: Any = getattr(entry, "runtime_data", None) or runtimes.get(entry.entry_id)
+        if runtime is None:
+            # Unsupported legacy Mode D entries intentionally have no runtime
+            # and no forwarded entities. Unload/reload/removal must therefore
+            # be a safe no-op rather than dereferencing None.
+            entry.runtime_data = None
+            if not runtimes:
+                async_unregister_panel(hass)
+            return True
         stopped = False
         try:
             await runtime.async_stop()
@@ -248,7 +308,6 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         finally:
             cleanup_complete = stopped or bool(getattr(runtime, "shutdown_complete", False))
             if cleanup_complete:
-                runtimes = hass.data.get(DOMAIN, {}).get(DATA_RUNTIMES, {})
                 if runtimes.get(entry.entry_id) is runtime:
                     runtimes.pop(entry.entry_id, None)
                 if getattr(entry, "runtime_data", None) is runtime:
