@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "si_grid_monitor"
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 PANEL_URL_PATH = "si-grid-monitor"
 PANEL_TITLE = "SI Grid Monitor"
 PANEL_ICON = "mdi:transmission-tower"

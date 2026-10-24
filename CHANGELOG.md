@@ -4,6 +4,18 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+## [1.0.1] - hotfix release candidate
+
+- Restored Home Assistant's native integration **Configure** action by removing
+  the custom panel's `config_panel_domain` override. The sidebar dashboard,
+  seven tabs and shared multi-meter selector remain registered normally.
+- Added regression coverage proving the Configure menu exposes calculation and
+  meter settings, dated contracted-power assignment management/addition, and
+  archive retention/deletion.
+- Added an OptionsFlow regression that shortens an existing dated B1–B5
+  assignment and adds a non-overlapping successor without rewriting archived
+  targets, measurements or source epochs.
+
 ## [1.0.0] - release candidate
 
 - Reduced active input scope to three live-power modes: signed, separate
