@@ -100,6 +100,16 @@ async function contractsFixture(page, {width, dark = false}) {
         effective_from: "2026-10-25", effective_to: "2026-12-31", provenance: "fixture",
         origin: "user_action", old_schedule_json: "[]", new_schedule_json: "[]",
         configuration_revision: "revision"}],
+      audit_pagination: {page: 1, pages: 2, total: 51},
+      historical_configuration: [{epoch: 1, effective_utc: "2026-01-01T00:00:00+00:00",
+        source_id: "sensor.grid", block_targets_kw: [1, 1.1, 1.2, 1.3, 1.4],
+        contracted_power_periods: null}],
+      archived_target_evidence: [{first_start_utc: "2026-01-01T00:00:00+00:00",
+        last_start_utc: "2026-06-30T23:45:00+00:00", tariff_block: 2,
+        contractual_target_kw: 1.1, target_provenance: "fixture",
+        contractual_status: "confirmed", quarter_count: 50}],
+      management: {route: "/config/integrations/integration/si_grid_monitor",
+        instruction: "Configure House main contractual meter in Devices & services."},
     };
     document.body.append(panel);
     window.testPanel = panel;
@@ -248,6 +258,8 @@ for (const width of [320, 360, 390, 430, 768, 1280]) {
           pageWidth: document.documentElement.scrollWidth,
           viewport: innerWidth,
           periods: periods.length,
+          managementButtons: root.querySelectorAll("[data-manage-contracts]").length,
+          historicalEvidence: root.querySelector(".contract-evidence")?.textContent,
           clipped: periods.some(node => node.scrollWidth > node.clientWidth + 1),
           gap: root.querySelector(".contract-gap")?.textContent,
           tabsScrollable: root.querySelector("nav").scrollWidth >= root.querySelector("nav").clientWidth,
@@ -255,6 +267,8 @@ for (const width of [320, 360, 390, 430, 768, 1280]) {
       });
       assert.ok(layout.pageWidth <= layout.viewport, JSON.stringify(layout));
       assert.equal(layout.periods, 3);
+      assert.equal(layout.managementButtons, 1);
+      assert.match(layout.historicalEvidence, /sensor\.grid/);
       assert.equal(layout.clipped, false);
       assert.match(layout.gap, /Not configured/);
       assert.equal(layout.tabsScrollable, true);

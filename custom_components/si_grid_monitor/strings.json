@@ -174,6 +174,7 @@
       ,"invalid_contracted_power_periods": "The contracted-power dates or values are invalid. Inclusive date ranges must not overlap."
       ,"overlapping_contracted_power_period": "The selected dates overlap {conflict}. Edit that assignment or use Schedule change."
       ,"invalid_scheduled_contract_change": "The scheduled change must use valid dates wholly inside the selected assignment."
+      ,"stale_contract_preview": "The contracted-power schedule changed after this preview was created. Return to contract management and create a new preview. No changes were saved."
     },
     "step": {
       "init": {

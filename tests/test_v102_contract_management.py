@@ -156,6 +156,37 @@ def test_schema6_to_schema7_is_additive_and_audit_is_idempotent(tmp_path) -> Non
     assert reopened.list_contract_audit("meter-a")[0]["event_type"] == "SCHEDULED_CHANGE"
 
 
+def test_contract_audit_history_is_retrievable_with_bounded_pagination(tmp_path) -> None:
+    archive = QuarterArchive(tmp_path / "audit-pages.db")
+    archive.open()
+    for index in range(225):
+        event = ContractAuditEvent(
+            f"event-{index:03d}",
+            "meter-a",
+            datetime(2026, 1, 1, tzinfo=UTC) + timedelta(minutes=index),
+            "CORRECTED",
+            "[]",
+            "[]",
+            "2026-01-01",
+            "2026-12-31",
+            f"fixture-{index}",
+            None,
+            "user_action",
+            None,
+            f"revision-{index}",
+        )
+        assert archive.append_contract_audit(event)
+
+    first = archive.list_contract_audit("meter-a", 100, 0)
+    third = archive.list_contract_audit("meter-a", 100, 200)
+    assert archive.count_contract_audit("meter-a") == 225
+    assert len(first) == 100
+    assert len(third) == 25
+    assert first[0]["event_id"] == "event-224"
+    assert third[-1]["event_id"] == "event-000"
+    assert {item["event_id"] for item in first}.isdisjoint({item["event_id"] for item in third})
+
+
 @pytest.mark.parametrize(
     "failure_point",
     [

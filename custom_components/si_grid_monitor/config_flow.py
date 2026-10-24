@@ -153,6 +153,12 @@ def _schedule_summary(schedule: ContractedPowerSchedule) -> str:
     )
 
 
+def _schedule_revision(schedule: ContractedPowerSchedule) -> str:
+    """Return a stable revision for optimistic contract-schedule concurrency."""
+
+    return hashlib.sha256(schedule.to_json().encode()).hexdigest()
+
+
 def _schedule_gap_summary(before: ContractedPowerSchedule, after: ContractedPowerSchedule) -> str:
     """Describe gaps across the original schedule span for confirmation."""
 
@@ -625,6 +631,8 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
         self._pending_archive_backup = True
         self._pending_schedule: ContractedPowerSchedule | None = None
         self._pending_event: dict[str, Any] | None = None
+        self._pending_original_schedule_json: str | None = None
+        self._pending_original_revision: str | None = None
 
     @property
     def _current(self) -> dict[str, Any]:
@@ -647,10 +655,11 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
         *,
         event_type: str,
         affected: ContractedPowerPeriod | None,
+        old_schedule_json: str | None = None,
     ) -> FlowResult:
         """Save one complete schedule plus recoverable, idempotent audit intent."""
 
-        old_json = self._schedule.to_json()
+        old_json = old_schedule_json if old_schedule_json is not None else self._schedule.to_json()
         new_json = schedule.to_json()
         revision = hashlib.sha256(new_json.encode()).hexdigest()
         event = {
@@ -699,8 +708,11 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
         event_type: str,
         affected: ContractedPowerPeriod | None,
     ) -> FlowResult:
+        original = self._schedule
         self._pending_schedule = schedule
         self._pending_event = {"event_type": event_type, "affected": affected}
+        self._pending_original_schedule_json = original.to_json()
+        self._pending_original_revision = _schedule_revision(original)
         if not hasattr(self, "async_show_form"):
             return self._save_schedule(schedule, event_type=event_type, affected=affected)
         return self.async_show_form(
@@ -709,7 +721,7 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
                 {vol.Required("confirm", default=False): selector.BooleanSelector()}
             ),
             description_placeholders={
-                "before": _schedule_summary(self._schedule),
+                "before": _schedule_summary(original),
                 "after": _schedule_summary(schedule),
                 "gaps": _schedule_gap_summary(self._schedule, schedule),
             },
@@ -721,10 +733,30 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
         if self._pending_schedule is None or self._pending_event is None:
             return await self.async_step_assignments()
         if user_input is not None and bool(user_input.get("confirm")):
+            current_schedule = self._schedule
+            if self._pending_original_revision != _schedule_revision(current_schedule):
+                pending = self._pending_schedule
+                self._pending_schedule = None
+                self._pending_event = None
+                self._pending_original_schedule_json = None
+                self._pending_original_revision = None
+                return self.async_show_form(
+                    step_id="contract_preview",
+                    data_schema=vol.Schema(
+                        {vol.Required("confirm", default=False): selector.BooleanSelector()}
+                    ),
+                    errors={"base": "stale_contract_preview"},
+                    description_placeholders={
+                        "before": _schedule_summary(current_schedule),
+                        "after": _schedule_summary(pending),
+                        "gaps": _schedule_gap_summary(current_schedule, pending),
+                    },
+                )
             return self._save_schedule(
                 self._pending_schedule,
                 event_type=str(self._pending_event["event_type"]),
                 affected=self._pending_event["affected"],
+                old_schedule_json=self._pending_original_schedule_json,
             )
         return self.async_show_form(
             step_id="contract_preview",

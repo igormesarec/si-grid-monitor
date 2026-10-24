@@ -748,3 +748,16 @@ before/after counts with the results.
 9. Confirm management links open Devices & services for SI Grid Monitor and the
    selected meter can be configured; non-admin viewers cannot modify contracts.
 10. Confirm `SPECIFICATION.md` and archived quarter rows are byte/field unchanged.
+11. Open the same meter's OptionsFlow in two sessions. Create previews in both,
+    save the second session, then confirm the first. The first must report a stale
+    preview, save nothing and create no misleading audit event.
+12. Create more than 200 audit events in a disposable archive and verify Previous
+    and Next expose every bounded page. Confirm historical configuration snapshots,
+    archived-quarter evidence and user-edit events remain separate.
+13. On a past Calendar date test an archived target, an archived null target, an
+    incomplete quarter and a missing quarter. Only the exact non-null archived
+    target may be labelled As recorded; epoch inference and current configuration
+    must remain separate. Repeat across both 02:00 hours on 25 October 2026.
+14. On Android and desktop confirm Contracts shows one **Open integration
+    settings** action, names the selected meter, and does not imply three distinct
+    actions when all navigation leads to the same supported settings page.

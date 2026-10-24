@@ -21,6 +21,14 @@ All notable changes to SI Grid Monitor will be documented here.
   from the target resolved through **Current configuration**.
 - Fixed an empty optional Record date and prevented future-only schedule changes
   from falsely making an otherwise unchanged live quarter configuration mixed.
+- Added optimistic schedule-revision validation so an outdated OptionsFlow
+  preview cannot overwrite a newer contract edit from another session.
+- Completed the Contracts evidence viewer with historical configuration
+  snapshots, immutable archived-quarter target evidence and paginated audit events.
+- Historical Calendar cells now keep archived null targets unknown and label
+  configuration inference separately from archived evidence and current settings.
+- Replaced three indistinguishable contract links with one administrator-only
+  integration-settings action and selected-meter instructions.
 
 ## [1.0.1] - hotfix release candidate
 

@@ -67,3 +67,8 @@ as historical configuration snapshots; they are not fabricated user-edit events
 or signed distributor contracts. Home Assistant config-entry options and SQLite
 are separate stores, so a pending idempotent audit intent is reconciled on
 runtime startup rather than falsely claimed as one atomic cross-store commit.
+
+The Contracts report pages through this append-only audit, so older events remain
+retrievable. Configuration snapshots and aggregated archived-quarter target
+evidence are displayed in separate sections with their own certainty and
+provenance.

@@ -620,20 +620,32 @@ class QuarterArchive:
             )
             return cursor.rowcount > 0
 
-    def list_contract_audit(self, namespace: str, *, limit: int = 200) -> list[dict[str, Any]]:
-        """Return bounded audit events newest first for one meter."""
+    def list_contract_audit(
+        self, namespace: str, limit: int = 200, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        """Return one bounded page of audit events newest first for one meter."""
 
         bounded = min(max(int(limit), 1), 500)
+        bounded_offset = max(int(offset), 0)
         with self._lock:
             rows = self._db.execute(
                 """SELECT * FROM contract_audit WHERE namespace=?
-                   ORDER BY event_utc DESC,event_id DESC LIMIT ?""",
-                (namespace, bounded),
+                   ORDER BY event_utc DESC,event_id DESC LIMIT ? OFFSET ?""",
+                (namespace, bounded, bounded_offset),
             ).fetchall()
         return [
             {key: row[key] for key in row.keys()}  # noqa: SIM118 - sqlite Row iterates values
             for row in rows
         ]
+
+    def count_contract_audit(self, namespace: str) -> int:
+        """Return the number of audit events for one meter namespace."""
+
+        with self._lock:
+            row = self._db.execute(
+                "SELECT COUNT(*) FROM contract_audit WHERE namespace=?", (namespace,)
+            ).fetchone()
+        return int(row[0])
 
     def list_contract_target_evidence(
         self, namespace: str, *, limit: int = 200

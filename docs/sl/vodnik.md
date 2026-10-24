@@ -47,6 +47,19 @@ prikaže stabilno opozorilo za izbrani merilnik. Naslednik, ki se začne nasledn
 koledarski dan, opozorilo o izteku odpravi. Merjenje uvoza/oddaje se vedno
 nadaljuje, vendar brez znane meje ni potrjene pogodbene prekoračitve.
 
+Zavihek **Contracts** ločuje trenutni razpored, stare konfiguracijske posnetke,
+nespremenljive cilje v arhiviranih četrtinah in uporabniške revizijske dogodke.
+Starejši revizijski dogodki so dostopni po omejenih straneh. Posnetki iz časa
+pred revizijskim sistemom niso prikazani kot izmišljeni dogodki uporabnika.
+Skrbnik vidi en gumb **Odpri nastavitve integracije** in nato pri jasno imenovanem
+izbranem merilniku izbere **Configure**.
+
+Pri zgodovinskem koledarju pomeni **Kot zabeleženo** samo cilj, ki je dejansko
+shranjen v arhivirani četrtini. Če je bil cilj shranjen kot neznan, ostane
+neznan. Morebitna vrednost iz starega konfiguracijskega posnetka je prikazana
+ločeno kot sklep iz zgodovinske konfiguracije, trenutni razpored pa kot tretja,
+ločena primerjava.
+
 ## Nastavitve
 
 Privzeto glajenje je **120 sekund**, časovno obzorje daljše napovedi **60 minut**, hramba arhiva **trajno**. Simulacija in uporaba začasnih pravil za 2028–2030 sta privzeto izklopljeni. Simulacijski prag ne spremeni uradnih pogodbenih omejitev, dokler simulacije ne omogočite; tudi takrat rezultati niso uradno potrjene prekoračitve.

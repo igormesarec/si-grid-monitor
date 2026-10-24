@@ -910,11 +910,14 @@ test("CONTRACTS loads only the selected meter and exposes safe management naviga
     };
   };
   await panel._loadTab();
-  assert.deepEqual(captured, {type: "contracts", request: {}, entryId: "meter-b"});
+  assert.deepEqual(captured, {
+    type: "contracts", request: {audit_page: 1, audit_page_size: 50}, entryId: "meter-b",
+  });
   const html = panel._contractsView();
   assert.match(html, /Current contract status/);
-  assert.match(html, /Manage contracts/);
+  assert.match(html, /Open integration settings/);
   assert.match(html, /No configured contracted-power assignment/);
+  assert.equal((html.match(/data-manage-contracts/g) || []).length, 1);
 });
 
 test("CONTRACTS timeline is responsive and keeps three-decimal comparison values", () => {
@@ -944,6 +947,15 @@ test("CONTRACTS timeline is responsive and keeps three-decimal comparison values
       effective_from: "2026-10-25", effective_to: "2026-12-31", provenance: "fixture",
       origin: "user_action", old_schedule_json: "[]", new_schedule_json: "[]",
       configuration_revision: "revision"}],
+    audit_pagination: {page: 1, pages: 3, total: 101},
+    historical_configuration: [{epoch: 1, effective_utc: "2026-01-01T00:00:00+00:00",
+      source_id: "sensor.grid", block_targets_kw: [1,1.1,1.2,1.3,1.4],
+      contracted_power_periods: null}],
+    archived_target_evidence: [{first_start_utc: "2026-01-01T00:00:00+00:00",
+      last_start_utc: "2026-06-30T23:45:00+00:00", tariff_block: 2,
+      contractual_target_kw: 1.1, target_provenance: "fixture",
+      contractual_status: "confirmed", quarter_count: 120}],
+    management: {instruction: "Configure the selected meter.", route: "/config/integrations/integration/si_grid_monitor"},
   };
   const html = panel._contractsView();
   assert.match(html, /1\.000/);
@@ -952,6 +964,10 @@ test("CONTRACTS timeline is responsive and keeps three-decimal comparison values
   assert.match(html, /Not configured/);
   assert.match(html, /SCHEDULED_CHANGE/);
   assert.match(html, /Schedules/);
+  assert.match(html, /Historical configuration snapshots/);
+  assert.match(html, /Immutable archived-quarter target evidence/);
+  assert.match(html, /sensor\.grid/);
+  assert.match(html, /Page 1 of 3 · 101 events/);
   const css = panel._contractStyles();
   assert.match(css, /@media\(max-width:700px\)/);
   assert.match(css, /grid-template-columns:1fr/);
@@ -969,13 +985,32 @@ test("Tariff Calendar labels as-recorded evidence separately from current config
     block: 3,
     as_recorded_target_kw: 1.2,
     as_recorded_source: "archived_quarter",
+    historical_configuration_target_kw: 1.3,
     current_configuration_target_kw: 2.2,
     utc_offset_seconds: 7200,
     fold: 0,
   });
   assert.match(html, /As recorded target/);
   assert.match(html, /Current configuration target/);
+  assert.match(html, /Historical configuration inference/);
   assert.match(html, /1\.200/);
   assert.match(html, /2\.200/);
   assert.match(html, /Open Contracts/);
+});
+
+test("historical calendar cells never replace unknown recorded targets with current values", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._selectedDate = "2026-01-02";
+  panel._calendar = {
+    date: "2026-01-02", day_classification: "working_day", season: "higher",
+    hours: [{start_utc: "2026-01-02T00:00:00+00:00", local_datetime: "2026-01-02T01:00:00+01:00",
+      block: 1, display_target_kw: null, current_configuration_target_kw: 4.2,
+      as_recorded_target_kw: null, as_recorded_source: "archived_quarter_unknown",
+      historical_configuration_target_kw: 3.5, is_historical: true,
+      utc_offset_seconds: 3600, fold: 0}],
+  };
+  const html = panel._calendarView();
+  assert.match(html, /As recorded: — kW/);
+  assert.match(html, /Current configuration: 4\.200 kW/);
+  assert.doesNotMatch(html, /As recorded: 4\.200 kW/);
 });

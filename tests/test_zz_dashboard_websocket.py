@@ -7,12 +7,20 @@ import sqlite3
 import sys
 import types
 from dataclasses import replace
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
-from custom_components.si_grid_monitor.archive import ArchiveRecord, QuarterArchive
+from custom_components.si_grid_monitor.archive import (
+    ArchiveRecord,
+    ContractAuditEvent,
+    QuarterArchive,
+)
+from custom_components.si_grid_monitor.contracted_power import (
+    ContractedPowerPeriod,
+    ContractedPowerSchedule,
+)
 from custom_components.si_grid_monitor.engine import quarter_starts_for_local_day
 from custom_components.si_grid_monitor.tariffs import SlovenianTariffCalendar
 
@@ -45,8 +53,8 @@ def _install_dashboard_import_stubs() -> None:
     components.panel_custom = panel_custom  # type: ignore[attr-defined]
     components.websocket_api = websocket_api  # type: ignore[attr-defined]
     voluptuous = types.ModuleType("voluptuous")
-    voluptuous.Required = lambda key: key  # type: ignore[attr-defined]
-    voluptuous.Optional = lambda key: key  # type: ignore[attr-defined]
+    voluptuous.Required = lambda key, **_kwargs: key  # type: ignore[attr-defined]
+    voluptuous.Optional = lambda key, **_kwargs: key  # type: ignore[attr-defined]
     sys.modules.update(
         {
             "homeassistant.components": components,
@@ -87,9 +95,10 @@ class _SnapshotOrderingHass(_Hass):
 
 
 class _Connection:
-    def __init__(self) -> None:
+    def __init__(self, *, is_admin: bool = True) -> None:
         self.result: Any = None
         self.error: tuple[int, str, str] | None = None
+        self.user = SimpleNamespace(is_admin=is_admin)
 
     def send_result(self, _message_id: int, result: Any) -> None:
         self.result = result
@@ -182,11 +191,23 @@ def _record(start: datetime, index: int, *, incomplete: bool = False) -> Archive
 
 def _runtime(archive: QuarterArchive) -> Any:
     calendar = SlovenianTariffCalendar()
+    schedule = ContractedPowerSchedule(
+        (
+            ContractedPowerPeriod(
+                date(2026, 1, 1),
+                date(2026, 12, 31),
+                (3.5, 3.5, 3.5, 3.5, 3.5),
+                "test_fixture",
+            ),
+        )
+    )
     return SimpleNamespace(
         entry=SimpleNamespace(entry_id="entry-a", title="Meter A"),
         archive=archive,
         namespace="meter-a",
         tariff_calendar=calendar,
+        contracted_power_schedule=schedule,
+        _contracted_power_configuration_error=None,
         target_for_tariff=lambda tariff: 3.5 if tariff.block is not None else None,
         dashboard_current=lambda: {"available": False, "now_utc": "2026-01-02T12:00:00+00:00"},
     )
@@ -561,4 +582,173 @@ def test_history_command_preserves_confirmed_false_and_null_filters(tmp_path: Pa
         )
         assert connection.error is None
         assert [item["confirmed_exceeded"] for item in connection.result["items"]] == values
+    archive.close()
+
+
+def test_historical_calendar_never_fills_unknown_archived_target_from_epoch(
+    tmp_path: Path,
+) -> None:
+    archive = QuarterArchive(tmp_path / "calendar-evidence.db")
+    archive.open()
+    starts = quarter_starts_for_local_day(date(2026, 1, 2))
+    schedule = ContractedPowerSchedule(
+        (
+            ContractedPowerPeriod(
+                date(2026, 1, 1),
+                date(2026, 12, 31),
+                (3.5, 3.5, 3.5, 3.5, 3.5),
+                "historical_fixture",
+            ),
+        )
+    )
+    archive.register_configuration_epoch(
+        namespace="meter-a",
+        source_id="sensor.grid",
+        positive_means_import=True,
+        contractual_target_kw=3.5,
+        safety_margin_kw=0.0,
+        block_targets_kw=(3.5, 3.5, 3.5, 3.5, 3.5),
+        allow_provisional_tariff=False,
+        contracted_power_schedule=schedule,
+        effective_utc=starts[0],
+    )
+    archive.upsert_quarter(
+        replace(
+            _record(starts[0], 0, incomplete=True),
+            contractual_target_kw=None,
+            target_provenance=None,
+            contractual_status="target_unknown",
+        )
+    )
+    archive.upsert_quarter(_record(starts[8], 0, incomplete=True))
+
+    connection = _Connection()
+    _run(
+        dashboard.ws_calendar(
+            _Hass(_runtime(archive)),
+            connection,
+            {"id": 80, "entry_id": "entry-a", "date": "2026-01-02"},
+        )
+    )
+    assert connection.error is None
+    first, missing, evidenced = connection.result["hours"][:3]
+    assert first["archived_quarter_present"] is True
+    assert first["as_recorded_target_kw"] is None
+    assert first["display_target_kw"] is None
+    assert first["as_recorded_source"] == "archived_quarter_unknown"
+    assert first["historical_configuration_target_kw"] == 3.5
+    assert missing["archived_quarter_present"] is False
+    assert missing["as_recorded_target_kw"] is None
+    assert missing["display_target_kw"] is None
+    assert missing["historical_configuration_target_kw"] == 3.5
+    assert evidenced["as_recorded_target_kw"] == 3.5
+    assert evidenced["display_target_kw"] == 3.5
+    assert evidenced["as_recorded_source"] == "archived_quarter"
+    json.dumps(connection.result)
+    archive.close()
+
+
+def test_contracts_websocket_pages_audit_and_exposes_separate_evidence(tmp_path: Path) -> None:
+    archive = QuarterArchive(tmp_path / "contracts-report.db")
+    archive.open()
+    starts = quarter_starts_for_local_day(date(2026, 1, 2))
+    runtime = _runtime(archive)
+    archive.register_configuration_epoch(
+        namespace="meter-a",
+        source_id="sensor.grid",
+        positive_means_import=True,
+        contractual_target_kw=3.5,
+        safety_margin_kw=0.0,
+        block_targets_kw=(3.5, 3.5, 3.5, 3.5, 3.5),
+        allow_provisional_tariff=False,
+        contracted_power_schedule=runtime.contracted_power_schedule,
+        effective_utc=starts[0],
+    )
+    archive.upsert_quarter(_record(starts[0], 0))
+    for index in range(55):
+        archive.append_contract_audit(
+            ContractAuditEvent(
+                f"event-{index:02d}",
+                "meter-a",
+                starts[0] + timedelta(minutes=index),
+                "CORRECTED",
+                "[]",
+                "[]",
+                "2026-01-01",
+                "2026-12-31",
+                "fixture",
+                None,
+                "user_action",
+                None,
+                f"revision-{index}",
+            )
+        )
+    connection = _Connection()
+    _run(
+        dashboard.ws_contracts(
+            _Hass(runtime),
+            connection,
+            {
+                "id": 81,
+                "entry_id": "entry-a",
+                "audit_page": 2,
+                "audit_page_size": 50,
+            },
+        )
+    )
+    assert connection.error is None
+    assert len(connection.result["audit_events"]) == 5
+    assert connection.result["audit_pagination"] == {
+        "page": 2,
+        "page_size": 50,
+        "total": 55,
+        "pages": 2,
+    }
+    assert len(connection.result["historical_configuration"]) == 1
+    assert len(connection.result["archived_target_evidence"]) == 1
+    assert connection.result["management"]["direct_options_supported"] is False
+    assert 'meter named "Meter A"' in connection.result["management"]["instruction"]
+    json.dumps(connection.result)
+
+    non_admin = _Connection(is_admin=False)
+    _run(
+        dashboard.ws_contracts(
+            _Hass(runtime),
+            non_admin,
+            {"id": 82, "entry_id": "entry-a", "audit_page": 1, "audit_page_size": 10},
+        )
+    )
+    assert non_admin.error is None
+    assert non_admin.result["management"]["supported"] is False
+    archive.close()
+
+
+def test_historical_calendar_dst_fallback_keeps_two_unknown_recorded_hours(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = cls(2026, 10, 26, 12, 0, tzinfo=UTC)
+            return value if tz is None else value.astimezone(tz)
+
+    monkeypatch.setattr(dashboard, "datetime", FrozenDateTime)
+    archive = QuarterArchive(tmp_path / "calendar-dst.db")
+    archive.open()
+    connection = _Connection()
+    _run(
+        dashboard.ws_calendar(
+            _Hass(_runtime(archive)),
+            connection,
+            {"id": 82, "entry_id": "entry-a", "date": "2026-10-25"},
+        )
+    )
+    repeated = [
+        item for item in connection.result["hours"] if item["local_datetime"][11:13] == "02"
+    ]
+    assert len(repeated) == 2
+    assert repeated[0]["start_utc"] != repeated[1]["start_utc"]
+    assert {item["fold"] for item in repeated} == {0, 1}
+    assert all(item["display_target_kw"] is None for item in repeated)
+    assert all(item["current_configuration_target_kw"] == 3.5 for item in repeated)
     archive.close()

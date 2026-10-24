@@ -173,7 +173,8 @@
       "archive_delete_confirmation_mismatch": "Potrditev se ne ujema. Pred trajnim izbrisom vnesite natanko prikazano besedilo.",
       "invalid_contracted_power_periods": "Datumi ali vrednosti dogovorjene moči niso veljavni. Vključujoča obdobja se ne smejo prekrivati.",
       "overlapping_contracted_power_period": "Izbrani datumi se prekrivajo z obdobjem {conflict}. Uredite to dodelitev ali uporabite Načrtuj spremembo.",
-      "invalid_scheduled_contract_change": "Načrtovana sprememba mora imeti veljavne datume znotraj izbrane dodelitve."
+      "invalid_scheduled_contract_change": "Načrtovana sprememba mora imeti veljavne datume znotraj izbrane dodelitve.",
+      "stale_contract_preview": "Razpored dogovorjene moči se je po pripravi predogleda spremenil. Vrnite se v upravljanje pogodb in ustvarite nov predogled. Spremembe niso bile shranjene."
     },
     "step": {
       "init": {

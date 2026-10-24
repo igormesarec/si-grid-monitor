@@ -1377,6 +1377,74 @@ def test_options_flow_can_shorten_and_extend_dated_assignments_midyear() -> None
     assert final_schedule.periods[1].block_targets_kw == later_targets
 
 
+def test_contract_preview_rejects_a_stale_second_session() -> None:
+    """A preview cannot overwrite a schedule saved by another OptionsFlow session."""
+
+    _ensure_config_flow_stubs()
+    from custom_components.si_grid_monitor.config_flow import SIGridMonitorOptionsFlow
+
+    original = ContractedPowerSchedule(
+        (
+            ContractedPowerPeriod(
+                date(2026, 1, 1),
+                date(2026, 12, 31),
+                (1.0, 1.1, 1.2, 1.3, 1.4),
+                "original",
+            ),
+        )
+    )
+    first_change = original.schedule_change(
+        0,
+        ContractedPowerPeriod(
+            date(2026, 10, 25),
+            date(2026, 12, 31),
+            (2.0, 2.1, 2.2, 2.3, 2.4),
+            "session_one",
+        ),
+    )
+    second_change = original.schedule_change(
+        0,
+        ContractedPowerPeriod(
+            date(2026, 7, 1),
+            date(2026, 9, 30),
+            (3.0, 3.1, 3.2, 3.3, 3.4),
+            "session_two",
+        ),
+    )
+    entry = _options_flow_entry(original)
+    stale_flow = SIGridMonitorOptionsFlow()
+    stale_flow.config_entry = entry
+    stale_flow.async_show_form = lambda **kwargs: kwargs  # type: ignore[method-assign]
+    saves: list[dict[str, Any]] = []
+    stale_flow.async_create_entry = lambda **kwargs: saves.append(kwargs) or kwargs  # type: ignore[method-assign]
+
+    stale_flow._preview(
+        first_change,
+        event_type="SCHEDULED_CHANGE",
+        affected=first_change.periods[-1],
+    )
+
+    concurrent_flow = SIGridMonitorOptionsFlow()
+    concurrent_flow.config_entry = entry
+    concurrent_flow.async_create_entry = lambda **kwargs: kwargs  # type: ignore[method-assign]
+    concurrent_result = concurrent_flow._save_schedule(
+        second_change,
+        event_type="SCHEDULED_CHANGE",
+        affected=second_change.periods[1],
+    )
+    entry.options = concurrent_result["data"]
+
+    result = _run(stale_flow.async_step_contract_preview({"confirm": True}))
+
+    assert result["errors"] == {"base": "stale_contract_preview"}
+    assert saves == []
+    assert (
+        contracted_power_schedule_from_json(entry.options[CONF_CONTRACTED_POWER_PERIODS])
+        == second_change
+    )
+    assert stale_flow._pending_schedule is None
+
+
 def test_kw_kwh_entities_publish_full_precision_with_three_digit_display_hint() -> None:
     source = (ROOT / "custom_components/si_grid_monitor/sensor.py").read_text(encoding="utf-8")
     assert "UnitOfPower.KILO_WATT,\n            UnitOfEnergy.KILO_WATT_HOUR," in source

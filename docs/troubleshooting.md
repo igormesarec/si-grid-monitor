@@ -43,7 +43,12 @@ Warnings start 30 days before an assignment ends without an adjacent successor;
 the final 7 days are urgent. The first uncovered local day is an error. A fully
 covering successor beginning the next day suppresses the expiry warning.
 
-Open **Contracts**, verify the active meter, then use **Manage contracts** and
-Home Assistant's **Configure** action. Add a successor or use Schedule change.
+Open **Contracts**, verify the active meter, then use **Open integration
+settings**. Locate the meter name shown in the report and use Home Assistant's
+**Configure** action. Add a successor or use Schedule change.
+
+If confirmation reports a stale preview, another session changed the schedule
+after your preview was generated. Nothing from that preview was saved. Reopen
+the operation, review the current schedule and create a new preview.
 Measurements continue during a gap, but SI Grid Monitor does not reuse an
 expired value, substitute zero/4.800 kW, or confirm contractual exceedances.

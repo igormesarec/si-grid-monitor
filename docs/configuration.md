@@ -81,5 +81,10 @@ Gaps are allowed when the next assignment is genuinely unknown, but are shown
 explicitly and make contractual forecasts and confirmed exceedances unavailable.
 Physical import/export measurement and SQLite archiving continue.
 
+The confirmation preview is revision-protected. If another browser or user saves
+the schedule after your preview was created, the old confirmation is rejected;
+return to contract management and generate a fresh preview. No stale change or
+misleading audit event is saved.
+
 The optional Record date may be left empty. User-entered values are configuration,
 not independent legal verification by SI Grid Monitor.

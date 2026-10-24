@@ -727,13 +727,15 @@ async def ws_calendar(hass: HomeAssistant, connection: Any, msg: dict[str, Any])
     starts = quarter_starts_for_local_day(selected)
     day_start = starts[0]
     day_end = quarter_starts_for_local_day(selected + timedelta(days=1))[0]
-    archived, epochs = await asyncio.gather(
-        hass.async_add_executor_job(
-            runtime.archive.list_quarters, runtime.namespace, day_start, day_end
-        ),
-        hass.async_add_executor_job(runtime.archive.list_configuration_epochs, runtime.namespace),
+    archived = await hass.async_add_executor_job(
+        runtime.archive.list_quarters, runtime.namespace, day_start, day_end
+    )
+    epochs = await hass.async_add_executor_job(
+        runtime.archive.list_configuration_epochs, runtime.namespace
     )
     archived_by_start = {str(row["start_utc"]): row for row in archived}
+    local_today = datetime.now(UTC).astimezone(LJUBLJANA).date()
+    historical_day = selected < local_today
     rows = []
     for item in runtime.tariff_calendar.daily_view(selected):
         tariff = runtime.tariff_calendar.classify(item["start_utc"])
@@ -742,29 +744,49 @@ async def ws_calendar(hass: HomeAssistant, connection: Any, msg: dict[str, Any])
         archive_row = archived_by_start.get(start_iso)
         recorded_target = None
         recorded_source = "unknown"
-        recorded_reason = "No archived quarter or historical configuration proves this target."
-        if archive_row is not None and archive_row["contractual_target_kw"] is not None:
-            recorded_target = float(archive_row["contractual_target_kw"])
-            recorded_source = "archived_quarter"
-            recorded_reason = None
-        else:
-            eligible = [epoch for epoch in epochs if epoch.effective_utc <= item["start_utc"]]
-            if eligible:
-                epoch = eligible[-1]
-                if epoch.contracted_power_periods is not None:
-                    historical = ContractedPowerSchedule(epoch.contracted_power_periods)
-                    recorded_target = historical.target_for(tariff)
-                    if recorded_target is not None:
-                        recorded_source = "historical_configuration"
-                        recorded_reason = None
+        recorded_reason = "No archived quarter proves the contractual target for this hour."
+        inferred_target = None
+        inferred_epoch = None
+        eligible = [epoch for epoch in epochs if epoch.effective_utc <= item["start_utc"]]
+        if eligible:
+            epoch = eligible[-1]
+            if epoch.contracted_power_periods is not None:
+                historical = ContractedPowerSchedule(epoch.contracted_power_periods)
+                inferred_target = historical.target_for(tariff)
+                inferred_epoch = epoch.epoch
+        if archive_row is not None:
+            if archive_row["contractual_target_kw"] is not None:
+                recorded_target = float(archive_row["contractual_target_kw"])
+                recorded_source = "archived_quarter"
+                recorded_reason = None
+            else:
+                recorded_source = "archived_quarter_unknown"
+                recorded_reason = (
+                    "The archived quarter explicitly has no contractual target. "
+                    "Historical configuration, when shown, is inference only."
+                )
+        elif inferred_target is not None:
+            recorded_reason = (
+                "No archived quarter exists. A historical configuration inference is shown "
+                "separately and is not archived measurement evidence."
+            )
+        display_target = recorded_target if historical_day else current_target
         rows.append(
             {
                 **_json(item),
-                "target_kw": current_target,
+                "target_kw": display_target,
+                "display_target_kw": display_target,
+                "display_target_source": (
+                    recorded_source if historical_day else "current_configuration"
+                ),
+                "is_historical": historical_day,
                 "current_configuration_target_kw": current_target,
                 "as_recorded_target_kw": recorded_target,
                 "as_recorded_source": recorded_source,
                 "as_recorded_reason": recorded_reason,
+                "historical_configuration_target_kw": inferred_target,
+                "historical_configuration_epoch": inferred_epoch,
+                "archived_quarter_present": archive_row is not None,
             }
         )
     first = rows[0] if rows else {}
@@ -787,7 +809,14 @@ async def ws_calendar(hass: HomeAssistant, connection: Any, msg: dict[str, Any])
     )
 
 
-@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/contracts", **_ENTRY_SCHEMA})
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/contracts",
+        vol.Optional("audit_page", default=1): int,
+        vol.Optional("audit_page_size", default=50): int,
+        **_ENTRY_SCHEMA,
+    }
+)
 @websocket_api.async_response
 async def ws_contracts(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
     """Return read-only, meter-scoped contract configuration and evidence."""
@@ -798,15 +827,27 @@ async def ws_contracts(hass: HomeAssistant, connection: Any, msg: dict[str, Any]
         return
     now_utc = datetime.now(UTC)
     local_today = now_utc.astimezone(LJUBLJANA).date()
+    audit_page = int(msg.get("audit_page", 1))
+    audit_page_size = int(msg.get("audit_page_size", 50))
+    if audit_page < 1 or not 1 <= audit_page_size <= 100:
+        connection.send_error(msg["id"], "invalid_query", "Invalid contract audit pagination")
+        return
+    audit_offset = (audit_page - 1) * audit_page_size
     try:
-        audits, epochs, evidence = await asyncio.gather(
-            hass.async_add_executor_job(runtime.archive.list_contract_audit, runtime.namespace),
-            hass.async_add_executor_job(
-                runtime.archive.list_configuration_epochs, runtime.namespace
-            ),
-            hass.async_add_executor_job(
-                runtime.archive.list_contract_target_evidence, runtime.namespace
-            ),
+        audits = await hass.async_add_executor_job(
+            runtime.archive.list_contract_audit,
+            runtime.namespace,
+            audit_page_size,
+            audit_offset,
+        )
+        audit_total = await hass.async_add_executor_job(
+            runtime.archive.count_contract_audit, runtime.namespace
+        )
+        epochs = await hass.async_add_executor_job(
+            runtime.archive.list_configuration_epochs, runtime.namespace
+        )
+        evidence = await hass.async_add_executor_job(
+            runtime.archive.list_contract_target_evidence, runtime.namespace
         )
     except sqlite3.Error:
         _history_error(
@@ -887,16 +928,24 @@ async def ws_contracts(hass: HomeAssistant, connection: Any, msg: dict[str, Any]
                 "applicable_target_kw": runtime.target_for_tariff(current_tariff),
                 "current_schedule": schedule.periods,
                 "timeline": timeline,
-                "historical_configuration": epochs[-100:],
+                "historical_configuration": epochs[-200:],
+                "historical_configuration_total": len(epochs),
+                "historical_configuration_truncated": len(epochs) > 200,
                 "archived_target_evidence": evidence,
                 "audit_events": audits,
-                "audit_events_limit": 200,
+                "audit_pagination": {
+                    "page": audit_page,
+                    "page_size": audit_page_size,
+                    "total": audit_total,
+                    "pages": max(1, (audit_total + audit_page_size - 1) // audit_page_size),
+                },
                 "management": {
                     "supported": bool(connection.user.is_admin),
+                    "direct_options_supported": False,
                     "route": "/config/integrations/integration/si_grid_monitor",
                     "instruction": (
                         "Open Devices & services, select SI Grid Monitor, then Configure "
-                        "the selected meter."
+                        f'the meter named "{runtime.entry.title}".'
                     ),
                 },
             }
