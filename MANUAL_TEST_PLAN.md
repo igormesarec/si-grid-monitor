@@ -1,4 +1,32 @@
-# SI Grid Monitor V1.0.0 Release-Candidate Manual Test Plan
+# SI Grid Monitor V1.0.1 Hotfix Release-Candidate Manual Test Plan
+
+## V1.0.1 native OptionsFlow hotfix
+
+1. Configure two independent A/B/C meters with different friendly names and
+   dated B1–B5 assignments. Test once on desktop and once in the Android
+   Companion App.
+2. Confirm the single **SI Grid Monitor** sidebar item still opens the dashboard,
+   shows all seven tabs and switches between the two meters without mixed data.
+3. In **Settings > Devices & services > SI Grid Monitor**, open **Configure** for
+   each meter. It must open the native SI Grid Monitor settings menu, not the
+   sidebar dashboard.
+4. Confirm that menu contains **Calculation and meter settings**, **Manage
+   contracted-power assignments**, **Add contracted-power assignment**, and
+   **Archive retention or permanent deletion**.
+5. Open **Manage contracted-power assignments**, edit an existing assignment
+   from `2026-01-01…2026-12-31` to end on `2026-06-30`, then add another dated
+   assignment from `2026-07-01…2026-12-31`. Confirm overlapping periods are
+   rejected and the two valid periods remain editable after reload.
+6. Complete quarters recorded before the edit must retain their original
+   contracted limits, measurements, tariff provenance and source epoch. New
+   quarters must use only the assignment effective for their local date.
+7. Reload each meter and restart Home Assistant. Confirm Configure still opens
+   OptionsFlow and the shared dashboard remains available without duplicate
+   sidebar entries.
+
+These Android and desktop checks require a real Home Assistant installation;
+automated tests validate registration arguments and OptionsFlow behavior but do
+not claim Companion App acceptance.
 
 ## V1.0 mandatory acceptance
 

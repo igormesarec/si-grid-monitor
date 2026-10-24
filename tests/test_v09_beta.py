@@ -28,6 +28,10 @@ from custom_components.si_grid_monitor.const import (
     ARCHIVE_REMOVAL_CONFIRMATION_TTL_SECONDS,
     CONF_ALLOW_PROVISIONAL_TARIFF,
     CONF_ARCHIVE_REMOVAL_CONFIRMED_AT,
+    CONF_ASSIGNMENT_END_DATE,
+    CONF_ASSIGNMENT_PROVENANCE,
+    CONF_ASSIGNMENT_RECORDED_ON,
+    CONF_ASSIGNMENT_START_DATE,
     CONF_CONTRACTED_POWER_PERIODS,
     CONF_EXPORT_POWER_ENTITY,
     CONF_IMPORT_POWER_ENTITY,
@@ -39,6 +43,11 @@ from custom_components.si_grid_monitor.const import (
     CONF_SMOOTHING_SECONDS,
     CONF_SOURCE_MODE,
     CONF_SUSTAINED_HORIZON_MINUTES,
+    CONF_TARGET_B1_KW,
+    CONF_TARGET_B2_KW,
+    CONF_TARGET_B3_KW,
+    CONF_TARGET_B4_KW,
+    CONF_TARGET_B5_KW,
     CONF_TARGET_KW,
     DOMAIN,
     SOURCE_CUMULATIVE_ENERGY,
@@ -49,6 +58,7 @@ from custom_components.si_grid_monitor.const import (
 from custom_components.si_grid_monitor.contracted_power import (
     ContractedPowerPeriod,
     ContractedPowerSchedule,
+    contracted_power_schedule_from_json,
 )
 
 ROOT = Path(__file__).parents[1]
@@ -938,9 +948,9 @@ def test_beta_version_frontend_and_hacs_package_are_consistent() -> None:
         encoding="utf-8"
     )
     hacs = json.loads((ROOT / "hacs.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == VERSION == "1.0.0"
-    assert "dashboard-model.mjs?v=1.0.0" in dashboard
-    assert "dashboard-i18n.mjs?v=1.0.0" in dashboard
+    assert manifest["version"] == VERSION == "1.0.1"
+    assert "dashboard-model.mjs?v=1.0.1" in dashboard
+    assert "dashboard-i18n.mjs?v=1.0.1" in dashboard
     assert hacs["name"] == "SI Grid Monitor"
     assert not any(ROOT.joinpath(name).exists() for name in ("release.zip", "dist.zip"))
 
@@ -1237,6 +1247,134 @@ def test_options_flow_has_no_active_counter_policy() -> None:
     assert "CONF_COUNTER_MIN_OBSERVATION_SECONDS" not in source
     assert "CONF_COUNTER_MAX_PLAUSIBLE_POWER_KW" not in source
     assert "async_step_counter_type" not in source
+
+
+def _options_flow_entry(schedule: ContractedPowerSchedule) -> SimpleNamespace:
+    return SimpleNamespace(
+        entry_id="meter-options",
+        title="Main grid",
+        data={
+            CONF_SOURCE_MODE: "signed_power",
+            CONF_POWER_ENTITY: "sensor.grid_power",
+        },
+        options={CONF_CONTRACTED_POWER_PERIODS: schedule.to_json()},
+    )
+
+
+def _assignment_input(start: date, end: date, targets: tuple[float, ...]) -> dict[str, Any]:
+    return {
+        CONF_ASSIGNMENT_START_DATE: start,
+        CONF_ASSIGNMENT_END_DATE: end,
+        CONF_ASSIGNMENT_RECORDED_ON: date(2025, 10, 17),
+        CONF_ASSIGNMENT_PROVENANCE: "distributor_record",
+        **dict(
+            zip(
+                (
+                    CONF_TARGET_B1_KW,
+                    CONF_TARGET_B2_KW,
+                    CONF_TARGET_B3_KW,
+                    CONF_TARGET_B4_KW,
+                    CONF_TARGET_B5_KW,
+                ),
+                targets,
+                strict=True,
+            )
+        ),
+    }
+
+
+def test_native_options_menu_remains_available_with_dashboard_panel() -> None:
+    """The integration gear must expose native options, not redirect to the panel."""
+
+    _ensure_config_flow_stubs()
+    from custom_components.si_grid_monitor.config_flow import SIGridMonitorOptionsFlow
+
+    schedule = ContractedPowerSchedule(
+        (
+            ContractedPowerPeriod(
+                date(2026, 1, 1),
+                date(2026, 12, 31),
+                (3.5, 3.9, 4.1, 4.2, 4.2),
+                "distributor_record",
+            ),
+        )
+    )
+    flow = SIGridMonitorOptionsFlow()
+    flow.config_entry = _options_flow_entry(schedule)
+    flow.async_show_menu = lambda **kwargs: kwargs
+
+    result = _run(flow.async_step_init())
+
+    assert result["step_id"] == "init"
+    assert result["menu_options"] == [
+        "settings",
+        "assignments",
+        "add_assignment",
+        "archive_removal",
+    ]
+
+
+def test_options_flow_can_shorten_and_extend_dated_assignments_midyear() -> None:
+    """Editing one period and adding a non-overlapping successor stays native and auditable."""
+
+    _ensure_config_flow_stubs()
+    from custom_components.si_grid_monitor.config_flow import SIGridMonitorOptionsFlow
+
+    original_targets = (3.5, 3.9, 4.1, 4.2, 4.2)
+    later_targets = (3.6, 4.0, 4.2, 4.3, 4.3)
+    original = ContractedPowerSchedule(
+        (
+            ContractedPowerPeriod(
+                date(2026, 1, 1),
+                date(2026, 12, 31),
+                original_targets,
+                "distributor_record",
+                date(2025, 10, 17),
+            ),
+        )
+    )
+    entry = _options_flow_entry(original)
+
+    def run_assignment(
+        schedule: ContractedPowerSchedule,
+        selected_index: int | None,
+        step: str,
+        values: dict[str, Any],
+    ) -> dict[str, Any]:
+        flow = SIGridMonitorOptionsFlow()
+        entry.options = {CONF_CONTRACTED_POWER_PERIODS: schedule.to_json()}
+        flow.config_entry = entry
+        flow._selected_index = selected_index
+        flow.async_create_entry = lambda **kwargs: kwargs
+        action = (
+            flow.async_step_edit_assignment if step == "edit" else flow.async_step_add_assignment
+        )
+        return _run(action(values))
+
+    edited_result = run_assignment(
+        original,
+        0,
+        "edit",
+        _assignment_input(date(2026, 1, 1), date(2026, 6, 30), original_targets),
+    )
+    shortened = contracted_power_schedule_from_json(
+        edited_result["data"][CONF_CONTRACTED_POWER_PERIODS]
+    )
+    assert shortened.periods[0].effective_to == date(2026, 6, 30)
+
+    added_result = run_assignment(
+        shortened,
+        None,
+        "add",
+        _assignment_input(date(2026, 7, 1), date(2026, 12, 31), later_targets),
+    )
+    final_schedule = contracted_power_schedule_from_json(
+        added_result["data"][CONF_CONTRACTED_POWER_PERIODS]
+    )
+    assert len(final_schedule.periods) == 2
+    assert final_schedule.periods[0].block_targets_kw == original_targets
+    assert final_schedule.periods[1].effective_from == date(2026, 7, 1)
+    assert final_schedule.periods[1].block_targets_kw == later_targets
 
 
 def test_kw_kwh_entities_publish_full_precision_with_three_digit_display_hint() -> None:

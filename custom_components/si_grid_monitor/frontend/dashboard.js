@@ -28,8 +28,8 @@ import {
   selectTimelineHour,
   todayChartModel,
   todayQuarterAction,
-} from "./dashboard-model.mjs?v=1.0.0";
-import {dashboardLanguage, localizeDashboard, translateDashboard} from "./dashboard-i18n.mjs?v=1.0.0";
+} from "./dashboard-model.mjs?v=1.0.1";
+import {dashboardLanguage, localizeDashboard, translateDashboard} from "./dashboard-i18n.mjs?v=1.0.1";
 
 const fmt = (value, digits = 3) => value == null ? "—" : Number(value).toFixed(digits);
 const fmtPct = value => fmt(value, 2);

@@ -132,6 +132,8 @@ def test_multiple_meters_share_one_sidebar_panel(monkeypatch: Any) -> None:
     assert _run(dashboard.async_register_panel(hass)) is False
     assert len(registrations) == 1
     assert registrations[0]["frontend_url_path"] == "si-grid-monitor"
+    assert "config_panel_domain" not in registrations[0]
+    assert registrations[0]["config"] == {"version": dashboard.VERSION}
 
 
 def _record(start: datetime, index: int, *, incomplete: bool = False) -> ArchiveRecord:

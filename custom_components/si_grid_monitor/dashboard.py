@@ -146,7 +146,6 @@ async def async_register_panel(hass: HomeAssistant) -> bool:
         sidebar_icon=PANEL_ICON,
         require_admin=False,
         config={"version": VERSION},
-        config_panel_domain=DOMAIN,
         handle_safe_area=True,
     )
     return True
