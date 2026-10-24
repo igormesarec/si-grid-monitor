@@ -343,7 +343,7 @@ def test_history_commands_use_real_sqlite_rows_and_preserve_archive(tmp_path: Pa
 
     after = [dict(row) for row in archive.list_quarters("meter-a", starts[0], starts[8])]
     assert after == before
-    assert archive.schema_version == 6
+    assert archive.schema_version == 7
     archive.close()
 
 
@@ -518,7 +518,7 @@ def test_history_command_pages_real_rows_and_serializes_storage(tmp_path: Path) 
     assert connection.result["summary"]["completed_expected_count"] == 52
     assert connection.result["summary"]["future_or_uncompleted_count"] == 44
     assert connection.result["summary"]["missing_count"] == 45
-    assert connection.result["storage"]["schema_version"] == 6
+    assert connection.result["storage"]["schema_version"] == 7
     json.dumps(connection.result)
     archive.close()
 

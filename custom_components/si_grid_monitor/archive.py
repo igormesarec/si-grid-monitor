@@ -9,7 +9,7 @@ import threading
 import uuid
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -23,7 +23,7 @@ from .engine import EPSILON, LJUBLJANA, CompletedQuarter, DataQuality
 from .tariffs.calendar import SlovenianTariffCalendar
 from .tariffs.models import RuleStatus, TariffClassification
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 _QUALITY_RANK = {
     DataQuality.UNAVAILABLE.value: 0,
     DataQuality.INCOMPLETE.value: 1,
@@ -158,6 +158,25 @@ class ArchivedQuarterSnapshot:
     signed_average_kw: float
     quality: str
     provenance: str
+
+
+@dataclass(frozen=True, slots=True)
+class ContractAuditEvent:
+    """One append-only, meter-namespaced contract schedule change."""
+
+    event_id: str
+    namespace: str
+    event_utc: datetime
+    event_type: str
+    old_schedule_json: str
+    new_schedule_json: str
+    effective_from: str | None
+    effective_to: str | None
+    provenance: str | None
+    recorded_on: str | None
+    origin: str
+    actor: str | None
+    configuration_revision: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -573,6 +592,92 @@ class QuarterArchive:
             ).fetchall()
         return [_epoch_from_row(row) for row in rows]
 
+    def append_contract_audit(self, event: ContractAuditEvent) -> bool:
+        """Append one idempotent audit event without changing measurements."""
+
+        with self._lock, self._db:
+            cursor = self._db.execute(
+                """INSERT OR IGNORE INTO contract_audit(
+                     event_id,namespace,event_utc,event_type,old_schedule_json,
+                     new_schedule_json,effective_from,effective_to,provenance,
+                     recorded_on,origin,actor,configuration_revision)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    event.event_id,
+                    event.namespace,
+                    _utc_iso(event.event_utc),
+                    event.event_type,
+                    event.old_schedule_json,
+                    event.new_schedule_json,
+                    event.effective_from,
+                    event.effective_to,
+                    event.provenance,
+                    event.recorded_on,
+                    event.origin,
+                    event.actor,
+                    event.configuration_revision,
+                ),
+            )
+            return cursor.rowcount > 0
+
+    def list_contract_audit(self, namespace: str, *, limit: int = 200) -> list[dict[str, Any]]:
+        """Return bounded audit events newest first for one meter."""
+
+        bounded = min(max(int(limit), 1), 500)
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT * FROM contract_audit WHERE namespace=?
+                   ORDER BY event_utc DESC,event_id DESC LIMIT ?""",
+                (namespace, bounded),
+            ).fetchall()
+        return [
+            {key: row[key] for key in row.keys()}  # noqa: SIM118 - sqlite Row iterates values
+            for row in rows
+        ]
+
+    def list_contract_target_evidence(
+        self, namespace: str, *, limit: int = 200
+    ) -> list[dict[str, Any]]:
+        """Return bounded distinct archived target evidence without loading all quarters."""
+
+        bounded = min(max(int(limit), 1), 500)
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT MIN(start_utc) AS first_start_utc,
+                          MAX(start_utc) AS last_start_utc,
+                          COUNT(*) AS quarter_count,tariff_block,contractual_target_kw,
+                          target_effective_from,target_effective_to,target_provenance,
+                          target_recorded_on,source_epoch,configuration_status,
+                          contractual_status
+                   FROM quarters
+                   WHERE namespace=? AND contractual_target_kw IS NOT NULL
+                   GROUP BY tariff_block,contractual_target_kw,target_effective_from,
+                            target_effective_to,target_provenance,target_recorded_on,
+                            source_epoch,configuration_status,contractual_status
+                   ORDER BY last_start_utc DESC LIMIT ?""",
+                (namespace, bounded),
+            ).fetchall()
+        return [
+            {key: row[key] for key in row.keys()}  # noqa: SIM118 - sqlite Row iterates values
+            for row in rows
+        ]
+
+    def archived_target_for(self, namespace: str, start_utc: datetime) -> dict[str, Any] | None:
+        """Return exact immutable quarter target evidence for a UTC quarter."""
+
+        with self._lock:
+            row = self._db.execute(
+                """SELECT start_utc,tariff_block,contractual_target_kw,
+                          target_effective_from,target_effective_to,target_provenance,
+                          target_recorded_on,source_epoch,configuration_status,
+                          contractual_status
+                   FROM quarters WHERE namespace=? AND start_utc=?""",
+                (namespace, _utc_iso(start_utc)),
+            ).fetchone()
+        return (
+            None if row is None else {key: row[key] for key in row.keys()}  # noqa: SIM118 - sqlite Row
+        )
+
     def resolve_configuration(
         self, namespace: str, start_utc: datetime, end_utc: datetime
     ) -> ConfigurationResolution:
@@ -593,13 +698,18 @@ class QuarterArchive:
                 and epoch.positive_means_import == first.positive_means_import
                 for epoch in candidates
             )
-            return ConfigurationResolution(
-                ConfigurationStatus.TARGET_MIXED
-                if same_source
-                else ConfigurationStatus.SOURCE_MIXED,
-                source_id=first.source_id if same_source else None,
-                positive_means_import=(first.positive_means_import if same_source else None),
-            )
+            if not same_source:
+                return ConfigurationResolution(ConfigurationStatus.SOURCE_MIXED)
+            local_date = start.astimezone(LJUBLJANA).date()
+            first_semantics = _epoch_quarter_semantics(first, local_date)
+            if any(
+                _epoch_quarter_semantics(epoch, local_date) != first_semantics for epoch in changes
+            ):
+                return ConfigurationResolution(
+                    ConfigurationStatus.TARGET_MIXED,
+                    source_id=first.source_id,
+                    positive_means_import=first.positive_means_import,
+                )
         schedule = (
             None
             if first.contracted_power_periods is None
@@ -1798,6 +1908,42 @@ class QuarterArchive:
             version = 5
         if version == 5:
             self._migrate_v5_to_v6()
+            version = 6
+        if version == 6:
+            self._migrate_v6_to_v7()
+
+    def _migrate_v6_to_v7(self) -> None:
+        """Atomically add append-only contract-audit storage."""
+
+        self._migration_checkpoint("before_v7_schema_change")
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            self._db.execute(
+                """CREATE TABLE IF NOT EXISTS contract_audit(
+                     event_id TEXT PRIMARY KEY,namespace TEXT NOT NULL,event_utc TEXT NOT NULL,
+                     event_type TEXT NOT NULL,old_schedule_json TEXT NOT NULL,
+                     new_schedule_json TEXT NOT NULL,effective_from TEXT,effective_to TEXT,
+                     provenance TEXT,recorded_on TEXT,origin TEXT NOT NULL,actor TEXT,
+                     configuration_revision TEXT NOT NULL)"""
+            )
+            self._migration_checkpoint("after_contract_audit_table")
+            self._db.execute(
+                """CREATE INDEX IF NOT EXISTS idx_contract_audit_namespace_time
+                   ON contract_audit(namespace,event_utc DESC)"""
+            )
+            self._migration_checkpoint("after_contract_audit_index")
+            columns = {
+                str(row["name"])
+                for row in self._db.execute("PRAGMA table_info(contract_audit)").fetchall()
+            }
+            if "configuration_revision" not in columns or "new_schedule_json" not in columns:
+                raise RuntimeError("archive has an incompatible partial V7 contract audit table")
+            self._migration_checkpoint("before_v7_version_update")
+            self._db.execute("PRAGMA user_version=7")
+            self._db.commit()
+        except BaseException:
+            self._db.rollback()
+            raise
 
     def _migrate_v5_to_v6(self) -> None:
         """Atomically add reconstruction metadata, including partial-V6 recovery."""
@@ -1976,6 +2122,23 @@ def _same_optional_float(value: object, expected: float | None) -> bool:
 def _same_optional_bool(value: object, expected: bool | None) -> bool:
     return (value is None and expected is None) or (
         value is not None and expected is not None and bool(value) == expected
+    )
+
+
+def _epoch_quarter_semantics(epoch: ConfigurationEpoch, local_date: date) -> tuple[Any, ...]:
+    """Return only settings capable of changing a quarter on this local date."""
+
+    period: ContractedPowerPeriod | None = None
+    if epoch.contracted_power_periods is not None:
+        period = ContractedPowerSchedule(epoch.contracted_power_periods).period_for(local_date)
+    targets = period.block_targets_kw if period is not None else epoch.block_targets_kw
+    return (
+        epoch.source_id,
+        epoch.positive_means_import,
+        epoch.safety_margin_kw,
+        epoch.allow_provisional_tariff,
+        tuple(targets),
+        period is not None,
     )
 
 

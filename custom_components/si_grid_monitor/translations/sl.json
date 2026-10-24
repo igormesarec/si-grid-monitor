@@ -170,7 +170,10 @@
   },
   "options": {
     "error": {
-      "archive_delete_confirmation_mismatch": "Potrditev se ne ujema. Pred trajnim izbrisom vnesite natanko prikazano besedilo."
+      "archive_delete_confirmation_mismatch": "Potrditev se ne ujema. Pred trajnim izbrisom vnesite natanko prikazano besedilo.",
+      "invalid_contracted_power_periods": "Datumi ali vrednosti dogovorjene moči niso veljavni. Vključujoča obdobja se ne smejo prekrivati.",
+      "overlapping_contracted_power_period": "Izbrani datumi se prekrivajo z obdobjem {conflict}. Uredite to dodelitev ali uporabite Načrtuj spremembo.",
+      "invalid_scheduled_contract_change": "Načrtovana sprememba mora imeti veljavne datume znotraj izbrane dodelitve."
     },
     "step": {
       "init": {
@@ -243,7 +246,7 @@
       },
       "assignments": {
         "title": "Dodelitve dogovorjene moči",
-        "description": "Izberite dodelitev za urejanje ali odstranitev. Obdobja se ne smejo prekrivati.",
+        "description": "Izberite Uredi podrobnosti, Načrtuj spremembo, Popravi ali Odstrani. Vključujoča obdobja se ne smejo prekrivati; pred shranjevanjem se prikaže predogled.",
         "data": {
           "assignment_action": "Dejanje"
         },
@@ -278,8 +281,8 @@
         }
       },
       "edit_assignment": {
-        "title": "Uredi dodelitev",
-        "description": "Sprememba ustvari novo konfiguracijsko obdobje in ne prepiše arhiviranih četrtin.",
+        "title": "Uredi podrobnosti dodelitve",
+        "description": "Spremenite izvor ali neobvezni datum evidence. Datumi, vrednosti B1-B5 in arhivirane četrtine ostanejo nespremenjeni.",
         "data": {
           "assignment_start_date": "Začetek veljavnosti",
           "assignment_end_date": "Konec veljavnosti",
@@ -303,6 +306,32 @@
           "target_b5_kw": "Distributerjeva omejitev povprečne 15-minutne UVOZNE moči za B5 v kW. Velja samo v tem obdobju in v bloku B5."
         }
       },
+      "correct_assignment": {
+        "title": "Popravi dodelitev dogovorjene moči",
+        "description": "Popravite napačne datume ali vrednosti B1-B5. Zaključene četrtine ohranijo prvotne ciljne vrednosti, zato se konfiguracija in zgodovinski dokazi lahko razlikujejo.",
+        "data": {
+          "assignment_start_date": "Začetek veljavnosti", "assignment_end_date": "Konec veljavnosti", "assignment_recorded_on": "Datum evidence (neobvezno)", "assignment_provenance": "Izvor", "target_b1_kw": "Dogovorjena moč B1", "target_b2_kw": "Dogovorjena moč B2", "target_b3_kw": "Dogovorjena moč B3", "target_b4_kw": "Dogovorjena moč B4", "target_b5_kw": "Dogovorjena moč B5"
+        },
+        "data_description": {
+          "assignment_start_date": "Popravljen prvi vključujoči lokalni datum.", "assignment_end_date": "Popravljen zadnji vključujoči lokalni datum.", "assignment_recorded_on": "Neobvezni datum na izvornem dokumentu.", "assignment_provenance": "Vir popravljenih uporabniško vnesenih omejitev.", "target_b1_kw": "Popravljena 15-minutna uvozna omejitev B1.", "target_b2_kw": "Popravljena 15-minutna uvozna omejitev B2.", "target_b3_kw": "Popravljena 15-minutna uvozna omejitev B3.", "target_b4_kw": "Popravljena 15-minutna uvozna omejitev B4.", "target_b5_kw": "Popravljena 15-minutna uvozna omejitev B5."
+        }
+      },
+      "schedule_change": {
+        "title": "Načrtuj spremembo pogodbe",
+        "description": "Vnesite prvi vključujoči lokalni datum novih omejitev. Če neobvezni konec pustite prazen, velja konec izbrane dodelitve; z vnosom konca nastane varna delitev na tri obdobja.",
+        "data": {
+          "assignment_start_date": "Nove omejitve veljajo od", "assignment_change_end_date": "Nove omejitve veljajo do (neobvezno)", "assignment_recorded_on": "Datum evidence (neobvezno)", "assignment_provenance": "Izvor", "target_b1_kw": "Nova dogovorjena moč B1", "target_b2_kw": "Nova dogovorjena moč B2", "target_b3_kw": "Nova dogovorjena moč B3", "target_b4_kw": "Nova dogovorjena moč B4", "target_b5_kw": "Nova dogovorjena moč B5"
+        },
+        "data_description": {
+          "assignment_start_date": "Prvi vključujoči lokalni datum novih omejitev.", "assignment_change_end_date": "Neobvezni zadnji vključujoči datum; prazno pomeni konec izbrane dodelitve.", "assignment_recorded_on": "Neobvezni datum na izvornem dokumentu.", "assignment_provenance": "Vir novih uporabniško vnesenih omejitev.", "target_b1_kw": "Nova 15-minutna uvozna omejitev B1.", "target_b2_kw": "Nova 15-minutna uvozna omejitev B2.", "target_b3_kw": "Nova 15-minutna uvozna omejitev B3.", "target_b4_kw": "Nova 15-minutna uvozna omejitev B4.", "target_b5_kw": "Nova 15-minutna uvozna omejitev B5."
+        }
+      },
+      "contract_preview": {
+        "title": "Pregled razporeda pogodb",
+        "description": "PREJ:\n{before}\n\nPOTEM:\n{after}\n\nNEPOKRITI DATUMI, KI JIH USTVARI SPREMEMBA:\n{gaps}\n\nPotrditev enkrat uporabi celoten razpored in doda revizijski dogodek. Arhivirane meritve in njihove prvotne ciljne vrednosti se ne prepišejo.",
+        "data": {"confirm": "Uporabi celoten razpored"},
+        "data_description": {"confirm": "Potrdite šele po pregledu vseh nastalih obdobij in vrednosti B1-B5."}
+      },
       "remove_assignment": {
         "title": "Odstrani dodelitev",
         "description": "Potrdite odstranitev. Arhivske meritve in izvor se ne izbrišejo.",
@@ -319,6 +348,18 @@
     "legacy_mode_d_unsupported": {
       "title": "Podedovani merilnik kumulativne energije zahteva ponovno nastavitev",
       "description": "{meter} uporablja kumulativne števce energije načina D, ki jih SI Grid Monitor V1.0 ne podpira. Arhivski podatki in konfiguracija so ohranjeni. Ta vnos ponovno konfigurirajte s podprtim živim senzorjem moči v načinu A, B ali C."
+    },
+    "contract_uncovered_expiry": {
+      "title": "Dodelitev dogovorjene moči poteče brez naslednice",
+      "description": "Dodelitev merilnika {meter} se konča {end}. Naslednji lokalni dan se ne začne nova dodelitev. Dodajte naslednjo dodelitev, da bodo pogodbene napovedi ostale na voljo."
+    },
+    "contract_missing_current_assignment": {
+      "title": "Današnji dan nima dodelitve dogovorjene moči",
+      "description": "Za merilnik {meter} dne {date} ni dodelitve. Meritve se nadaljujejo, pogodbene primerjave in potrjene prekoračitve pa niso na voljo."
+    },
+    "contract_configuration_error": {
+      "title": "Razpored dogovorjene moči ni veljaven",
+      "description": "Razporeda dogovorjene moči za merilnik {meter} ni mogoče varno prebrati. Meritve se nadaljujejo, pogodbeni nasveti pa niso na voljo do popravka konfiguracije."
     }
   },
   "selector": {

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import uuid
 from collections.abc import Callable
@@ -30,6 +31,7 @@ from .archive import (
     ConfigurationEpoch,
     ConfigurationResolution,
     ConfigurationStatus,
+    ContractAuditEvent,
     QuarterArchive,
     archive_record_from_quarter,
     tariff_for_configuration,
@@ -44,6 +46,7 @@ from .const import (
     CONF_CONTRACTED_POWER_PERIODS,
     CONF_EXPORT_POWER_ENTITY,
     CONF_IMPORT_POWER_ENTITY,
+    CONF_PENDING_CONTRACT_AUDIT,
     CONF_POSITIVE_MEANS_IMPORT,
     CONF_POWER_ENTITY,
     CONF_RETENTION,
@@ -64,11 +67,13 @@ from .const import (
     DEFAULT_SMOOTHING_SECONDS,
     DEFAULT_STALE_AFTER_SECONDS,
     DEFAULT_SUSTAINED_HORIZON_MINUTES,
+    DOMAIN,
     SOURCE_IMPORT_ONLY,
     SOURCE_SEPARATE_POWER,
     SOURCE_SIGNED_POWER,
     SUPPORTED_SOURCE_MODES,
 )
+from .contract_health import contract_issue_id, evaluate_contract_health
 from .contracted_power import (
     ContractedPowerPeriod,
     ContractedPowerSchedule,
@@ -76,6 +81,7 @@ from .contracted_power import (
 )
 from .engine import (
     EPSILON,
+    LJUBLJANA,
     CalculationError,
     CompletedQuarter,
     DataQuality,
@@ -183,6 +189,7 @@ class GridMonitorRuntime:
         self._reconstruction_plans: dict[str, dict[str, object]] = {}
         self._shutdown_task: asyncio.Task[None] | None = None
         self._shutdown_complete = False
+        self._contract_health_date = None
 
     @property
     def source_entities(self) -> tuple[str, ...]:
@@ -308,6 +315,9 @@ class GridMonitorRuntime:
             }
         projection = snapshot.projection
         sustained = self.sustained_forecast
+        health = evaluate_contract_health(
+            self.contracted_power_schedule, snapshot.now_utc.astimezone(LJUBLJANA).date()
+        )
         quarter_start = snapshot.bounds.start_utc
         settings = self.settings
         safety_margin_kw = float(settings[CONF_SAFETY_MARGIN_KW])
@@ -491,6 +501,15 @@ class GridMonitorRuntime:
             "contractual_available": self.current_contractual_available,
             "contractual_confirmed": self.current_contractual_confirmed,
             "contractual_status_reason": self.contractual_status_reason,
+            "contract_health": {
+                "level": health.level.value,
+                "reason": health.reason,
+                "days_remaining": health.days_remaining,
+                "gap_start": health.gap_start.isoformat() if health.gap_start else None,
+                "active_end": (
+                    health.active.effective_to.isoformat() if health.active is not None else None
+                ),
+            },
             "last_completed_import_demand_kw": self.last_completed_import_demand_kw,
             "last_completed_signed_average_kw": self.last_completed_signed_average_kw,
             "trace": trace,
@@ -615,6 +634,7 @@ class GridMonitorRuntime:
         """Read the current state and register state/timer listeners."""
         try:
             await self.hass.async_add_executor_job(self.archive.open)
+            await self._async_reconcile_contract_audit()
             startup_settings = self.settings
             targets = self.current_block_targets_kw or (None, None, None, None, None)
             self.configuration_epoch = await self.hass.async_add_executor_job(
@@ -644,6 +664,7 @@ class GridMonitorRuntime:
                 self.engine.restore_checkpoint(checkpoint)
 
             self._ingest_current_sources()
+            self._update_contract_health(dt_util.utcnow())
 
             self._unsubscribers.append(
                 async_track_state_change_event(
@@ -681,6 +702,85 @@ class GridMonitorRuntime:
             except Exception:
                 _LOGGER.exception("Failed to close archive after runtime startup failure")
             raise
+
+    async def _async_reconcile_contract_audit(self) -> None:
+        """Idempotently persist pending option-flow events after SQLite opens."""
+
+        configured = {**self.entry.data, **self.entry.options}
+        raw = configured.get(CONF_PENDING_CONTRACT_AUDIT, [])
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError:
+                _LOGGER.error("Ignoring malformed pending contract audit metadata")
+                return
+        if not isinstance(raw, list):
+            return
+        for item in raw[-50:]:
+            if not isinstance(item, dict):
+                continue
+            try:
+                event = ContractAuditEvent(
+                    event_id=str(item["event_id"]),
+                    namespace=self.namespace,
+                    event_utc=datetime.fromisoformat(str(item["event_utc"])).astimezone(UTC),
+                    event_type=str(item["event_type"]),
+                    old_schedule_json=str(item["old_schedule_json"]),
+                    new_schedule_json=str(item["new_schedule_json"]),
+                    effective_from=item.get("effective_from"),
+                    effective_to=item.get("effective_to"),
+                    provenance=item.get("provenance"),
+                    recorded_on=item.get("recorded_on"),
+                    origin=str(item.get("origin") or "user_action"),
+                    actor=item.get("actor"),
+                    configuration_revision=str(item["configuration_revision"]),
+                )
+            except (KeyError, TypeError, ValueError):
+                _LOGGER.exception("Ignoring invalid pending contract audit event")
+                continue
+            await self.hass.async_add_executor_job(self.archive.append_contract_audit, event)
+
+    def _update_contract_health(self, now_utc: datetime) -> None:
+        """Create or clear one stable per-meter Repairs issue per local day."""
+
+        local_date = now_utc.astimezone(LJUBLJANA).date()
+        if self._contract_health_date == local_date:
+            return
+        self._contract_health_date = local_date
+        try:
+            from homeassistant.helpers import issue_registry as ir
+        except ImportError:
+            return
+        issue_id = contract_issue_id(self.entry.entry_id)
+        health = evaluate_contract_health(self.contracted_power_schedule, local_date)
+        if self._contracted_power_configuration_error is not None:
+            ir.async_create_issue(
+                self.hass,
+                DOMAIN,
+                issue_id,
+                is_fixable=False,
+                severity=ir.IssueSeverity.ERROR,
+                translation_key="contract_configuration_error",
+                translation_placeholders={"meter": self.entry.title},
+            )
+            return
+        if not health.needs_issue:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            return
+        end = health.active.effective_to.isoformat() if health.active else "unknown"
+        gap = health.gap_start.isoformat() if health.gap_start else local_date.isoformat()
+        severity = (
+            ir.IssueSeverity.ERROR if health.level.value == "error" else ir.IssueSeverity.WARNING
+        )
+        ir.async_create_issue(
+            self.hass,
+            DOMAIN,
+            issue_id,
+            is_fixable=False,
+            severity=severity,
+            translation_key=f"contract_{health.reason}",
+            translation_placeholders={"meter": self.entry.title, "end": end, "date": gap},
+        )
 
     async def async_stop(self) -> None:
         """Finish durable teardown while preserving caller cancellation."""
@@ -891,6 +991,7 @@ class GridMonitorRuntime:
     def _refresh(self, now) -> None:
         settings = self.settings
         now_utc = now.astimezone(UTC)
+        self._update_contract_health(now_utc)
         current_tariff = self.tariff_calendar.classify(now_utc)
         signature = (
             current_tariff.block,

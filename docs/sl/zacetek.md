@@ -4,8 +4,9 @@
 
 To je pripomoček za spremljanje in odločanje, **ne** uradni števec dobavitelja ali električna zaščitna naprava.
 
-Dokumentacija opisuje **V1.0.0 RC**, katere koda je že združena v vejo `main`
-(PR #16). Različica še ni potrjena oziroma objavljena kot stabilna izdaja.
+Dokumentacija vključuje predlagano **V1.0.2 RC** upravljanje časovno omejenih
+dodelitev dogovorjene moči. Različica še ni potrjena v pravem Home Assistantu
+oziroma objavljena kot stabilna izdaja.
 
 ## Namestitev
 
@@ -32,3 +33,16 @@ V0.9.5/V0.9.6 ostanejo shranjeni; ob nadgradnji se stari vnos ne zažene in ga
 lahko izrecno prekonfigurirate na A/B/C brez brisanja baze.
 
 Podrobneje: [Vodnik](vodnik.md) · [Angleška dokumentacija](../index.md) · [Izračuni](../calculations.md).
+
+## Sprememba pogodbenih moči med letom
+
+V **Nastavitve → Naprave in storitve → SI Grid Monitor → Konfiguriraj** izberite
+**Načrtuj spremembo**. Vnesite prvi vključujoči datum ter nove vrednosti B1–B5.
+Integracija pred potrditvijo prikaže stari in novi celoten razpored ter morebitne
+nepokrite datume. Stara dodelitev se varno razdeli na dve ali tri obdobja;
+arhivske četrtine in njihove prvotne meje se ne prepišejo.
+
+Zavihek **Pogodbe** prikazuje trenutno konfiguracijo, vrzeli, prihodnje
+dodelitve in revizijsko sled. Stari konfiguracijski posnetki so zgodovinski
+dokazi, ne izmišljeni uporabniški dogodki. Opozorilo o manjkajoči pogodbi ne
+ustavi meritev; pogodbeni izračuni pa ostanejo nedostopni, dokler cilj ni znan.

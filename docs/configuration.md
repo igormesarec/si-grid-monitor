@@ -62,3 +62,24 @@ to migrate a legacy source. See [History and archives](history-and-archive.md).
 ## Verifying every setting
 
 After submission, on Overview check: active meter name, source age, import/export direction, B1–B5 block and target, simulation status, measurement coverage and the first completed quarter. See [Getting started](getting-started.md) and [Troubleshooting](troubleshooting.md).
+# Guided contract changes in V1.0.2
+
+Contract validity dates are inclusive. Adjacent assignments such as
+`2026-01-01..2026-10-24` and `2026-10-25..2026-12-31` are valid; sharing the
+same date is an overlap.
+
+Use **Schedule change** when new B1-B5 values begin inside an existing period.
+An effective start of 25 October automatically retains the old values through
+24 October and creates the new period from 25 October. Supplying an optional
+end date inside the old assignment creates three segments: old/new/old. Review
+the complete before/after preview and confirm once. **Edit details** changes only
+provenance/record date. **Correct assignment** changes mistaken dates or values
+and warns that archived quarters retain their original evidence. **Remove**
+removes only current configuration after confirmation; archived rows remain.
+
+Gaps are allowed when the next assignment is genuinely unknown, but are shown
+explicitly and make contractual forecasts and confirmed exceedances unavailable.
+Physical import/export measurement and SQLite archiving continue.
+
+The optional Record date may be left empty. User-entered values are configuration,
+not independent legal verification by SI Grid Monitor.
