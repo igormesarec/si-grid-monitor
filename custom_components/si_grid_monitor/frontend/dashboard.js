@@ -28,23 +28,12 @@ import {
   selectTimelineHour,
   todayChartModel,
   todayQuarterAction,
-} from "./dashboard-model.mjs?v=1.0.2";
-import {dashboardLanguage, localizeDashboard, translateDashboard} from "./dashboard-i18n.mjs?v=1.0.2";
+} from "./dashboard-model.mjs?v=1.0.3";
+import {localizeDashboard, normalizeDashboardLanguage, translateDashboard} from "./dashboard-i18n.mjs?v=1.0.3";
 
 const fmt = (value, digits = 3) => value == null ? "—" : Number(value).toFixed(digits);
 const fmtPct = value => fmt(value, 2);
 const fmtEnergyReference = value => value == null ? "—" : Number(value).toFixed(3);
-const readableReason = value => ({
-  no_valid_measurement: "no valid measurement is available",
-  source_measurement_stale: "the latest source measurement is stale",
-  insufficient_coverage: "insufficient valid measurement history",
-  current_quarter_incomplete: "the current quarter has incomplete measurement coverage",
-  current_quarter_energy_incomplete: "the current quarter has incomplete measurement coverage",
-  smoothing_window_incomplete: "the smoothing window lacks sufficient valid measurements",
-  scheduled_reduction_cannot_recover_limiting_quarter: "the limiting quarter cannot be recovered by a scheduled reduction",
-  target_unavailable: "no verified contractual target is available",
-  current_quarter_already_unrecoverable: "the current quarter is already unrecoverable",
-}[value] || String(value ?? "reason unavailable").replaceAll("_", " "));
 const fmtAxis = value => {
   const magnitude = Math.abs(Number(value));
   if (magnitude < 1e-12) return "0";
@@ -56,6 +45,7 @@ const esc = value => String(value ?? "").replace(/[&<>"']/g, character => ({
 const localDate = value => ljubljanaDate(value);
 const localTime = value => ljubljanaTimeLabel(value);
 export const ACTIVE_METER_STORAGE_KEY = "si_grid_monitor.active_meter.v1";
+export const DASHBOARD_LANGUAGE_STORAGE_KEY = "si_grid_monitor.dashboard_language.v1";
 
 export class SIGridMonitorPanel extends HTMLElement {
   constructor() {
@@ -64,6 +54,8 @@ export class SIGridMonitorPanel extends HTMLElement {
     this._tab = "overview";
     this._entryId = null;
     this._entries = [];
+    this._languageOverride = this._storedLanguageOverride();
+    this._language = this._languageOverride;
     this._selectedDate = localDate();
     this._gate = new RequestGate();
     this._historyGate = new RequestGate();
@@ -71,17 +63,48 @@ export class SIGridMonitorPanel extends HTMLElement {
   }
 
   set hass(value) {
-    const previousLanguage = dashboardLanguage(this._hass);
     this._hass = value;
     if (!this._loaded) this._load();
-    else if (previousLanguage !== dashboardLanguage(value)) this._render();
   }
 
   set panel(value) { this._panel = value; }
   set route(value) { this._route = value; }
 
   _t(key, parameters = {}) {
-    return translateDashboard(key, dashboardLanguage(this._hass), parameters);
+    return translateDashboard(key, this._language || "en", parameters);
+  }
+
+  _reason(value) {
+    const normalized = value === "current_quarter_energy_incomplete"
+      ? "current_quarter_incomplete" : value;
+    const key = `reason.${normalized || "unavailable"}`;
+    const translated = this._t(key);
+    return translated === key ? String(value || this._t("reason.unavailable")).replaceAll("_", " ")
+      : translated;
+  }
+
+  _storedLanguageOverride() {
+    try {
+      const value = globalThis.localStorage?.getItem(DASHBOARD_LANGUAGE_STORAGE_KEY);
+      return value ? normalizeDashboardLanguage(value, null) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  _selectLanguage(language) {
+    const normalized = normalizeDashboardLanguage(language);
+    this._language = normalized;
+    this._languageOverride = normalized;
+    try {
+      globalThis.localStorage?.setItem(DASHBOARD_LANGUAGE_STORAGE_KEY, normalized);
+    } catch {
+      // The explicit choice remains active for this panel session when browser
+      // storage is unavailable (for example in a private embedded WebView).
+    }
+    this._render();
+    this.shadowRoot.querySelector(`[data-dashboard-language="${normalized}"]`)
+      ?.focus({preventScroll: true});
   }
 
   connectedCallback() {
@@ -221,6 +244,7 @@ export class SIGridMonitorPanel extends HTMLElement {
       ? entries.filter(item => item?.entry_id).map(item => ({
         entry_id: String(item.entry_id),
         title: String(item.title || item.entry_id),
+        preferred_language: normalizeDashboardLanguage(item.preferred_language || "en"),
       })) : [];
     const storedEntryId = this._storedEntryId();
     const preferredEntryId = this._entryId || storedEntryId;
@@ -229,6 +253,10 @@ export class SIGridMonitorPanel extends HTMLElement {
     const fellBack = Boolean(preferredEntryId && !preferredAvailable);
     this._entries = normalized;
     const changed = this._activateEntry(nextEntryId, {remember: Boolean(nextEntryId)});
+    if (!this._language) {
+      this._language = normalized.find(item => item.entry_id === nextEntryId)?.preferred_language
+        || "en";
+    }
     if (fellBack && notifyFallback) {
       const active = normalized.find(item => item.entry_id === nextEntryId);
       this._meterNotice = active
@@ -813,7 +841,7 @@ export class SIGridMonitorPanel extends HTMLElement {
   _overview() {
     const live = this._live;
     if (!live) return `<section class="card">${esc(this._t("error.live_loading"))}</section>`;
-    if (!live.available) return `<section class="card"><h2>Waiting for measurements</h2><p>${esc(readableReason(live.reason))}</p></section>`;
+    if (!live.available) return `<section class="card"><h2>Waiting for measurements</h2><p>${esc(this._reason(live.reason))}</p></section>`;
     const quarter = live.quarter;
     const power = live.power;
     const tariff = live.tariff;
@@ -839,7 +867,7 @@ export class SIGridMonitorPanel extends HTMLElement {
       : `${currentForecastQuality}${forecast.smoothed_future_reason ? `: ${forecast.smoothed_future_reason}` : ""}`;
     const sustainedStatus = sustained.quality === "available"
       ? `Available · ${fmt(sustained.coverage_seconds, 0)} s coverage`
-      : `Unavailable: ${readableReason(sustained.reason || "insufficient_coverage")}`;
+      : `${this._t("common.unavailable")}: ${this._reason(sustained.reason || "insufficient_coverage")}`;
     return `<section class="card hero"><div class="herohead"><div><p class="eyebrow">CURRENT FIXED 15-MINUTE INTERVAL</p><h2>${esc(quarter.start_local.slice(0, 10))} · ${esc(quarter.start_local.slice(11, 16))}–${esc(quarter.end_local.slice(11, 16))}</h2><p>B${esc(tariff.block)} · ${fmt(tariff.target_kw)} kW · ${esc(quarter.quality)}</p></div><div class="count" data-countdown>--:--</div></div>
       <div class="direction"><div class="import"><span>IMPORT</span><b>${fmt(power.import_kw)} kW</b></div><div class="export"><span>EXPORT</span><b>${power.export_known === false ? "Unknown" : `${fmt(power.export_kw)} kW`}</b></div></div>${this._liveChart(live)}${this._energyChart(live)}
       <div class="grid">${this._metric("Signed grid power", fmt(power.signed_kw), "kW")}${this._metric("Source observation age", fmt(power.source_age_seconds, 0), "seconds")}${this._metric("Imported so far", fmt(quarter.import_kwh, 3), "kWh")}${this._metric("Exported so far", power.export_known === false ? "Unknown" : fmt(quarter.export_kwh, 3), power.export_known === false ? "" : "kWh")}${this._metric("Import average", fmt(quarter.import_average_kw), "kW")}${this._metric("Instant projected final quarter average", fmt(displayedInstantForecast), "kW")}${this._metric("Smoothed projected final quarter average", fmt(displayedSmoothedForecast), "kW")}${this._metric("Current-quarter forecast status", currentForecastStatus)}${this._metric("Utilization", fmtPct(forecast.current_utilization_pct), "%")}${this._metric("Remaining budget", fmt(forecast.budget_remaining_kwh, 3), "kWh")}${this._metric("Allowed remainder", fmt(forecast.allowed_remaining_import_kw), "kW")}${this._metric("CAN ADD THIS QUARTER", fmt(forecast.can_add_kw), "kW", "good")}${this._metric("MUST REDUCE THIS QUARTER", fmt(forecast.must_reduce_kw), "kW", forecast.must_reduce_kw > 0 ? "bad" : "")}${this._metric("SUSTAINED CAN ADD", fmt(sustained.can_add_kw), "kW", "accent")}${this._metric("SUSTAINED MUST REDUCE", fmt(sustained.must_reduce_kw), "kW", sustained.must_reduce_kw > 0 ? "bad" : "")}${this._metric("Sustained forecast quality", sustainedStatus)}${this._metric("Sustained horizon", sustained.horizon_minutes, "minutes")}</div>${projectionWarning}
@@ -1294,6 +1322,9 @@ export class SIGridMonitorPanel extends HTMLElement {
     root.querySelector("select[data-entry]")?.addEventListener("change", event => {
       this._selectEntry(event.target.value);
     });
+    root.querySelectorAll("[data-dashboard-language]").forEach(element => {
+      element.addEventListener("click", () => this._selectLanguage(element.dataset.dashboardLanguage));
+    });
     root.querySelectorAll("[data-day]").forEach(element => {
       element.onclick = () => this._moveDay(Number(element.dataset.day));
     });
@@ -1677,7 +1708,9 @@ export class SIGridMonitorPanel extends HTMLElement {
       : "";
     const meterNotice = this._meterNotice
       ? `<div class="notice meter-notice" role="status" aria-live="polite">${esc(this._meterNotice)}</div>` : "";
-    this.shadowRoot.innerHTML = `<style>${this._styles()}</style><style>${this._legendStyles()}</style><style>${this._mobileHistoryStyles()}</style><style>${this._contractStyles()}</style><main><header><div class="brand"><span>SI</span><div><h1>SI Grid Monitor</h1><p>Import-only contractual demand intelligence</p></div></div></header><nav>${tabs.map(id => `<button data-tab="${id}" class="${this._tab === id ? "active" : ""}">${esc(this._t(`nav.${id}`))}</button>`).join("")}</nav><section class="meter meter-toolbar" aria-label="${esc(this._t("meter.active"))}"><div class="meter-identity"><small>${esc(this._t("meter.active"))}</small><strong data-active-meter-name>${esc(activeMeterName)}</strong></div>${meterSelector}</section>${meterNotice}${this._error ? `<div class="error">${esc(this._t("error.connection", {message: this._error}))}</div>` : ""}${content}</main>`;
+    const languageButtonStyle = language => `min-width:44px;min-height:40px;padding:6px 10px;font-weight:700;${this._language === language ? "color:var(--primary-color,#03a9f4);border-color:var(--primary-color,#03a9f4);background:#0284c715" : ""}`;
+    const languageSwitcher = `<div class="language-switcher" role="group" aria-label="${esc(this._t("language.switcher"))}" style="display:inline-flex;gap:4px;padding:3px;border:1px solid var(--line);border-radius:10px"><button type="button" style="${languageButtonStyle("en")}" data-dashboard-language="en" aria-pressed="${this._language === "en"}" title="${esc(this._t("language.english"))}">EN</button><button type="button" style="${languageButtonStyle("sl")}" data-dashboard-language="sl" aria-pressed="${this._language === "sl"}" title="${esc(this._t("language.slovenian"))}">SL</button></div>`;
+    this.shadowRoot.innerHTML = `<style>${this._styles()}</style><style>${this._legendStyles()}</style><style>${this._mobileHistoryStyles()}</style><style>${this._contractStyles()}</style><main><header><div class="brand"><span>SI</span><div><h1>SI Grid Monitor</h1><p>Import-only contractual demand intelligence</p></div></div>${languageSwitcher}</header><nav>${tabs.map(id => `<button data-tab="${id}" class="${this._tab === id ? "active" : ""}">${esc(this._t(`nav.${id}`))}</button>`).join("")}</nav><section class="meter meter-toolbar" aria-label="${esc(this._t("meter.active"))}"><div class="meter-identity"><small>${esc(this._t("meter.active"))}</small><strong data-active-meter-name>${esc(activeMeterName)}</strong></div>${meterSelector}</section>${meterNotice}${this._error ? `<div class="error">${esc(this._t("error.connection", {message: this._error}))}</div>` : ""}${content}</main>`;
     const contractHealth = this._live?.contract_health;
     if (this._tab === "overview" && contractHealth?.level && contractHealth.level !== "ok") {
       this.shadowRoot.querySelector(".meter-toolbar")?.insertAdjacentHTML(
@@ -1703,7 +1736,7 @@ export class SIGridMonitorPanel extends HTMLElement {
         "beforeend", '<button data-open-history>Open this range in HISTORY</button>',
       );
     }
-    localizeDashboard(this.shadowRoot, dashboardLanguage(this._hass));
+    localizeDashboard(this.shadowRoot, this._language || "en");
     this._bind();
     restoreChartScrollState(
       this.shadowRoot, this._chartScrollPositions, chartView.focused,

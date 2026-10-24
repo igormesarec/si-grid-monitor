@@ -1,5 +1,13 @@
 # Setup fields and options — explained
 
+## Preferred language
+
+**Preferred language** initializes SI Grid Monitor-owned dashboard and report
+content. Existing installations without the setting default safely to English.
+Changing it in Options does not recreate the meter, alter contracts, or modify
+SQLite history. An explicit EN/SL dashboard choice takes priority in that
+browser and remains stable when meters are switched.
+
 A meter's configuration is **independent of other SI Grid Monitor meters**. Replacing the source or changing contracted-power assignments can affect future interpretation; historic records have stored provenance and must not be silently recalculated.
 
 ## Setup wizard

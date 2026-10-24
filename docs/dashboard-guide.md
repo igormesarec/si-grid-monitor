@@ -1,5 +1,10 @@
 # Dashboard guide — all eight tabs
 
+The shared header on every page includes an accessible **EN/SL** switch. Its
+selection persists in browser storage across navigation and reloads and is not
+reset by the active-meter selector. Without a browser override, the selected
+meter's installation preference initializes the dashboard language.
+
 The single SI Grid Monitor sidebar panel shows the **active meter** in a selector at the top. With multiple entries, always verify the displayed name before interpreting measurements. Each meter owns its settings and archive.
 
 ## Overview

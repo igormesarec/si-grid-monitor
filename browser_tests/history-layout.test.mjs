@@ -133,6 +133,7 @@ for (const width of [320, 360, 390, 430, 768, 1280]) {
           const partial = rows[1];
           const text = partial.querySelector(".history-row-value b");
           const header = root.querySelector(".brand").getBoundingClientRect();
+          const language = root.querySelector(".language-switcher").getBoundingClientRect();
           const meter = root.querySelector(".meter").getBoundingClientRect();
           return {axis: {x: axis.x, width: axis.width}, bar: {x: bar.x, width: bar.width},
             demandWidth: first.querySelector(".history-demand").getBoundingClientRect().width,
@@ -144,6 +145,8 @@ for (const width of [320, 360, 390, 430, 768, 1280]) {
             textInsideBar: partial.querySelector(".history-bar").textContent,
             pageWidth: document.documentElement.scrollWidth, viewport: innerWidth,
             headerOverlap: header.right > meter.left && header.bottom > meter.top && header.top < meter.bottom,
+            languageVisible: language.width > 0 && language.height >= 40,
+            languageWithinViewport: language.right <= innerWidth && language.left >= 0,
           };
         });
         assert.ok(Math.abs(geometry.axis.x - geometry.bar.x) < 1, JSON.stringify(geometry));
@@ -159,6 +162,8 @@ for (const width of [320, 360, 390, 430, 768, 1280]) {
         assert.equal(geometry.textInsideBar, "");
         assert.ok(geometry.pageWidth <= geometry.viewport);
         assert.equal(geometry.headerOverlap, false);
+        assert.equal(geometry.languageVisible, true);
+        assert.equal(geometry.languageWithinViewport, true);
         if (width > 700) {
           const scrolled = await page.evaluate(() => {
             const root = window.testPanel.shadowRoot;
@@ -272,6 +277,24 @@ for (const width of [320, 360, 390, 430, 768, 1280]) {
       assert.equal(layout.clipped, false);
       assert.match(layout.gap, /Not configured/);
       assert.equal(layout.tabsScrollable, true);
+    } finally { await page.close(); }
+  });
+}
+
+for (const width of [320, 768, 1280]) {
+  test(`EN/SL switch remains accessible and meter-stable at ${width}px`, async () => {
+    const page = await browser.newPage();
+    try {
+      await fixture(page, {width, multiple: true});
+      const sl = page.locator('si-grid-monitor-panel [data-dashboard-language="sl"]');
+      await sl.focus();
+      await sl.press("Enter");
+      assert.equal(await sl.getAttribute("aria-pressed"), "true");
+      assert.ok(await sl.isFocused());
+      assert.equal(await page.locator("si-grid-monitor-panel nav button").first().textContent(), "PREGLED");
+      await page.locator("si-grid-monitor-panel select[data-entry]").selectOption("garage");
+      assert.equal(await page.locator("si-grid-monitor-panel nav button").first().textContent(), "PREGLED");
+      assert.equal(await page.evaluate(() => localStorage.getItem("si_grid_monitor.dashboard_language.v1")), "sl");
     } finally { await page.close(); }
   });
 }

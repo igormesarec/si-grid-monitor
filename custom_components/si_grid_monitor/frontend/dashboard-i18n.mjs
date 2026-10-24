@@ -38,6 +38,7 @@ const SL = {
   "Loading HISTORY…": "Nalaganje ZGODOVINE …", "HISTORY unavailable": "ZGODOVINA ni dostopna",
   "Connection error": "Napaka povezave", "The panel will retry automatically.": "Plošča bo samodejno poskusila znova.",
   "Current quarter": "Trenutna četrtina", "Current signed grid power": "Trenutna podpisana moč omrežja",
+  "Waiting for measurements": "Čakanje na meritve",
   "Import power": "Uvozna moč", "Export power": "Izvozna moč",
   "CAN ADD THIS QUARTER": "LAHKO DODATE V TEJ ČETRTINI",
   "MUST REDUCE THIS QUARTER": "MORATE ZMANJŠATI V TEJ ČETRTINI",
@@ -200,6 +201,18 @@ const EN_KEYS = {
   "contracts.no_archived_evidence": "No archived-quarter target evidence is available.",
   "contracts.evidence_range": "Observed range", "contracts.target": "Target", "contracts.quarters": "Quarters",
   "contracts.target_unknown": "Targets unavailable", "contracts.audit_page": "Page {page} of {pages} · {count} events",
+  "language.switcher": "Dashboard language",
+  "language.english": "English",
+  "language.slovenian": "Slovenščina",
+  "reason.no_valid_measurement": "No valid measurement is available",
+  "reason.source_measurement_stale": "The latest source measurement is stale",
+  "reason.insufficient_coverage": "Insufficient valid measurement history",
+  "reason.current_quarter_incomplete": "The current quarter has incomplete measurement coverage",
+  "reason.smoothing_window_incomplete": "The smoothing window lacks sufficient valid measurements",
+  "reason.scheduled_reduction_cannot_recover_limiting_quarter": "The limiting quarter cannot be recovered by a scheduled reduction",
+  "reason.target_unavailable": "No verified contractual target is available",
+  "reason.current_quarter_already_unrecoverable": "The current quarter is already unrecoverable",
+  "reason.unavailable": "Reason unavailable",
   "meter.active": "Active meter",
   "meter.select": "Select meter",
   "meter.fallback": "The previously selected meter is unavailable. Switched to {meter}.",
@@ -365,6 +378,18 @@ const SL_KEYS = {
   "contracts.no_archived_evidence": "Dokazi ciljev arhiviranih četrtin niso na voljo.",
   "contracts.evidence_range": "Obdobje opazovanja", "contracts.target": "Meja", "contracts.quarters": "Četrtine",
   "contracts.target_unknown": "Meje niso na voljo", "contracts.audit_page": "Stran {page} od {pages} · {count} dogodkov",
+  "language.switcher": "Jezik nadzorne plošče",
+  "language.english": "English",
+  "language.slovenian": "Slovenščina",
+  "reason.no_valid_measurement": "Veljavna meritev ni na voljo",
+  "reason.source_measurement_stale": "Najnovejša meritev vira je zastarela",
+  "reason.insufficient_coverage": "Premalo veljavne zgodovine meritev",
+  "reason.current_quarter_incomplete": "Trenutna četrtina nima popolne pokritosti meritev",
+  "reason.smoothing_window_incomplete": "Okno glajenja nima dovolj veljavnih meritev",
+  "reason.scheduled_reduction_cannot_recover_limiting_quarter": "Omejujoče četrtine ni mogoče rešiti z načrtovanim zmanjšanjem",
+  "reason.target_unavailable": "Preverjena pogodbena meja ni na voljo",
+  "reason.current_quarter_already_unrecoverable": "Trenutna četrtina je že nerešljiva",
+  "reason.unavailable": "Razlog ni na voljo",
   "meter.active": "Aktivni merilnik",
   "meter.select": "Izberite merilnik",
   "meter.fallback": "Prej izbrani merilnik ni dostopen. Izbran je merilnik {meter}.",
@@ -491,8 +516,26 @@ const SL_KEYS = {
   "common.quarters": "četrtin",
 };
 
-export function dashboardLanguage(hass) {
-  return String(hass?.language || hass?.locale?.language || "en").toLowerCase().split("-")[0];
+const SL_PREFIXES = {
+  "Comparable coverage:": "Primerljiva pokritost:",
+  "Previous-period comparison unavailable:": "Primerjava s prejšnjim obdobjem ni na voljo:",
+  "Projection unavailable:": "Napoved ni na voljo:",
+  "No valid measured quarters for": "Ni veljavnih izmerjenih četrtin za",
+  "Selected hour ·": "Izbrana ura ·",
+  "Tariff calendar ·": "Tarifni koledar ·",
+  "Selected:": "Izbrano:",
+  "Provenance:": "Izvor:",
+  "Quality:": "Kakovost:",
+};
+
+export function normalizeDashboardLanguage(value, fallback = "en") {
+  const language = String(value || "").toLowerCase().split("-")[0];
+  return language === "sl" || language === "en" ? language : fallback;
+}
+
+export function dashboardLanguage(hass, preferredLanguage = null) {
+  if (preferredLanguage != null) return normalizeDashboardLanguage(preferredLanguage);
+  return normalizeDashboardLanguage(hass?.language || hass?.locale?.language || "en");
 }
 
 export function translateDashboard(key, language = "en", parameters = {}) {
@@ -518,8 +561,14 @@ export function localizeDashboard(root, language) {
     const trimmed = original.trim();
     if (!trimmed) continue;
     const translated = SL[trimmed];
-    if (!translated) continue;
-    node.nodeValue = original.replace(trimmed, translated);
+    if (translated) {
+      node.nodeValue = original.replace(trimmed, translated);
+      continue;
+    }
+    const prefix = Object.keys(SL_PREFIXES).find(value => trimmed.startsWith(value));
+    if (prefix) {
+      node.nodeValue = original.replace(trimmed, trimmed.replace(prefix, SL_PREFIXES[prefix]));
+    }
   }
   root.querySelectorAll("[aria-label]").forEach(element => {
     const label = element.getAttribute("aria-label");

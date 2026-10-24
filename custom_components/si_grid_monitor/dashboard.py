@@ -24,6 +24,8 @@ from .analysis import (
     resolve_period,
 )
 from .const import (
+    CONF_PREFERRED_LANGUAGE,
+    DEFAULT_PREFERRED_LANGUAGE,
     DOMAIN,
     FRONTEND_URL,
     PANEL_ICON,
@@ -72,10 +74,22 @@ def _runtime(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
 
 def _entry_list(hass: HomeAssistant) -> list[dict[str, str]]:
     runtimes = hass.data.get(DOMAIN, {}).get(DATA_RUNTIMES, {})
-    return [
-        {"entry_id": entry_id, "title": runtime.entry.title}
-        for entry_id, runtime in runtimes.items()
-    ]
+    entries = []
+    for entry_id, runtime in runtimes.items():
+        configured = {
+            **getattr(runtime.entry, "data", {}),
+            **getattr(runtime.entry, "options", {}),
+        }
+        entries.append(
+            {
+                "entry_id": entry_id,
+                "title": runtime.entry.title,
+                "preferred_language": str(
+                    configured.get(CONF_PREFERRED_LANGUAGE, DEFAULT_PREFERRED_LANGUAGE)
+                ),
+            }
+        )
+    return entries
 
 
 def _row(row: Any) -> dict[str, Any]:

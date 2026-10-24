@@ -21,7 +21,7 @@ globalThis.HTMLElement = FakeElement;
 globalThis.customElements = {define() {}};
 
 const {SIGridMonitorPanel} = await import(
-  "../custom_components/si_grid_monitor/frontend/dashboard.js?panel-tests=1.0.2"
+  "../custom_components/si_grid_monitor/frontend/dashboard.js?panel-tests=1.0.3"
 );
 
 const START_A = "2026-10-19T08:00:00+00:00";
@@ -85,6 +85,48 @@ function panelForToday(quarters = [quarter(START_A)]) {
   panel._day = day(quarters);
   return panel;
 }
+
+test("installation language initializes dashboard and meter switching does not reset it", () => {
+  globalThis.localStorage = memoryStorage();
+  const panel = new SIGridMonitorPanel();
+  panel._reconcileEntries([
+    {entry_id: "meter-a", title: "Main", preferred_language: "sl"},
+    {entry_id: "meter-b", title: "Garage", preferred_language: "en"},
+  ]);
+  assert.equal(panel._language, "sl");
+  panel._activateEntry("meter-b");
+  assert.equal(panel._language, "sl", "meter changes must not change dashboard language");
+});
+
+test("explicit EN/SL dashboard override persists across panel instances and reloads", () => {
+  const storage = memoryStorage();
+  globalThis.localStorage = storage;
+  const first = new SIGridMonitorPanel();
+  first._render = () => {};
+  first._selectLanguage("sl");
+  assert.equal(storage.values.get("si_grid_monitor.dashboard_language.v1"), "sl");
+
+  const reopened = new SIGridMonitorPanel();
+  reopened._reconcileEntries([
+    {entry_id: "meter-a", title: "Main", preferred_language: "en"},
+  ]);
+  assert.equal(reopened._language, "sl", "browser override must win over install default");
+  reopened._render = () => {};
+  reopened._selectLanguage("en");
+  assert.equal(storage.values.get("si_grid_monitor.dashboard_language.v1"), "en");
+});
+
+test("shared dashboard header exposes an accessible language switch on every page", () => {
+  globalThis.localStorage = memoryStorage();
+  const panel = new SIGridMonitorPanel();
+  panel._language = "en";
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /role="group"/);
+  assert.match(panel.shadowRoot.innerHTML, /aria-label="Dashboard language"/);
+  assert.match(panel.shadowRoot.innerHTML, /data-dashboard-language="en"/);
+  assert.match(panel.shadowRoot.innerHTML, /data-dashboard-language="sl"/);
+  assert.match(panel.shadowRoot.innerHTML, /data-dashboard-language="en" aria-pressed="true"/);
+});
 
 test("panel reconnect owns exactly one countdown and one refresh timer", () => {
   const originalSetInterval = globalThis.setInterval;
@@ -780,6 +822,7 @@ test("PERIOD panel drills missing quarter and repeated hour by canonical UTC ide
 test("HISTORY distinguishes range totals and exposes source epoch filtering", () => {
   const panel = new SIGridMonitorPanel();
   panel._hass = {language: "sl-SI"};
+  panel._language = "sl";
   panel._historyPage = {
     items: [],
     pagination: {page: 1, pages: 1, total: 3},
@@ -871,18 +914,20 @@ test("HISTORY all-block requests preserve optional server sorting across paginat
   assert.equal(captured.page, 2);
 });
 
-test("Home Assistant language switching preserves meter and HISTORY selection", () => {
+test("dashboard language switching preserves meter and HISTORY selection", () => {
   const panel = new SIGridMonitorPanel();
   panel._loaded = true;
   panel._hass = {language: "en"};
+  panel._language = "en";
   panel._entryId = "meter-a";
   panel._tab = "history";
   panel._historySourceEpoch = "4";
   panel._historyPageNumber = 3;
   let renders = 0;
   panel._render = () => { renders += 1; };
-  panel.hass = {language: "sl-SI"};
+  panel._selectLanguage("sl");
   assert.equal(renders, 1);
+  assert.equal(panel._language, "sl");
   assert.equal(panel._entryId, "meter-a");
   assert.equal(panel._tab, "history");
   assert.equal(panel._historySourceEpoch, "4");

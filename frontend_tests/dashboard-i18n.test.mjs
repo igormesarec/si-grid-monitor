@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   DASHBOARD_TRANSLATIONS,
   dashboardLanguage,
+  normalizeDashboardLanguage,
   translateDashboard,
 } from "../custom_components/si_grid_monitor/frontend/dashboard-i18n.mjs";
 
@@ -11,6 +12,13 @@ test("dashboard language follows Home Assistant with English fallback", () => {
   assert.equal(dashboardLanguage({language: "sl-SI"}), "sl");
   assert.equal(dashboardLanguage({locale: {language: "en-GB"}}), "en");
   assert.equal(dashboardLanguage(null), "en");
+});
+
+test("installation language normalization accepts only English and Slovenian", () => {
+  assert.equal(normalizeDashboardLanguage("sl-SI"), "sl");
+  assert.equal(normalizeDashboardLanguage("en-GB"), "en");
+  assert.equal(normalizeDashboardLanguage("de-DE"), "en");
+  assert.equal(dashboardLanguage({language: "sl"}, "en"), "en");
 });
 
 test("parameterized translations keep values and use English fallback", () => {
@@ -100,5 +108,17 @@ test("Slovenian localization covers static content and accessibility on every ta
   ]) {
     assert.ok(sl[text], `missing Slovenian dashboard translation for ${text}`);
     assert.notEqual(sl[text], text);
+  }
+});
+
+test("language controls and dynamic forecast reasons have complete bilingual keys", () => {
+  for (const key of [
+    "language.switcher", "language.english", "language.slovenian",
+    "reason.no_valid_measurement", "reason.source_measurement_stale",
+    "reason.insufficient_coverage", "reason.current_quarter_incomplete",
+    "reason.smoothing_window_incomplete", "reason.target_unavailable",
+  ]) {
+    assert.notEqual(translateDashboard(key, "en"), key);
+    assert.notEqual(translateDashboard(key, "sl"), key);
   }
 });

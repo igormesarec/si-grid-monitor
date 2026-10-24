@@ -1,4 +1,25 @@
-# SI Grid Monitor V1.0.2 Contract Management Release-Candidate Manual Test Plan
+# SI Grid Monitor V1.0.3 Localization Release-Candidate Manual Test Plan
+
+## Installation and dashboard language
+
+1. On desktop and Android, confirm **Language / Jezik** is the first setup step,
+   with English selected by default and Slovenščina available.
+2. Complete one English and one Slovenian installation. Confirm the choice sets
+   the initial language of all eight dashboard pages, including Contracts.
+3. Confirm native ConfigFlow/OptionsFlow chrome still follows the Home Assistant
+   frontend locale; the integration preference does not change HA globally.
+4. Test the header EN/SL control at 320, 360, 390, 430, 768 px and desktop in
+   light/dark themes, larger text, keyboard, touch and screen-reader navigation.
+5. Select Slovenian, switch meters and tabs, reload and reopen the dashboard;
+   Slovenian must remain selected. Switch back to English and repeat.
+6. Change **Preferred language** in Options and verify contracts, archive rows,
+   source epochs, entry ID and entity unique IDs remain unchanged.
+7. Upgrade entries with no language, `en`, and `sl`; verify English defaulting
+   only for the first case and preservation for the other two.
+
+Automated tests cover flow order, migration, Options preservation, WebSocket
+metadata and browser-state behavior. Companion App rendering and native dialog
+presentation still require real Home Assistant validation.
 
 ## V1.0.1 native OptionsFlow hotfix
 

@@ -1,5 +1,12 @@
 # SI Grid Monitor — načini merjenja in razlaga
 
+## Jezik uporabniškega vmesnika
+
+Prednostni jezik nastavite ob namestitvi ali v Možnostih. Dostopno stikalo
+**EN/SL** je v skupni glavi vseh strani nadzorne plošče. Izbira v glavi ima v
+tem brskalniku prednost, ostane po osvežitvi in se ob menjavi merilnika ne
+ponastavi. Nastavitev ne spreminja pogodb, arhiva ali jezika Home Assistant.
+
 ## Izbira vira
 
 | Način | Podatek | Pomembna omejitev |

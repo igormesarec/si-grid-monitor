@@ -1,5 +1,16 @@
 # Installation, upgrade and first validation
 
+## Installation language
+
+The first integration step is **Language / Jezik**. Choose English (default) or
+Slovenščina. This preference initializes SI Grid Monitor's own dashboard and
+reports. The accessible EN/SL control in the shared dashboard header can create
+a browser-specific override that persists across navigation and reloads.
+
+Home Assistant's native setup and OptionsFlow dialog chrome still follows the
+Home Assistant user's frontend locale. Choosing Slovenščina here does not
+change Home Assistant's global language.
+
 ## Prerequisites
 
 - Working **Home Assistant** installation with an existing compatible sensor.

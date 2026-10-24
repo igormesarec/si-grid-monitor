@@ -213,6 +213,24 @@ def _runtime(archive: QuarterArchive) -> Any:
     )
 
 
+def test_entries_command_exposes_each_meter_installation_language() -> None:
+    runtimes = {
+        "entry-a": SimpleNamespace(
+            entry=SimpleNamespace(title="Meter A", data={"preferred_language": "sl"}, options={})
+        ),
+        "entry-b": SimpleNamespace(entry=SimpleNamespace(title="Meter B", data={}, options={})),
+    }
+    hass = SimpleNamespace(data={DOMAIN: {dashboard.DATA_RUNTIMES: runtimes}})
+    connection = SimpleNamespace(
+        send_result=lambda _id, result: setattr(connection, "result", result)
+    )
+    dashboard.ws_entries(hass, connection, {"id": 1})
+    assert connection.result["entries"] == [
+        {"entry_id": "entry-a", "title": "Meter A", "preferred_language": "sl"},
+        {"entry_id": "entry-b", "title": "Meter B", "preferred_language": "en"},
+    ]
+
+
 def test_history_commands_use_real_sqlite_rows_and_preserve_archive(tmp_path: Path) -> None:
     archive = QuarterArchive(tmp_path / "history.db")
     archive.open()

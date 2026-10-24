@@ -8,9 +8,10 @@ contracted-power target, and preserves auditable quarter history. It is useful
 for homes and small sites with heat pumps, EV charging, solar PV or other loads
 that need clearer visibility into quarter-hour grid import.
 
-**Release status:** V1.0.2 is a proposed release candidate adding guided,
-auditable contracted-power management. It is pending real Home Assistant and
-Android acceptance.
+**Release status:** V1.0.3 is a draft release candidate that integrates the
+complete V1.0.2 contract-management system with English/Slovenian installation,
+dashboard and reporting localization. Real Home Assistant and Android acceptance
+is still required.
 
 This is monitoring and decision-support software—not a distributor-certified
 meter, guaranteed bill calculation, physical protection device or automatic
@@ -84,7 +85,9 @@ brand icons are not presented as Home Assistant screenshots.
    `https://github.com/igormesarec/si-grid-monitor` as an **Integration**.
 2. Install SI Grid Monitor and restart Home Assistant.
 3. Open **Settings → Devices & services → Add integration → SI Grid Monitor**.
-4. Name the meter, choose Mode A, B or C, and select the real grid W/kW sensor(s).
+4. In **Language / Jezik**, choose the initial dashboard language (English is
+   the default), then name the meter, choose Mode A, B or C, and select the real
+   grid W/kW sensor(s).
 5. Configure the actual validity dates and B1–B5 contracted-power values.
 6. Open **SI Grid Monitor** from the automatically registered sidebar entry.
 

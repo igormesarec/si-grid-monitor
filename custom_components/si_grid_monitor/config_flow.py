@@ -38,6 +38,7 @@ from .const import (
     CONF_PENDING_CONTRACT_AUDIT,
     CONF_POSITIVE_MEANS_IMPORT,
     CONF_POWER_ENTITY,
+    CONF_PREFERRED_LANGUAGE,
     CONF_RETENTION,
     CONF_SAFETY_MARGIN_KW,
     CONF_SIMULATION_ENABLED,
@@ -47,6 +48,7 @@ from .const import (
     CONF_SUSTAINED_HORIZON_MINUTES,
     CONF_TARGET_KW,
     CONF_TARGET_MODE,
+    DEFAULT_PREFERRED_LANGUAGE,
     DEFAULT_RETENTION,
     DEFAULT_SAFETY_MARGIN_KW,
     DEFAULT_SMOOTHING_SECONDS,
@@ -57,6 +59,7 @@ from .const import (
     SOURCE_IMPORT_ONLY,
     SOURCE_SEPARATE_POWER,
     SOURCE_SIGNED_POWER,
+    SUPPORTED_LANGUAGES,
     SUPPORTED_SOURCE_MODES,
     SUSTAINED_HORIZON_PRESETS,
     TARGET_KEYS,
@@ -171,9 +174,9 @@ def _schedule_gap_summary(before: ContractedPowerSchedule, after: ContractedPowe
 
 
 class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Six-step V0.4 installation wizard."""
+    """Guided installation wizard for SI Grid Monitor."""
 
-    VERSION = 5
+    VERSION = 6
     MINOR_VERSION = 0
 
     def __init__(self) -> None:
@@ -183,9 +186,32 @@ class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         if user_input is not None:
             self._values.update(user_input)
-            return await self.async_step_meter()
+            return await self.async_step_source()
         return self.async_show_form(
             step_id="user",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_PREFERRED_LANGUAGE, default=DEFAULT_PREFERRED_LANGUAGE
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=list(SUPPORTED_LANGUAGES),
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                            translation_key="preferred_language",
+                        )
+                    ),
+                }
+            ),
+        )
+
+    async def async_step_source(self, user_input: dict[str, Any] | None = None) -> FlowResult:
+        """Select a friendly meter name and one of the supported source modes."""
+
+        if user_input is not None:
+            self._values.update(user_input)
+            return await self.async_step_meter()
+        return self.async_show_form(
+            step_id="source",
             data_schema=vol.Schema(
                 {
                     vol.Required(CONF_METER_NAME, default="Main Grid"): selector.TextSelector(),
@@ -926,6 +952,18 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
                         CONF_METER_NAME,
                         default=str(current.get(CONF_METER_NAME) or self.config_entry.title),
                     ): selector.TextSelector(),
+                    vol.Required(
+                        CONF_PREFERRED_LANGUAGE,
+                        default=str(
+                            current.get(CONF_PREFERRED_LANGUAGE, DEFAULT_PREFERRED_LANGUAGE)
+                        ),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=list(SUPPORTED_LANGUAGES),
+                            mode=selector.SelectSelectorMode.DROPDOWN,
+                            translation_key="preferred_language",
+                        )
+                    ),
                     **source_fields,
                     margin: margin_selector,
                     smoothing: smoothing_selector,

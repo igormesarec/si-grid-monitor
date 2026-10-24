@@ -15,6 +15,16 @@
     },
     "step": {
       "user": {
+        "title": "Language / Jezik",
+        "description": "Izberite začetni jezik lastne nadzorne plošče in poročil SI Grid Monitor. Izvorna pogovorna okna Home Assistant še naprej uporabljajo jezik uporabniškega vmesnika Home Assistant.",
+        "data": {
+          "preferred_language": "Prednostni jezik"
+        },
+        "data_description": {
+          "preferred_language": "Privzeta je angleščina. Pozneje lahko jezik spremenite v Možnostih ali z dostopnim stikalom EN/SL na nadzorni plošči."
+        }
+      },
+      "source": {
         "title": "Vir meritev",
         "description": "Priporočilo: izberite podpisano moč omrežja v živo, če je na voljo. Sicer uporabite ločena senzorja uvoza/izvoza ali samo uvozni senzor. V1.0 podpira le žive senzorje W/kW.",
         "data": {
@@ -196,6 +206,7 @@
         "description": "Sprememba vira ali predznaka ustvari novo konfiguracijsko obdobje. Nedostopen nasvet ni prikazan kot nič.",
         "data": {
           "meter_name": "Prijazno ime merilnika",
+          "preferred_language": "Prednostni jezik",
           "power_entity": "Senzor moči omrežja",
           "positive_means_import": "Pozitivna vrednost vira pomeni uvoz",
           "import_power_entity": "Senzor uvozne moči",
@@ -210,6 +221,7 @@
         },
         "data_description": {
           "meter_name": "Ime, prikazano v skupnem izbirniku merilnika in na vsakem zavihku nadzorne plošče.",
+          "preferred_language": "Začetni jezik nadzorne plošče in poročil SI Grid Monitor. Izbira EN/SL v glavi nadzorne plošče ostane preglasitev tega brskalnika.",
           "power_entity": "Izberite senzor moči na priključku v omrežje (W ali kW), ne skupne porabe hiše ali proizvodnje elektrarne. Interno je uvoz pozitiven, izvoz negativen.",
           "positive_means_import": "Vključite, če pozitivna vrednost žive moči pomeni uvoz; izključite pri obrnjenem predznaku senzorja.",
           "import_power_entity": "Nenegativni vir uvozne moči v W/kW za ta obstoječi način.",
@@ -364,6 +376,12 @@
     }
   },
   "selector": {
+    "preferred_language": {
+      "options": {
+        "en": "English",
+        "sl": "Slovenščina"
+      }
+    },
     "source_mode": {
       "options": {
         "signed_power": "Podpisana trenutna moč",

@@ -4,6 +4,19 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+### V1.0.3 localization draft
+
+- Added a first native ConfigFlow **Language / Jezik** selector with English as
+  the default and Slovenščina as the alternative.
+- Added a non-destructive Preferred language option and an accessible EN/SL
+  switch in the shared dashboard header.
+- Dashboard overrides persist across navigation/reloads, take priority over the
+  selected meter preference, and do not reset when the active meter changes.
+- Existing entries default to English only when no preference exists; archives,
+  contracts, source epochs, entry identities and measurements are untouched.
+- Integrated full V1.0.2 Contracts, historical evidence, audit pagination,
+  Repairs and calendar semantics into both English and Slovenian interfaces.
+
 ## [1.0.2] - release candidate
 
 - Added guided Schedule change with atomic two- or three-segment inclusive date

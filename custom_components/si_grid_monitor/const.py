@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "si_grid_monitor"
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 PANEL_URL_PATH = "si-grid-monitor"
 PANEL_TITLE = "SI Grid Monitor"
 PANEL_ICON = "mdi:transmission-tower"
@@ -15,6 +15,9 @@ CONF_IMPORT_POWER_ENTITY = "import_power_entity"
 CONF_EXPORT_POWER_ENTITY = "export_power_entity"
 CONF_POSITIVE_MEANS_IMPORT = "positive_means_import"
 CONF_METER_NAME = "meter_name"
+CONF_PREFERRED_LANGUAGE = "preferred_language"
+DEFAULT_PREFERRED_LANGUAGE = "en"
+SUPPORTED_LANGUAGES = ("en", "sl")
 CONF_ARCHIVE_REMOVAL_ACTION = "archive_removal_action"
 CONF_ARCHIVE_REMOVAL_BACKUP = "archive_removal_backup"
 CONF_ARCHIVE_REMOVAL_CONFIRMATION = "archive_removal_confirmation"

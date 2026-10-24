@@ -15,6 +15,16 @@
     },
     "step": {
       "user": {
+        "title": "Language / Jezik",
+        "description": "Choose the initial language for SI Grid Monitor's own dashboard and reports. Home Assistant's native setup dialogs continue to follow the Home Assistant frontend language.",
+        "data": {
+          "preferred_language": "Preferred language"
+        },
+        "data_description": {
+          "preferred_language": "English is the default. Change this later in Options or with the accessible EN/SL dashboard switch."
+        }
+      },
+      "source": {
         "title": "Meter source",
         "description": "Recommended: choose signed live grid power when available. Otherwise use separate import/export power or import-only power. V1.0 supports live W/kW sensors only.",
         "data": {
@@ -196,6 +206,7 @@
         "description": "Changing source or polarity creates a new configuration epoch. Unavailable or stale advice is never converted to zero.",
         "data": {
           "meter_name": "Friendly meter name",
+          "preferred_language": "Preferred language",
           "power_entity": "Grid power sensor",
           "positive_means_import": "Positive source values mean import",
           "import_power_entity": "Import power sensor",
@@ -210,6 +221,7 @@
         },
         "data_description": {
           "meter_name": "The name shown in the shared dashboard meter selector and on every tab.",
+          "preferred_language": "Initial language for SI Grid Monitor's dashboard and reports. An EN/SL choice in the dashboard header remains the browser's override.",
           "power_entity": "Select the grid-connection power sensor (W or kW), not total house consumption or PV production. Current readings will be normalized into import (+) and export (−).",
           "positive_means_import": "Enable if a positive live-power reading means grid import; disable for reversed sensor polarity.",
           "import_power_entity": "Nonnegative W/kW import source for this existing mode.",
@@ -364,6 +376,12 @@
     }
   },
   "selector": {
+    "preferred_language": {
+      "options": {
+        "en": "English",
+        "sl": "Slovenščina"
+      }
+    },
     "source_mode": {
       "options": {
         "signed_power": "Signed live power",
