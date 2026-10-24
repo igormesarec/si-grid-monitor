@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import math
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from itertools import pairwise
 from typing import Any
 
@@ -69,6 +69,89 @@ class ContractedPowerSchedule:
     def target_for(self, tariff: TariffClassification) -> float | None:
         period = self.period_for(tariff.local_datetime.date())
         return None if period is None else period.target_for(tariff)
+
+    def gaps(self, start: date, end: date) -> tuple[tuple[date, date], ...]:
+        """Return uncovered inclusive local-date ranges without inventing targets."""
+
+        if end < start:
+            raise ValueError("gap range end precedes its start")
+        gaps: list[tuple[date, date]] = []
+        cursor = start
+        for period in self.periods:
+            if period.effective_to < cursor:
+                continue
+            if period.effective_from > end:
+                break
+            if cursor < period.effective_from:
+                gaps.append((cursor, min(end, period.effective_from - timedelta(days=1))))
+            cursor = max(cursor, period.effective_to + timedelta(days=1))
+            if cursor > end:
+                break
+        if cursor <= end:
+            gaps.append((cursor, end))
+        return tuple(gaps)
+
+    def schedule_change(
+        self,
+        index: int,
+        replacement: ContractedPowerPeriod,
+    ) -> ContractedPowerSchedule:
+        """Split one assignment around a replacement, committing one complete schedule.
+
+        The replacement must be wholly contained in the selected assignment. This
+        deliberately prevents a guided change from consuming another assignment.
+        """
+
+        try:
+            existing = self.periods[index]
+        except IndexError as err:
+            raise ValueError("selected contracted-power assignment does not exist") from err
+        if (
+            replacement.effective_from < existing.effective_from
+            or replacement.effective_to > existing.effective_to
+        ):
+            raise ValueError("scheduled change must stay within the selected assignment")
+        periods = list(self.periods)
+        segments: list[ContractedPowerPeriod] = []
+        if existing.effective_from < replacement.effective_from:
+            segments.append(
+                ContractedPowerPeriod(
+                    existing.effective_from,
+                    replacement.effective_from - timedelta(days=1),
+                    existing.block_targets_kw,
+                    existing.provenance,
+                    existing.recorded_on,
+                )
+            )
+        segments.append(replacement)
+        if replacement.effective_to < existing.effective_to:
+            segments.append(
+                ContractedPowerPeriod(
+                    replacement.effective_to + timedelta(days=1),
+                    existing.effective_to,
+                    existing.block_targets_kw,
+                    existing.provenance,
+                    existing.recorded_on,
+                )
+            )
+        periods[index : index + 1] = segments
+        return ContractedPowerSchedule(tuple(periods))
+
+    def conflict_for(
+        self, candidate: ContractedPowerPeriod, *, exclude_index: int | None = None
+    ) -> ContractedPowerPeriod | None:
+        """Return the first inclusive-range conflict for a proposed assignment."""
+
+        return next(
+            (
+                period
+                for index, period in enumerate(self.periods)
+                if index != exclude_index
+                and candidate.effective_from <= period.effective_to
+                and candidate.effective_to >= period.effective_from
+            ),
+            None,
+        )
 
     def to_json(self) -> str:
         """Return the stable options/archive representation."""

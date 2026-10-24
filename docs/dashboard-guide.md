@@ -1,4 +1,4 @@
-# Dashboard guide — all seven tabs
+# Dashboard guide — all eight tabs
 
 The single SI Grid Monitor sidebar panel shows the **active meter** in a selector at the top. With multiple entries, always verify the displayed name before interpreting measurements. Each meter owns its settings and archive.
 
@@ -67,3 +67,11 @@ Displays tariff blocks, seasons, rule versions, holiday and DST classification. 
 2. **Quality versus value**: a numeric estimate can exist while the quarter remains incomplete or contractually unconfirmed.
 
 Read [Calculations](calculations.md), [Forecasts](forecasts.md), and [Data quality](data-quality.md).
+# Contracts
+
+The eighth tab is scoped to the active meter. It shows current assignment health,
+the complete configured timeline including gaps/future assignments, a B1-B5
+before/after comparison, and bounded append-only audit events newest first.
+Management buttons are shown to administrators and navigate to Home Assistant's
+supported SI Grid Monitor integration page; choose **Configure** for the selected
+meter. The custom panel does not take over the native Configure route.

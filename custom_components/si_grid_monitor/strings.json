@@ -171,6 +171,9 @@
   "options": {
     "error": {
       "archive_delete_confirmation_mismatch": "The confirmation does not match. Type the exact phrase shown before permanent deletion."
+      ,"invalid_contracted_power_periods": "The contracted-power dates or values are invalid. Inclusive date ranges must not overlap."
+      ,"overlapping_contracted_power_period": "The selected dates overlap {conflict}. Edit that assignment or use Schedule change."
+      ,"invalid_scheduled_contract_change": "The scheduled change must use valid dates wholly inside the selected assignment."
     },
     "step": {
       "init": {
@@ -221,7 +224,7 @@
       },
       "archive_removal": {
         "title": "Archive behavior when this meter is removed",
-        "description": "Meter: {meter}. Native removal safely keeps its schema-6 SQLite archive. A permanent-deletion confirmation expires after 10 minutes; remove this exact config entry within that window or the archive is retained.",
+        "description": "Meter: {meter}. Native removal safely keeps its SQLite archive. A permanent-deletion confirmation expires after 10 minutes; remove this exact config entry within that window or the archive is retained.",
         "data": {
           "archive_removal_action": "Removal behavior",
           "archive_removal_backup": "Create a SQLite backup before permanent deletion"
@@ -243,7 +246,7 @@
       },
       "assignments": {
         "title": "Contracted-power assignments",
-        "description": "Choose an assignment to edit or remove. Periods cannot overlap.",
+        "description": "Choose Edit details, Schedule change, Correct assignment or Remove. Inclusive periods cannot overlap; changes are previewed before saving.",
         "data": {
           "assignment_action": "Assignment action"
         },
@@ -278,30 +281,42 @@
         }
       },
       "edit_assignment": {
-        "title": "Edit contracted-power assignment",
-        "description": "The change applies prospectively through a new configuration epoch and never rewrites archived quarters.",
+        "title": "Edit assignment details",
+        "description": "Change provenance or the optional record date. Effective dates, B1-B5 values and archived quarters remain unchanged.",
         "data": {
-          "assignment_start_date": "Effective start",
-          "assignment_end_date": "Effective end",
           "assignment_recorded_on": "Record date (optional)",
-          "assignment_provenance": "Provenance",
-          "target_b1_kw": "B1 contracted power",
-          "target_b2_kw": "B2 contracted power",
-          "target_b3_kw": "B3 contracted power",
-          "target_b4_kw": "B4 contracted power",
-          "target_b5_kw": "B5 contracted power"
+          "assignment_provenance": "Provenance"
         },
         "data_description": {
-          "assignment_start_date": "First local calendar date on which this contracted-power assignment applies (inclusive). For example, 2026-01-01.",
-          "assignment_end_date": "Last local calendar date for these limits (inclusive). The system does not silently extend the assignment into future years.",
           "assignment_recorded_on": "Optional date printed or recorded on the distributor's assignment. This is evidence/provenance, not the start of validity.",
-          "assignment_provenance": "Identify who provided these limits, for example 'distributor assignment'. Kept with archived contract metadata.",
-          "target_b1_kw": "Distributor-assigned B1 15-minute average IMPORT demand limit in kW. Used only while this dated assignment is valid and B1 applies.",
-          "target_b2_kw": "Distributor-assigned B2 15-minute average IMPORT demand limit in kW. Used only while this dated assignment is valid and B2 applies.",
-          "target_b3_kw": "Distributor-assigned B3 15-minute average IMPORT demand limit in kW. Used only while this dated assignment is valid and B3 applies.",
-          "target_b4_kw": "Distributor-assigned B4 15-minute average IMPORT demand limit in kW. Used only while this dated assignment is valid and B4 applies.",
-          "target_b5_kw": "Distributor-assigned B5 15-minute average IMPORT demand limit in kW. Used only while this dated assignment is valid and B5 applies."
+          "assignment_provenance": "Identify the source of these user-entered limits. This does not independently verify their legal accuracy."
         }
+      },
+      "correct_assignment": {
+        "title": "Correct contracted-power assignment",
+        "description": "Correct mistaken dates or B1-B5 values. Completed quarters keep their original target evidence; configuration and historical evidence may therefore differ.",
+        "data": {
+          "assignment_start_date": "Effective start", "assignment_end_date": "Effective end", "assignment_recorded_on": "Record date (optional)", "assignment_provenance": "Provenance", "target_b1_kw": "B1 contracted power", "target_b2_kw": "B2 contracted power", "target_b3_kw": "B3 contracted power", "target_b4_kw": "B4 contracted power", "target_b5_kw": "B5 contracted power"
+        },
+        "data_description": {
+          "assignment_start_date": "Corrected first inclusive local date.", "assignment_end_date": "Corrected last inclusive local date.", "assignment_recorded_on": "Optional date shown on the source record.", "assignment_provenance": "Source of the corrected user-entered limits.", "target_b1_kw": "Corrected B1 15-minute import-demand limit.", "target_b2_kw": "Corrected B2 15-minute import-demand limit.", "target_b3_kw": "Corrected B3 15-minute import-demand limit.", "target_b4_kw": "Corrected B4 15-minute import-demand limit.", "target_b5_kw": "Corrected B5 15-minute import-demand limit."
+        }
+      },
+      "schedule_change": {
+        "title": "Schedule contract change",
+        "description": "Enter the first inclusive local date for the new limits. Leave the optional end empty to use the selected assignment's end; setting it creates a safe three-way split.",
+        "data": {
+          "assignment_start_date": "New limits effective from", "assignment_change_end_date": "New limits effective through (optional)", "assignment_recorded_on": "Record date (optional)", "assignment_provenance": "Provenance", "target_b1_kw": "New B1 contracted power", "target_b2_kw": "New B2 contracted power", "target_b3_kw": "New B3 contracted power", "target_b4_kw": "New B4 contracted power", "target_b5_kw": "New B5 contracted power"
+        },
+        "data_description": {
+          "assignment_start_date": "First inclusive local date for the new limits.", "assignment_change_end_date": "Optional final inclusive date; leave empty to use the selected assignment's end.", "assignment_recorded_on": "Optional date shown on the source record.", "assignment_provenance": "Source of the new user-entered limits.", "target_b1_kw": "New B1 15-minute import-demand limit.", "target_b2_kw": "New B2 15-minute import-demand limit.", "target_b3_kw": "New B3 15-minute import-demand limit.", "target_b4_kw": "New B4 15-minute import-demand limit.", "target_b5_kw": "New B5 15-minute import-demand limit."
+        }
+      },
+      "contract_preview": {
+        "title": "Review contract schedule",
+        "description": "BEFORE:\n{before}\n\nAFTER:\n{after}\n\nUNCOVERED DATES CREATED BY THIS CHANGE:\n{gaps}\n\nConfirming applies the complete schedule once and queues an audit event. Archived quarter measurements and their original targets are not rewritten.",
+        "data": {"confirm": "Apply this complete schedule"},
+        "data_description": {"confirm": "Confirm only after reviewing every resulting inclusive period and all B1-B5 values."}
       },
       "remove_assignment": {
         "title": "Remove contracted-power assignment",
@@ -319,6 +334,18 @@
     "legacy_mode_d_unsupported": {
       "title": "Legacy cumulative-energy meter needs reconfiguration",
       "description": "{meter} uses Mode D cumulative energy counters, which are not supported in SI Grid Monitor V1.0. Your archived data and configuration have been preserved. Reconfigure this entry with a supported live power sensor using Mode A, B or C."
+    },
+    "contract_uncovered_expiry": {
+      "title": "Contracted-power assignment expires without a successor",
+      "description": "{meter}'s assignment ends on {end}. No assignment starts on the next local calendar day. Add the next assignment to keep contractual forecasts available."
+    },
+    "contract_missing_current_assignment": {
+      "title": "No contracted-power assignment covers today",
+      "description": "No assignment for {meter} covers {date}. Power and energy measurements continue, but contractual comparison and confirmed exceedances are unavailable."
+    },
+    "contract_configuration_error": {
+      "title": "Contracted-power schedule is invalid",
+      "description": "The contracted-power schedule for {meter} cannot be parsed safely. Measurements continue, but contractual advice is unavailable until the configuration is corrected."
     }
   },
   "selector": {

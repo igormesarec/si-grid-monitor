@@ -71,6 +71,41 @@ async function fixture(page, {width, dark = false, enlarged = false, all = false
   }, {dark, enlarged, all, multiple});
 }
 
+async function contractsFixture(page, {width, dark = false}) {
+  await page.setViewportSize({width, height: 900});
+  await page.goto(origin);
+  await page.evaluate(async darkMode => {
+    await import("/custom_components/si_grid_monitor/frontend/dashboard.js");
+    document.documentElement.style.cssText = `font-size:18px;--primary-text-color:${darkMode ? "#eee" : "#222"};--secondary-text-color:${darkMode ? "#ccc" : "#555"};--card-background-color:${darkMode ? "#222" : "#fff"};--primary-background-color:${darkMode ? "#111" : "#fafafa"}`;
+    const panel = document.createElement("si-grid-monitor-panel");
+    panel._loaded = true;
+    panel._hass = {language: "en"};
+    panel._entries = [{entry_id: "meter", title: "House main contractual meter"}];
+    panel._entryId = "meter";
+    panel._tab = "contracts";
+    panel._contracts = {
+      today: "2026-10-25", is_admin: true, contract_status: "ACTIVE",
+      current_tariff_block: 2, applicable_target_kw: 2.1,
+      health: {level: "warning", reason: "uncovered_expiry", days_remaining: 67,
+        active: {effective_from: "2026-10-25", effective_to: "2026-12-31", provenance: "fixture"}},
+      current_schedule: [
+        {effective_from: "2026-01-01", effective_to: "2026-10-24", block_targets_kw: [1, 1.1, 1.2, 1.3, 1.4], provenance: "fixture"},
+        {effective_from: "2026-10-25", effective_to: "2026-12-31", block_targets_kw: [2, 2.1, 2.2, 2.3, 2.4], provenance: "fixture"},
+      ],
+      timeline: [
+        {kind: "assignment", assignment_index: 0}, {kind: "assignment", assignment_index: 1},
+        {kind: "gap", effective_from: "2027-01-01", effective_to: "2027-12-31"},
+      ],
+      audit_events: [{event_utc: "2026-10-24T18:00:00Z", event_type: "SCHEDULED_CHANGE",
+        effective_from: "2026-10-25", effective_to: "2026-12-31", provenance: "fixture",
+        origin: "user_action", old_schedule_json: "[]", new_schedule_json: "[]",
+        configuration_revision: "revision"}],
+    };
+    document.body.append(panel);
+    window.testPanel = panel;
+  }, dark);
+}
+
 for (const width of [320, 360, 390, 430, 768, 1280]) {
   for (const dark of [false, true]) {
     test(`rendered HISTORY geometry at ${width}px, ${dark ? "dark" : "light"}`, async () => {
@@ -197,6 +232,32 @@ for (const {width, dark} of [{width: 360, dark: true}, {width: 1280, dark: false
       assert.ok(state.stickyTop >= -1);
       assert.ok(state.toolbarWidth <= state.viewport);
       assert.ok(state.pageWidth <= state.viewport);
+    } finally { await page.close(); }
+  });
+}
+
+for (const width of [320, 360, 390, 430, 768, 1280]) {
+  test(`CONTRACTS remains readable without page overflow at ${width}px`, async () => {
+    const page = await browser.newPage();
+    try {
+      await contractsFixture(page, {width, dark: width === 360});
+      const layout = await page.evaluate(() => {
+        const root = window.testPanel.shadowRoot;
+        const periods = [...root.querySelectorAll(".contract-period")];
+        return {
+          pageWidth: document.documentElement.scrollWidth,
+          viewport: innerWidth,
+          periods: periods.length,
+          clipped: periods.some(node => node.scrollWidth > node.clientWidth + 1),
+          gap: root.querySelector(".contract-gap")?.textContent,
+          tabsScrollable: root.querySelector("nav").scrollWidth >= root.querySelector("nav").clientWidth,
+        };
+      });
+      assert.ok(layout.pageWidth <= layout.viewport, JSON.stringify(layout));
+      assert.equal(layout.periods, 3);
+      assert.equal(layout.clipped, false);
+      assert.match(layout.gap, /Not configured/);
+      assert.equal(layout.tabsScrollable, true);
     } finally { await page.close(); }
   });
 }

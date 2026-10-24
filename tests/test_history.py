@@ -412,7 +412,7 @@ def test_schema_five_upgrade_is_additive_and_backup_is_consistent(tmp_path) -> N
     assert backup_path.exists()
     copy = QuarterArchive(backup_path)
     copy.open()
-    assert copy.schema_version == 6
+    assert copy.schema_version == 7
     assert copy.list_quarters("meter-a", start, start + timedelta(minutes=15))[0][
         "import_kwh"
     ] == pytest.approx(0.1)
@@ -437,7 +437,7 @@ def test_real_schema_five_upgrade_preserves_quarter_and_adds_audit_tables(tmp_pa
     db.close()
     upgraded = QuarterArchive(path)
     upgraded.open()
-    assert upgraded.schema_version == 6
+    assert upgraded.schema_version == 7
     assert upgraded.list_quarters("meter-a", start, start + timedelta(minutes=15))[0][
         "import_kwh"
     ] == pytest.approx(0.1)
@@ -518,7 +518,7 @@ def test_schema_five_migration_rolls_back_every_failure_and_retries(
     monkeypatch.setattr(QuarterArchive, "_migration_checkpoint", original_checkpoint)
     retry = QuarterArchive(path)
     retry.open()
-    assert retry.schema_version == 6
+    assert retry.schema_version == 7
     assert retry.list_quarters("meter-a", start, start + timedelta(minutes=15))[0][
         "import_kwh"
     ] == pytest.approx(0.1)
@@ -544,7 +544,7 @@ def test_schema_five_recovers_expected_partial_auxiliary_objects(tmp_path) -> No
     db.close()
     recovered = QuarterArchive(path)
     recovered.open()
-    assert recovered.schema_version == 6
+    assert recovered.schema_version == 7
 
 
 def test_schema_five_rejects_incompatible_partial_objects_without_touching_history(

@@ -23,7 +23,7 @@ engine.py / sustained.py
       +--> authenticated dashboard websocket
       |       dashboard.js / dashboard-model.mjs / i18n
       |
-      +--> integration-owned SQLite schema-6 quarter archive
+      +--> integration-owned SQLite schema-7 archive (schema-6 quarter data preserved)
               checkpoints, source epochs, historical reports
 ~~~
 

@@ -21,7 +21,7 @@ globalThis.HTMLElement = FakeElement;
 globalThis.customElements = {define() {}};
 
 const {SIGridMonitorPanel} = await import(
-  "../custom_components/si_grid_monitor/frontend/dashboard.js?panel-tests=1.0.1"
+  "../custom_components/si_grid_monitor/frontend/dashboard.js?panel-tests=1.0.2"
 );
 
 const START_A = "2026-10-19T08:00:00+00:00";
@@ -887,4 +887,91 @@ test("Home Assistant language switching preserves meter and HISTORY selection", 
   assert.equal(panel._tab, "history");
   assert.equal(panel._historySourceEpoch, "4");
   assert.equal(panel._historyPageNumber, 3);
+});
+
+test("CONTRACTS loads only the selected meter and exposes safe management navigation", async () => {
+  const panel = new SIGridMonitorPanel();
+  panel._render = () => {};
+  panel._entryId = "meter-b";
+  panel._gate.switchEntry("meter-b");
+  panel._tab = "contracts";
+  let captured;
+  panel._call = async (type, request, entryId) => {
+    captured = {type, request, entryId};
+    return {
+      meter_name: "Workshop",
+      today: "2026-10-24",
+      is_admin: true,
+      health: {level: "warning", reason: "uncovered_expiry", days_remaining: 30},
+      current_tariff_block: 2,
+      applicable_target_kw: 3.9,
+      current_schedule: [],
+      audit_events: [],
+    };
+  };
+  await panel._loadTab();
+  assert.deepEqual(captured, {type: "contracts", request: {}, entryId: "meter-b"});
+  const html = panel._contractsView();
+  assert.match(html, /Current contract status/);
+  assert.match(html, /Manage contracts/);
+  assert.match(html, /No configured contracted-power assignment/);
+});
+
+test("CONTRACTS timeline is responsive and keeps three-decimal comparison values", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._contracts = {
+    today: "2026-10-25",
+    is_admin: true,
+    contract_status: "ACTIVE",
+    health: {
+      level: "ok",
+      reason: "active_assignment",
+      days_remaining: 67,
+      active: {effective_from: "2026-10-25", effective_to: "2026-12-31", provenance: "fixture"},
+    },
+    current_tariff_block: 1,
+    applicable_target_kw: 2,
+    current_schedule: [
+      {effective_from: "2026-01-01", effective_to: "2026-10-24", block_targets_kw: [1,1.1,1.2,1.3,1.4], provenance: "fixture"},
+      {effective_from: "2026-10-25", effective_to: "2026-12-31", block_targets_kw: [2,2.1,2.2,2.3,2.4], provenance: "fixture"},
+    ],
+    timeline: [
+      {kind: "assignment", assignment_index: 0},
+      {kind: "assignment", assignment_index: 1},
+      {kind: "gap", effective_from: "2027-01-01", effective_to: "2027-12-31"},
+    ],
+    audit_events: [{event_utc: "2026-10-24T20:00:00Z", event_type: "SCHEDULED_CHANGE",
+      effective_from: "2026-10-25", effective_to: "2026-12-31", provenance: "fixture",
+      origin: "user_action", old_schedule_json: "[]", new_schedule_json: "[]",
+      configuration_revision: "revision"}],
+  };
+  const html = panel._contractsView();
+  assert.match(html, /1\.000/);
+  assert.match(html, /2\.000/);
+  assert.match(html, /\+1\.000/);
+  assert.match(html, /Not configured/);
+  assert.match(html, /SCHEDULED_CHANGE/);
+  assert.match(html, /Schedules/);
+  const css = panel._contractStyles();
+  assert.match(css, /@media\(max-width:700px\)/);
+  assert.match(css, /grid-template-columns:1fr/);
+});
+
+test("Tariff Calendar labels as-recorded evidence separately from current configuration", () => {
+  const panel = new SIGridMonitorPanel();
+  const html = panel._calendarDetails({
+    local_datetime: "2026-10-25T02:00:00+02:00",
+    start_utc: "2026-10-25T00:00:00+00:00",
+    block: 3,
+    as_recorded_target_kw: 1.2,
+    as_recorded_source: "archived_quarter",
+    current_configuration_target_kw: 2.2,
+    utc_offset_seconds: 7200,
+    fold: 0,
+  });
+  assert.match(html, /As recorded target/);
+  assert.match(html, /Current configuration target/);
+  assert.match(html, /1\.200/);
+  assert.match(html, /2\.200/);
+  assert.match(html, /Open Contracts/);
 });

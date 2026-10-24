@@ -31,6 +31,8 @@ from .const import (
     PANEL_URL_PATH,
     VERSION,
 )
+from .contract_health import evaluate_contract_health
+from .contracted_power import ContractedPowerSchedule
 from .dashboard_models import build_day_view
 from .engine import LJUBLJANA, quarter_starts_for_local_day
 from .history import HistoryQuery, history_report
@@ -118,6 +120,7 @@ async def async_setup_dashboard(hass: HomeAssistant) -> None:
             ws_recorder_audit,
             ws_recorder_reconstruct,
             ws_calendar,
+            ws_contracts,
             ws_tariff_status,
             ws_transitions,
             ws_archive_status,
@@ -721,10 +724,49 @@ async def ws_calendar(hass: HomeAssistant, connection: Any, msg: dict[str, Any])
     if not 2026 <= selected.year <= 2030:
         connection.send_error(msg["id"], "out_of_range", "Calendar supports 2026 through 2030")
         return
+    starts = quarter_starts_for_local_day(selected)
+    day_start = starts[0]
+    day_end = quarter_starts_for_local_day(selected + timedelta(days=1))[0]
+    archived, epochs = await asyncio.gather(
+        hass.async_add_executor_job(
+            runtime.archive.list_quarters, runtime.namespace, day_start, day_end
+        ),
+        hass.async_add_executor_job(runtime.archive.list_configuration_epochs, runtime.namespace),
+    )
+    archived_by_start = {str(row["start_utc"]): row for row in archived}
     rows = []
     for item in runtime.tariff_calendar.daily_view(selected):
         tariff = runtime.tariff_calendar.classify(item["start_utc"])
-        rows.append({**_json(item), "target_kw": runtime.target_for_tariff(tariff)})
+        current_target = runtime.target_for_tariff(tariff)
+        start_iso = item["start_utc"].astimezone(UTC).isoformat()
+        archive_row = archived_by_start.get(start_iso)
+        recorded_target = None
+        recorded_source = "unknown"
+        recorded_reason = "No archived quarter or historical configuration proves this target."
+        if archive_row is not None and archive_row["contractual_target_kw"] is not None:
+            recorded_target = float(archive_row["contractual_target_kw"])
+            recorded_source = "archived_quarter"
+            recorded_reason = None
+        else:
+            eligible = [epoch for epoch in epochs if epoch.effective_utc <= item["start_utc"]]
+            if eligible:
+                epoch = eligible[-1]
+                if epoch.contracted_power_periods is not None:
+                    historical = ContractedPowerSchedule(epoch.contracted_power_periods)
+                    recorded_target = historical.target_for(tariff)
+                    if recorded_target is not None:
+                        recorded_source = "historical_configuration"
+                        recorded_reason = None
+        rows.append(
+            {
+                **_json(item),
+                "target_kw": current_target,
+                "current_configuration_target_kw": current_target,
+                "as_recorded_target_kw": recorded_target,
+                "as_recorded_source": recorded_source,
+                "as_recorded_reason": recorded_reason,
+            }
+        )
     first = rows[0] if rows else {}
     day_classification = (
         "public_holiday"
@@ -742,6 +784,123 @@ async def ws_calendar(hass: HomeAssistant, connection: Any, msg: dict[str, Any])
             "season": first.get("season"),
             "holiday_name": first.get("holiday_name"),
         },
+    )
+
+
+@websocket_api.websocket_command({vol.Required("type"): f"{DOMAIN}/contracts", **_ENTRY_SCHEMA})
+@websocket_api.async_response
+async def ws_contracts(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
+    """Return read-only, meter-scoped contract configuration and evidence."""
+
+    runtime = _runtime(hass, msg)
+    if runtime is None:
+        connection.send_error(msg["id"], "entry_not_found", "SI Grid Monitor entry not found")
+        return
+    now_utc = datetime.now(UTC)
+    local_today = now_utc.astimezone(LJUBLJANA).date()
+    try:
+        audits, epochs, evidence = await asyncio.gather(
+            hass.async_add_executor_job(runtime.archive.list_contract_audit, runtime.namespace),
+            hass.async_add_executor_job(
+                runtime.archive.list_configuration_epochs, runtime.namespace
+            ),
+            hass.async_add_executor_job(
+                runtime.archive.list_contract_target_evidence, runtime.namespace
+            ),
+        )
+    except sqlite3.Error:
+        _history_error(
+            connection,
+            msg,
+            operation="contracts",
+            requested=runtime.namespace,
+            code="archive_unavailable",
+            message="Contract history is temporarily unavailable",
+        )
+        return
+    schedule = runtime.contracted_power_schedule
+    health = evaluate_contract_health(schedule, local_today)
+    active = schedule.period_for(local_today)
+    future = [period for period in schedule.periods if period.effective_from > local_today]
+    previous = [period for period in schedule.periods if period.effective_to < local_today]
+    if active is not None:
+        contract_status = "ACTIVE"
+    elif future and previous:
+        contract_status = "FUTURE_GAP"
+    elif future:
+        contract_status = "UPCOMING"
+    elif schedule.periods:
+        contract_status = "EXPIRED"
+    elif evidence:
+        contract_status = "HISTORICAL_EVIDENCE_ONLY"
+    else:
+        contract_status = "NO_ASSIGNMENT"
+    if schedule.periods:
+        timeline_start = min(schedule.periods[0].effective_from, local_today)
+        timeline_end = max(schedule.periods[-1].effective_to, local_today + timedelta(days=365))
+    else:
+        timeline_start = local_today
+        timeline_end = local_today + timedelta(days=365)
+    timeline = [
+        {
+            "kind": "assignment",
+            "effective_from": period.effective_from,
+            "effective_to": period.effective_to,
+            "assignment_index": index,
+        }
+        for index, period in enumerate(schedule.periods)
+    ]
+    timeline.extend(
+        {
+            "kind": "gap",
+            "effective_from": start,
+            "effective_to": end,
+            "assignment_index": None,
+        }
+        for start, end in schedule.gaps(timeline_start, timeline_end)
+    )
+    timeline.sort(key=lambda item: item["effective_from"])
+    health_payload: Any = health
+    if runtime._contracted_power_configuration_error is not None:
+        contract_status = "CONFIGURATION_ERROR"
+        health_payload = {
+            "level": "error",
+            "reason": "configuration_error",
+            "active": None,
+            "successor": None,
+            "days_remaining": None,
+            "gap_start": None,
+            "gap_end": None,
+        }
+    current_tariff = runtime.tariff_calendar.classify(now_utc)
+    connection.send_result(
+        msg["id"],
+        _json(
+            {
+                "entry_id": runtime.entry.entry_id,
+                "meter_name": runtime.entry.title,
+                "today": local_today,
+                "is_admin": bool(connection.user.is_admin),
+                "contract_status": contract_status,
+                "health": health_payload,
+                "current_tariff_block": current_tariff.block,
+                "applicable_target_kw": runtime.target_for_tariff(current_tariff),
+                "current_schedule": schedule.periods,
+                "timeline": timeline,
+                "historical_configuration": epochs[-100:],
+                "archived_target_evidence": evidence,
+                "audit_events": audits,
+                "audit_events_limit": 200,
+                "management": {
+                    "supported": bool(connection.user.is_admin),
+                    "route": "/config/integrations/integration/si_grid_monitor",
+                    "instruction": (
+                        "Open Devices & services, select SI Grid Monitor, then Configure "
+                        "the selected meter."
+                    ),
+                },
+            }
+        ),
     )
 
 

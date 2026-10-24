@@ -28,8 +28,8 @@ import {
   selectTimelineHour,
   todayChartModel,
   todayQuarterAction,
-} from "./dashboard-model.mjs?v=1.0.1";
-import {dashboardLanguage, localizeDashboard, translateDashboard} from "./dashboard-i18n.mjs?v=1.0.1";
+} from "./dashboard-model.mjs?v=1.0.2";
+import {dashboardLanguage, localizeDashboard, translateDashboard} from "./dashboard-i18n.mjs?v=1.0.2";
 
 const fmt = (value, digits = 3) => value == null ? "—" : Number(value).toFixed(digits);
 const fmtPct = value => fmt(value, 2);
@@ -106,6 +106,8 @@ export class SIGridMonitorPanel extends HTMLElement {
     this._calendar = null;
     this._tariffStatus = null;
     this._calendarError = null;
+    this._contracts = null;
+    this._contractsError = null;
     this._transitions = null;
     this._period = null;
     this._blocks = null;
@@ -377,6 +379,11 @@ export class SIGridMonitorPanel extends HTMLElement {
         this._historyPage = history;
         this._historyPageError = null;
         this._historyPageLoading = false;
+      } else if (this._tab === "contracts") {
+        const contracts = await this._call("contracts", {}, entryId);
+        if (!this._gate.accepts(token)) return;
+        this._contracts = contracts;
+        this._contractsError = null;
       } else {
         const [calendar, tariffStatus] = await Promise.all([
           this._call("calendar", {date: this._selectedDate}, entryId),
@@ -406,6 +413,9 @@ export class SIGridMonitorPanel extends HTMLElement {
         } else if (this._tab === "calendar") {
           this._calendar = null;
           this._calendarError = error?.message || "Could not load the tariff calendar.";
+        } else if (this._tab === "contracts") {
+          this._contracts = null;
+          this._contractsError = error?.message || "Could not load contract information.";
         } else {
           this._error = error?.message || String(error);
         }
@@ -1176,9 +1186,34 @@ export class SIGridMonitorPanel extends HTMLElement {
     return `<section class="card"><div class="row"><button data-day="-1">‹</button><input data-date type="date" min="2026-01-01" max="2030-12-31" value="${esc(this._selectedDate)}"><button data-day="1">›</button><button data-today>Today</button></div><h2>Tariff calendar · ${esc(calendarDateLabel(calendar.date, locale))}</h2><p>${esc(classification)} · ${esc(season)}${calendar.holiday_name ? ` · ${esc(calendar.holiday_name)}` : ""}</p><div class="timeline" role="listbox" aria-label="Tariff hours">${calendar.hours.map(hour => `<button type="button" data-hour="${esc(hour.start_utc)}" class="hour b${hour.block || 0} ${selected?.start_utc === hour.start_utc ? "selected" : ""}" aria-pressed="${selected?.start_utc === hour.start_utc}"><b>${esc(hour.local_datetime.slice(11, 16))}</b><span>${hour.block ? `B${hour.block}` : "Unknown"}</span><small>${fmt(hour.target_kw)} kW</small><small>UTC${hour.utc_offset_seconds / 3600 >= 0 ? "+" : ""}${hour.utc_offset_seconds / 3600}${hour.fold ? " · fold 1" : ""}</small></button>`).join("")}</div><div class="legend">${[1, 2, 3, 4, 5].map(block => `<span class="chip b${block}">B${block}</span>`).join("")}</div><div data-calendar-details>${this._calendarDetails(selected)}</div></section>`;
   }
 
+  _contractsView() {
+    if (this._contractsError) return `<section class="card error"><h2>${esc(this._t("contracts.unavailable"))}</h2><p>${esc(this._contractsError)}</p><button data-retry-contracts>${esc(this._t("common.retry"))}</button></section>`;
+    const report = this._contracts;
+    if (!report) return `<section class="card">${esc(this._t("contracts.loading"))}</section>`;
+    const health = report.health || {};
+    const active = health.active;
+    const periods = report.current_schedule || [];
+    const timeline = (report.timeline || periods.map((_, index) => ({kind: "assignment", assignment_index: index}))).map(item => {
+      if (item.kind === "gap") return `<article class="contract-period contract-gap"><strong>${esc(item.effective_from)} – ${esc(item.effective_to)}</strong><span>${esc(this._t("contracts.gap"))}</span><small>${esc(this._t("contracts.gap_help"))}</small></article>`;
+      const index = item.assignment_index;
+      const period = periods[index];
+      if (!period) return "";
+      const today = report.today;
+      const status = period.effective_to < today ? this._t("contracts.previous") : period.effective_from > today ? this._t("contracts.upcoming") : this._t("contracts.active");
+      return `<button class="contract-period" data-contract-period="${index}"><strong>${esc(period.effective_from)} – ${esc(period.effective_to)}</strong><span>${esc(status)}</span><span>${period.block_targets_kw.map((value, block) => `B${block + 1} ${fmt(value)} kW`).join(" · ")}</span><small>${esc(period.provenance || this._t("contracts.user_configured"))}${period.recorded_on ? ` · ${esc(this._t("contracts.record"))} ${esc(period.recorded_on)}` : ""}</small></button>`;
+    }).join("") || `<p>${esc(this._t("contracts.none_configured"))}</p>`;
+    const previous = periods.length > 1 ? periods[periods.length - 2] : null;
+    const next = periods.length > 1 ? periods[periods.length - 1] : null;
+    const comparison = previous && next ? `<table><thead><tr><th>${esc(this._t("contracts.block"))}</th><th>${esc(this._t("contracts.previous_kw"))}</th><th>${esc(this._t("contracts.new_kw"))}</th><th>${esc(this._t("contracts.difference_kw"))}</th></tr></thead><tbody>${previous.block_targets_kw.map((value, index) => `<tr><th>B${index + 1}</th><td>${fmt(value)}</td><td>${fmt(next.block_targets_kw[index])}</td><td>${Number(next.block_targets_kw[index] - value) >= 0 ? "+" : ""}${fmt(next.block_targets_kw[index] - value)}</td></tr>`).join("")}</tbody></table>` : `<p>${esc(this._t("contracts.compare_help"))}</p>`;
+    const audit = (report.audit_events || []).map(event => `<tr><td>${esc(new Date(event.event_utc).toLocaleString())}</td><td>${esc(event.event_type)}</td><td>${esc(event.effective_from || "—")} – ${esc(event.effective_to || "—")}</td><td>${esc(event.provenance || "—")}</td><td>${esc(event.origin)}</td><td><details><summary>${esc(this._t("contracts.schedules"))}</summary><b>${esc(this._t("contracts.before"))}</b><code>${esc(event.old_schedule_json)}</code><b>${esc(this._t("contracts.after"))}</b><code>${esc(event.new_schedule_json)}</code><small>${esc(event.configuration_revision)}</small></details></td></tr>`).join("") || `<tr><td colspan="6">${esc(this._t("contracts.no_audit"))}</td></tr>`;
+    const warning = health.level && health.level !== "ok" ? `<div class="notice contract-warning" role="alert"><strong>${esc(String(health.level).toUpperCase())}</strong> · ${esc(readableReason(health.reason))}${health.gap_start ? ` · ${esc(health.gap_start)}` : ""}</div>` : "";
+    const buttons = report.is_admin ? `<div class="row"><button data-manage-contracts>${esc(this._t("contracts.manage"))}</button><button data-manage-contracts>${esc(this._t("contracts.schedule"))}</button><button data-manage-contracts>${esc(this._t("contracts.add"))}</button></div>` : `<p class="notice">${esc(this._t("contracts.admin_required"))}</p>`;
+    return `<section class="card contracts-status"><h2>${esc(this._t("contracts.current_status"))}</h2>${warning}<div class="metrics"><article><span>${esc(this._t("contracts.status"))}</span><strong>${esc(report.contract_status || "UNKNOWN")}</strong></article><article><span>${esc(this._t("contracts.current_block"))}</span><strong>${report.current_tariff_block ? `B${report.current_tariff_block}` : "—"}</strong></article><article><span>${esc(this._t("contracts.applicable_target"))}</span><strong>${fmt(report.applicable_target_kw)} kW</strong></article><article><span>${esc(this._t("contracts.days_remaining"))}</span><strong>${health.days_remaining ?? "—"}</strong></article></div>${active ? `<p><strong>${esc(active.effective_from)} – ${esc(active.effective_to)}</strong> · ${esc(active.provenance || this._t("contracts.user_configured"))}</p>` : `<p>${esc(this._t("contracts.no_current"))}</p>`}${health.successor ? `<p>${esc(this._t("contracts.next_assignment"))}: <strong>${esc(health.successor.effective_from)} – ${esc(health.successor.effective_to)}</strong></p>` : ""}${buttons}</section><section class="card"><h2>${esc(this._t("contracts.timeline"))}</h2><div class="contract-timeline">${timeline}</div></section><section class="card"><h2>${esc(this._t("contracts.comparison"))}</h2>${comparison}</section><section class="card"><h2>${esc(this._t("contracts.audit"))}</h2><p>${esc(this._t("contracts.audit_help"))}</p><div class="table-wrap"><table><thead><tr><th>${esc(this._t("contracts.edit_time"))}</th><th>${esc(this._t("contracts.event"))}</th><th>${esc(this._t("contracts.effective_dates"))}</th><th>${esc(this._t("contracts.provenance"))}</th><th>${esc(this._t("contracts.source"))}</th><th>${esc(this._t("contracts.details"))}</th></tr></thead><tbody>${audit}</tbody></table></div></section>`;
+  }
+
   _calendarDetails(selected) {
     if (!selected) return "";
-    return `<div class="selected-quarter"><h3>Selected hour · ${esc(selected.local_datetime?.slice(11, 16))}</h3><div class="grid">${this._metric("Tariff block", selected.block ? `B${selected.block}` : "Unknown")}${this._metric("Contracted target", fmt(selected.target_kw), "kW")}${this._metric("Rule status", selected.rule_status || "Unknown")}${this._metric("Rule version", selected.rule_version || "Unknown")}${this._metric("Season", selected.season || "Unknown")}${this._metric("Day type", selected.day_type || "Unknown")}${this._metric("Holiday", selected.holiday_name || "None")}${this._metric("UTC offset", selected.utc_offset_seconds / 3600, "hours")}${this._metric("DST fold", selected.fold ?? 0)}${this._metric("Start (UTC)", selected.start_utc || "Unknown")}</div></div>`;
+    return `<div class="selected-quarter"><h3>Selected hour · ${esc(selected.local_datetime?.slice(11, 16))}</h3><div class="grid">${this._metric("Tariff block", selected.block ? `B${selected.block}` : "Unknown")}${this._metric("As recorded target", fmt(selected.as_recorded_target_kw), "kW")}${this._metric("Recorded source", selected.as_recorded_source || "unknown")}${this._metric("Current configuration target", fmt(selected.current_configuration_target_kw), "kW")}${this._metric("Rule status", selected.rule_status || "Unknown")}${this._metric("Rule version", selected.rule_version || "Unknown")}${this._metric("Season", selected.season || "Unknown")}${this._metric("Day type", selected.day_type || "Unknown")}${this._metric("Holiday", selected.holiday_name || "None")}${this._metric("UTC offset", selected.utc_offset_seconds / 3600, "hours")}${this._metric("DST fold", selected.fold ?? 0)}${this._metric("Start (UTC)", selected.start_utc || "Unknown")}</div>${selected.as_recorded_reason ? `<p class="notice">${esc(selected.as_recorded_reason)}</p>` : ""}<button data-tab="contracts">Open Contracts</button></div>`;
   }
 
   _selectCalendarHour(startUtc, focus = false) {
@@ -1276,6 +1311,11 @@ export class SIGridMonitorPanel extends HTMLElement {
     });
     root.querySelector("[data-retry-day]")?.addEventListener("click", () => this._loadTab());
     root.querySelector("[data-retry-calendar]")?.addEventListener("click", () => this._loadTab());
+    root.querySelector("[data-retry-contracts]")?.addEventListener("click", () => this._loadTab());
+    root.querySelectorAll("[data-manage-contracts]").forEach(button => button.addEventListener("click", () => {
+      history.pushState(null, "", "/config/integrations/integration/si_grid_monitor");
+      window.dispatchEvent(new Event("location-changed"));
+    }));
     root.querySelector("[data-retry-period]")?.addEventListener("click", () => this._loadTab());
     root.querySelector("[data-period-type]")?.addEventListener("change", event => {
       this._resetAnalysisScroll();
@@ -1586,7 +1626,7 @@ export class SIGridMonitorPanel extends HTMLElement {
     this._resetChartScrollOnRender = false;
     const active = this._entries.find(entry => entry.entry_id === this._entryId);
     const activeMeterName = active?.title || this._t("common.unavailable");
-    const tabs = ["overview", "today", "period", "blocks", "exceedances", "history", "calendar"];
+    const tabs = ["overview", "today", "period", "blocks", "exceedances", "history", "contracts", "calendar"];
     const content = !this._entries.length
       ? `<section class="card"><h2>${esc(this._t("setup.no_meter"))}</h2><p>${esc(this._t("setup.no_meter_help"))}</p></section>`
       : this._tab === "overview" ? this._overview()
@@ -1595,13 +1635,21 @@ export class SIGridMonitorPanel extends HTMLElement {
             : this._tab === "blocks" ? this._blocksView()
               : this._tab === "exceedances" ? this._exceedancesView()
                 : this._tab === "history" ? this._historyView()
-                  : `${this._calendarView()}${this._tariffStatusView()}`;
+                  : this._tab === "contracts" ? this._contractsView()
+                    : `${this._calendarView()}${this._tariffStatusView()}`;
     const meterSelector = this._entries.length > 1
       ? `<label class="meter-selector"><span>${esc(this._t("meter.select"))}</span><select data-entry aria-label="${esc(this._t("meter.select"))}">${this._entries.map(entry => `<option value="${esc(entry.entry_id)}" ${entry.entry_id === this._entryId ? "selected" : ""}>${esc(entry.title)}</option>`).join("")}</select></label>`
       : "";
     const meterNotice = this._meterNotice
       ? `<div class="notice meter-notice" role="status" aria-live="polite">${esc(this._meterNotice)}</div>` : "";
-    this.shadowRoot.innerHTML = `<style>${this._styles()}</style><style>${this._legendStyles()}</style><style>${this._mobileHistoryStyles()}</style><main><header><div class="brand"><span>SI</span><div><h1>SI Grid Monitor</h1><p>Import-only contractual demand intelligence</p></div></div></header><nav>${tabs.map(id => `<button data-tab="${id}" class="${this._tab === id ? "active" : ""}">${esc(this._t(`nav.${id}`))}</button>`).join("")}</nav><section class="meter meter-toolbar" aria-label="${esc(this._t("meter.active"))}"><div class="meter-identity"><small>${esc(this._t("meter.active"))}</small><strong data-active-meter-name>${esc(activeMeterName)}</strong></div>${meterSelector}</section>${meterNotice}${this._error ? `<div class="error">${esc(this._t("error.connection", {message: this._error}))}</div>` : ""}${content}</main>`;
+    this.shadowRoot.innerHTML = `<style>${this._styles()}</style><style>${this._legendStyles()}</style><style>${this._mobileHistoryStyles()}</style><style>${this._contractStyles()}</style><main><header><div class="brand"><span>SI</span><div><h1>SI Grid Monitor</h1><p>Import-only contractual demand intelligence</p></div></div></header><nav>${tabs.map(id => `<button data-tab="${id}" class="${this._tab === id ? "active" : ""}">${esc(this._t(`nav.${id}`))}</button>`).join("")}</nav><section class="meter meter-toolbar" aria-label="${esc(this._t("meter.active"))}"><div class="meter-identity"><small>${esc(this._t("meter.active"))}</small><strong data-active-meter-name>${esc(activeMeterName)}</strong></div>${meterSelector}</section>${meterNotice}${this._error ? `<div class="error">${esc(this._t("error.connection", {message: this._error}))}</div>` : ""}${content}</main>`;
+    const contractHealth = this._live?.contract_health;
+    if (this._tab === "overview" && contractHealth?.level && contractHealth.level !== "ok") {
+      this.shadowRoot.querySelector(".meter-toolbar")?.insertAdjacentHTML(
+        "afterend",
+        `<div class="notice contract-warning" role="alert"><strong>${esc(this._t("contracts.attention"))}</strong> · ${esc(readableReason(contractHealth.reason))} <button data-tab="contracts">${esc(this._t("contracts.open"))}</button></div>`,
+      );
+    }
     if (this._tab === "history" && this._historyPage) {
       this.shadowRoot.querySelector("main > section.card:last-of-type")?.insertAdjacentHTML(
         "beforeend", this._historyAuditPanel(),
@@ -1659,6 +1707,10 @@ export class SIGridMonitorPanel extends HTMLElement {
 
   _mobileHistoryStyles() {
     return `header{min-width:0}.brand,.brand>div,.meter,.meter-identity,.meter-selector{min-width:0}.brand>span{min-width:48px;flex:none}.brand h1,.meter strong,.meter select{max-width:100%;overflow-wrap:anywhere;word-break:break-word}.history-controls{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:12px;align-items:end}.history-controls label{display:flex;min-width:0;flex-direction:column;gap:5px;font-size:.78rem;color:var(--secondary-text-color)}.history-controls input,.history-controls select,.history-controls button{width:100%;min-width:0}.history-order-lock{grid-column:1/-1;margin:0}@media(max-width:700px){header{align-items:flex-start;flex-direction:column}.brand,.meter{width:100%;max-width:none}.meter{align-items:stretch;flex-direction:column}.meter strong,.meter select,.meter-selector{width:100%}.history-controls{grid-template-columns:minmax(0,1fr)}.history-controls button{min-height:44px}.history-quarter-report h3,.history-quarter-report>p{overflow-wrap:anywhere}}`;
+  }
+
+  _contractStyles() {
+    return `.contract-timeline{display:grid;gap:10px}.contract-period{display:grid;grid-template-columns:minmax(170px,.8fr) auto minmax(260px,2fr);gap:10px;align-items:center;text-align:left;width:100%}.contract-period small{grid-column:1/-1}.contract-gap{border:2px dashed var(--warning-color,#f59e0b);padding:12px;background:color-mix(in srgb,var(--warning-color,#f59e0b) 8%,transparent)}.contract-warning{border-left:4px solid #dc2626}.table-wrap{max-width:100%;overflow-x:auto}.contracts-status code{display:block;max-width:420px;white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:700px){.contract-period{grid-template-columns:1fr;min-height:64px}.contract-period small{grid-column:1}.contracts-status .row{align-items:stretch;flex-direction:column}.contracts-status .row button{min-height:44px}}`;
   }
 
   _historyStyles() {
