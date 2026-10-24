@@ -290,7 +290,7 @@ for (const width of [320, 768, 1280]) {
       await sl.focus();
       await sl.press("Enter");
       assert.equal(await sl.getAttribute("aria-pressed"), "true");
-      assert.ok(await sl.isFocused());
+      assert.ok(await sl.evaluate(element => element.getRootNode().activeElement === element));
       assert.equal(await page.locator("si-grid-monitor-panel nav button").first().textContent(), "PREGLED");
       await page.locator("si-grid-monitor-panel select[data-entry]").selectOption("garage");
       assert.equal(await page.locator("si-grid-monitor-panel nav button").first().textContent(), "PREGLED");
