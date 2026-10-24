@@ -936,6 +936,7 @@ test("dashboard language switching preserves meter and HISTORY selection", () =>
 
 test("CONTRACTS loads only the selected meter and exposes safe management navigation", async () => {
   const panel = new SIGridMonitorPanel();
+  panel._language = "en";
   panel._render = () => {};
   panel._entryId = "meter-b";
   panel._gate.switchEntry("meter-b");
@@ -967,6 +968,7 @@ test("CONTRACTS loads only the selected meter and exposes safe management naviga
 
 test("CONTRACTS timeline is responsive and keeps three-decimal comparison values", () => {
   const panel = new SIGridMonitorPanel();
+  panel._language = "en";
   panel._contracts = {
     today: "2026-10-25",
     is_admin: true,
@@ -1007,7 +1009,7 @@ test("CONTRACTS timeline is responsive and keeps three-decimal comparison values
   assert.match(html, /2\.000/);
   assert.match(html, /\+1\.000/);
   assert.match(html, /Not configured/);
-  assert.match(html, /SCHEDULED_CHANGE/);
+  assert.match(html, /Scheduled change/);
   assert.match(html, /Schedules/);
   assert.match(html, /Historical configuration snapshots/);
   assert.match(html, /Immutable archived-quarter target evidence/);
@@ -1024,6 +1026,7 @@ test("CONTRACTS timeline is responsive and keeps three-decimal comparison values
 
 test("Tariff Calendar labels as-recorded evidence separately from current configuration", () => {
   const panel = new SIGridMonitorPanel();
+  panel._language = "en";
   const html = panel._calendarDetails({
     local_datetime: "2026-10-25T02:00:00+02:00",
     start_utc: "2026-10-25T00:00:00+00:00",
@@ -1045,6 +1048,7 @@ test("Tariff Calendar labels as-recorded evidence separately from current config
 
 test("historical calendar cells never replace unknown recorded targets with current values", () => {
   const panel = new SIGridMonitorPanel();
+  panel._language = "en";
   panel._selectedDate = "2026-01-02";
   panel._calendar = {
     date: "2026-01-02", day_classification: "working_day", season: "higher",

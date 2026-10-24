@@ -55,8 +55,8 @@ your Home Assistant installation. Test with a backup.
 
 ## V0.9.6 → V1.0 release-candidate migration
 
-V1.0.1 is the current merged application. V1.0.2 contract management remains a
-release candidate until it passes real Home Assistant acceptance.
+V1.0.2 contract management is the current merged application. V1.0.3 localization
+remains a draft release candidate until it passes real Home Assistant acceptance.
 Use a copied/test Home Assistant instance until the release candidate is accepted.
 
 ### Backup first

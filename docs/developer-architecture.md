@@ -38,7 +38,7 @@ engine.py / sustained.py
 | `sustained.py` | Conservative forward evaluation of constant extra load over intersecting quarters |
 | `sensor.py` | Home Assistant entity exposure and availability rules |
 | `archive.py`, `history.py` | SQLite storage, migration, quality, provenance and paginated HISTORY |
-| `frontend/dashboard.js`, `dashboard-model.mjs` | Seven-tab interface, charts, measured-vs-unknown semantics |
+| `frontend/dashboard.js`, `dashboard-model.mjs` | Eight-tab interface, charts, measured-vs-unknown semantics and bilingual reporting |
 
 Inspect exact file names when extending functionality; this overview intentionally omits some helper modules.
 

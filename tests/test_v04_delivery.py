@@ -68,7 +68,7 @@ def test_today_and_calendar_expose_interactive_details_and_target() -> None:
     assert "Selected 15-minute interval" in bundle
     assert "this._historicalCard()" in bundle
     assert "data-hour=" in bundle
-    assert "Selected hour" in bundle
+    assert 'this._t("calendar.selected_hour")' in bundle
     assert "this._selectCalendarHour(element.dataset.hour)" in bundle
     assert 'class="target-step"' in bundle
     assert "todayChartModel(quarters)" in bundle

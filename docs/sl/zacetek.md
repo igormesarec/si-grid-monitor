@@ -4,9 +4,10 @@
 
 To je pripomoček za spremljanje in odločanje, **ne** uradni števec dobavitelja ali električna zaščitna naprava.
 
-Dokumentacija vključuje predlagano **V1.0.2 RC** upravljanje časovno omejenih
-dodelitev dogovorjene moči. Različica še ni potrjena v pravem Home Assistantu
-oziroma objavljena kot stabilna izdaja.
+V1.0.2 z upravljanjem časovno omejenih dodelitev dogovorjene moči je vključena v
+`main`. Dokumentacija opisuje predlagano **V1.0.3 RC** lokalizacijo v angleščino
+in slovenščino, ki še ni potrjena v pravem Home Assistantu oziroma objavljena kot
+stabilna izdaja.
 
 ## Namestitev
 

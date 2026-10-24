@@ -1,6 +1,6 @@
 # Current limitations and roadmap
 
-**V1.0.1 is merged in `main`; V1.0.2 contract management remains a release candidate pending real Home Assistant acceptance.**
+**V1.0.2 contract management is merged in `main`; V1.0.3 localization remains a draft release candidate pending real Home Assistant acceptance.**
 SI Grid Monitor is monitoring and decision-support software, not a certified
 utility meter, physical protection device, guaranteed bill predictor or control
 system.
