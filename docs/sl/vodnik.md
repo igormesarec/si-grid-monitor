@@ -28,9 +28,37 @@ Intervalli se začnejo ob **:00, :15, :30 in :45**. Ne začnejo se ob trenutku n
 - **Incomplete / nepopolno**: manjkajo meritve ali rezultat ni dovolj potrjen.
 - **Unknown / neznano**: vir te količine ne meri. Ne pomeni izmerjene vrednosti nič.
 
-## Sedem zavihkov
+## Osem zavihkov
 
-**Overview:** trenutni interval, energija, moč, napovedi, varnostni opis. **Today:** pregled današnjih četrtin. **Period:** obdobja in primerjave. **Blocks:** analiza B1–B5. **Exceedances:** potrjene prekoračitve. **History:** arhiv 15-minutnih povzetkov. **Tariff Calendar:** razpored blokov in status pravil.
+**Overview:** trenutni interval, energija, moč, napovedi, varnostni opis. **Today:** pregled današnjih četrtin. **Period:** obdobja in primerjave. **Blocks:** analiza B1–B5. **Exceedances:** potrjene prekoračitve. **History:** arhiv 15-minutnih povzetkov. **Contracts:** trenutne/prihodnje dodelitve, vrzeli, primerjava in revizijska sled. **Tariff Calendar:** razpored blokov, zgodovinska oziroma trenutno nastavljena ciljna vrednost in status pravil.
+
+## Upravljanje pogodb
+
+Datumski razponi so vključujoči in se ne smejo prekrivati. **Načrtuj
+spremembo** ohrani prejšnji del dodelitve ter samodejno ustvari novo obdobje od
+izbranega datuma. Z neobveznim končnim datumom nastane varna delitev na tri
+dele. **Uredi podrobnosti** spreminja le izvor in datum evidence, **Popravi
+dodelitev** je izrecen popravek datumov ali moči, **Odstrani** pa odstrani
+dodelitev iz aktivnega razporeda po predogledu. Nobeno od teh dejanj ne spreminja
+že arhiviranih meritev.
+
+Ko pogodba manjka ali se izteka brez neposrednega naslednika, Home Assistant
+prikaže stabilno opozorilo za izbrani merilnik. Naslednik, ki se začne naslednji
+koledarski dan, opozorilo o izteku odpravi. Merjenje uvoza/oddaje se vedno
+nadaljuje, vendar brez znane meje ni potrjene pogodbene prekoračitve.
+
+Zavihek **Contracts** ločuje trenutni razpored, stare konfiguracijske posnetke,
+nespremenljive cilje v arhiviranih četrtinah in uporabniške revizijske dogodke.
+Starejši revizijski dogodki so dostopni po omejenih straneh. Posnetki iz časa
+pred revizijskim sistemom niso prikazani kot izmišljeni dogodki uporabnika.
+Skrbnik vidi en gumb **Odpri nastavitve integracije** in nato pri jasno imenovanem
+izbranem merilniku izbere **Configure**.
+
+Pri zgodovinskem koledarju pomeni **Kot zabeleženo** samo cilj, ki je dejansko
+shranjen v arhivirani četrtini. Če je bil cilj shranjen kot neznan, ostane
+neznan. Morebitna vrednost iz starega konfiguracijskega posnetka je prikazana
+ločeno kot sklep iz zgodovinske konfiguracije, trenutni razpored pa kot tretja,
+ločena primerjava.
 
 ## Nastavitve
 

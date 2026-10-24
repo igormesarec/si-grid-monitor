@@ -8,9 +8,9 @@ contracted-power target, and preserves auditable quarter history. It is useful
 for homes and small sites with heat pumps, EV charging, solar PV or other loads
 that need clearer visibility into quarter-hour grid import.
 
-**Release status:** V1.0.1 is a proposed hotfix release candidate that restores
-the native Home Assistant Configure/OptionsFlow route while preserving the
-sidebar dashboard. V1.0 remains pending real Home Assistant acceptance.
+**Release status:** V1.0.2 is a proposed release candidate adding guided,
+auditable contracted-power management. It is pending real Home Assistant and
+Android acceptance.
 
 This is monitoring and decision-support software—not a distributor-certified
 meter, guaranteed bill calculation, physical protection device or automatic
@@ -23,8 +23,9 @@ load controller.
 - Instantaneous, time-weighted smoothed and sustained load forecasts when their
   measurement and contract prerequisites are satisfied.
 - Clear CAN ADD / MUST REDUCE estimates for billing-energy budgets.
-- Seven-tab authenticated Home Assistant sidebar dashboard.
-- Permanent, per-meter schema-6 SQLite history with quality and provenance.
+- Eight-tab authenticated Home Assistant sidebar dashboard, including Contracts.
+- Permanent, per-meter schema-7 SQLite history with quality, provenance and an
+  append-only contract-edit audit (schema-6 archives migrate additively).
 - Multiple independent meter entries behind one shared sidebar panel.
 - Three-decimal kW/kWh presentation without reducing stored precision.
 - English and Slovenian configuration and dashboard terminology.
@@ -65,7 +66,7 @@ their original quality and provenance.
 - **[Configuration reference](docs/configuration.md)** — contracts, margins,
   smoothing, simulation, retention and removal.
 - **[Dashboard guide](docs/dashboard-guide.md)** — Overview, Today, Period,
-  Blocks, Exceedances, History and Tariff Calendar.
+  Blocks, Exceedances, History, Contracts and Tariff Calendar.
 - **[Calculations](docs/calculations.md)** and **[forecasts](docs/forecasts.md)** —
   equations, quality gates and limitations.
 - **[History and archive safety](docs/history-and-archive.md)**,
@@ -120,8 +121,10 @@ The dashboard provides:
 3. **Period** — hour/day/week/month/year/custom aggregation.
 4. **Blocks** — historical block statistics and quarter drill-down.
 5. **Exceedances** — confirmed events, near-limit and unconfirmed records.
-6. **History** — paginated schema-6 archive, quality and provenance.
-7. **Tariff Calendar** — block schedule, rule status and transitions.
+6. **History** — paginated schema-7 archive, quality and provenance; existing
+   schema-6 quarter data migrates additively.
+7. **Contracts** — assignments, gaps, comparison and audit evidence.
+8. **Tariff Calendar** — block schedule, recorded/current targets and rule status.
 
 Completed valid, incomplete, unavailable, missing-after-monitoring,
 pre-monitoring, live and upcoming intervals remain distinct. Partial observed

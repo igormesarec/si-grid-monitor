@@ -4,6 +4,32 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+## [1.0.2] - release candidate
+
+- Added guided Schedule change with atomic two- or three-segment inclusive date
+  splits, separate detail editing/correction/removal, complete before/after
+  preview and conflict-specific validation.
+- Added the meter-scoped Contracts dashboard with current health, timeline,
+  B1-B5 comparison, bounded audit history and administrator-only navigation to
+  Home Assistant integration settings.
+- Added stable per-meter Repairs issues for missing and uncovered expiring
+  assignments, automatically cleared after correction or an adjacent successor.
+- Added schema 7 as a strictly additive `contract_audit` table. Schema-6 quarter
+  measurements, epochs, checkpoints, tariff versions and target provenance are
+  not rewritten.
+- Tariff Calendar now shows **As recorded** archive/epoch evidence separately
+  from the target resolved through **Current configuration**.
+- Fixed an empty optional Record date and prevented future-only schedule changes
+  from falsely making an otherwise unchanged live quarter configuration mixed.
+- Added optimistic schedule-revision validation so an outdated OptionsFlow
+  preview cannot overwrite a newer contract edit from another session.
+- Completed the Contracts evidence viewer with historical configuration
+  snapshots, immutable archived-quarter target evidence and paginated audit events.
+- Historical Calendar cells now keep archived null targets unknown and label
+  configuration inference separately from archived evidence and current settings.
+- Replaced three indistinguishable contract links with one administrator-only
+  integration-settings action and selected-meter instructions.
+
 ## [1.0.1] - hotfix release candidate
 
 - Restored Home Assistant's native integration **Configure** action by removing

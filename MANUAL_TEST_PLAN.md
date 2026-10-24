@@ -1,4 +1,4 @@
-# SI Grid Monitor V1.0.1 Hotfix Release-Candidate Manual Test Plan
+# SI Grid Monitor V1.0.2 Contract Management Release-Candidate Manual Test Plan
 
 ## V1.0.1 native OptionsFlow hotfix
 
@@ -6,7 +6,7 @@
    dated B1–B5 assignments. Test once on desktop and once in the Android
    Companion App.
 2. Confirm the single **SI Grid Monitor** sidebar item still opens the dashboard,
-   shows all seven tabs and switches between the two meters without mixed data.
+   shows all eight tabs and switches between the two meters without mixed data.
 3. In **Settings > Devices & services > SI Grid Monitor**, open **Configure** for
    each meter. It must open the native SI Grid Monitor settings menu, not the
    sidebar dashboard.
@@ -50,7 +50,7 @@ not claim Companion App acceptance.
    Confirm the config-entry unique ID now identifies the new live source. Attempt
    the same source already owned by another meter and confirm reconfiguration is
    rejected without changing either entry or archive.
-7. Check all seven tabs on desktop and Android. Distinguish valid, incomplete,
+7. Check all eight tabs on desktop and Android. Distinguish valid, incomplete,
    unavailable, missing after monitoring began, pre-monitoring, live and upcoming
    intervals. Pre-monitoring must not increase missing counts.
 8. Confirm all displayed kW/kWh measurements use three decimals, percentages use
@@ -679,7 +679,7 @@ rendering and live SolarEdge cadence still require the real-instance checks.
     the panel. Repeat at Android widths (320, 360 and 390 px), at 768 px, in light
     and dark themes, and with browser/text scaling enabled. Check that labels do
     not overlap and horizontal/vertical scrolling remains usable.
-17. Visit all seven tabs in English and Slovenian. Check metric descriptions,
+17. Visit all eight tabs in English and Slovenian. Check metric descriptions,
     warnings, errors, chart legends, table headings, pagination, controls and
     accessibility labels. Units and stored technical values (quality/provenance
     codes, entity IDs and UTC identities) must remain unchanged.
@@ -699,7 +699,7 @@ instance before recommending a beta release. Preserve evidence for:
    treat this as a factory reset; V0.9 has no destructive reset workflow.
 5. WebSocket disconnect/recovery, a temporary SQLite lock/read-only failure and
    Recorder unavailability without fabricated measurements or lost quarters.
-6. All seven dashboard pages in English and Slovenian at Android, tablet and
+6. All eight dashboard pages in English and Slovenian at Android, tablet and
    desktop sizes, light/dark themes, keyboard and touch.
 7. Live import/export, measured zero, stale/unavailable/recovery, 92/96/100-slot
    days and three consecutive exceeded quarters as three separate records.
@@ -725,3 +725,39 @@ instance before recommending a beta release. Preserve evidence for:
 Automated tests do not satisfy this gate. Record the HA version, HACS version,
 browser/app version, integration commit, source update cadence and database
 before/after counts with the results.
+# V1.0.2 contract-management acceptance
+
+1. Back up `.storage/si_grid_monitor_<entry-id>.db`, upgrade from V1.0.1 and
+   confirm schema 7 opens with every old quarter/epoch/checkpoint unchanged.
+2. On Android 320/360/390/430 px and desktop, open all eight tabs; verify the
+   Contracts timeline, tables, scrolling, meter selector, keyboard/touch access,
+   light/dark themes and larger text.
+3. From a 2026 full-year fixture, Schedule change on 25 October and confirm the
+   preview/result is `01-01..10-24` plus `10-25..12-31`. Test a July-September
+   change produces three segments. Confirm B1-B5 values use three decimals.
+4. Leave Record date empty, save, reload and confirm it remains empty. Repeat
+   with a valid date.
+5. Confirm overlap errors identify the conflicting range. Create an intentional
+   gap and verify the Contracts warning and one Repairs issue; fill it and verify
+   automatic clearing. Test 30-day, 7-day and first-uncovered-day behavior.
+6. With no current assignment, verify Modes A/B/C still measure and archive while
+   contractual forecasts/exceedance confirmation remain unavailable.
+7. Select 25 October 2026 in Tariff Calendar. Verify both 02:00 hours have unique
+   UTC identities and show separate As recorded and Current configuration values.
+8. Configure two meters and verify contract API/timeline/audit/Repairs isolation.
+9. Confirm management links open Devices & services for SI Grid Monitor and the
+   selected meter can be configured; non-admin viewers cannot modify contracts.
+10. Confirm `SPECIFICATION.md` and archived quarter rows are byte/field unchanged.
+11. Open the same meter's OptionsFlow in two sessions. Create previews in both,
+    save the second session, then confirm the first. The first must report a stale
+    preview, save nothing and create no misleading audit event.
+12. Create more than 200 audit events in a disposable archive and verify Previous
+    and Next expose every bounded page. Confirm historical configuration snapshots,
+    archived-quarter evidence and user-edit events remain separate.
+13. On a past Calendar date test an archived target, an archived null target, an
+    incomplete quarter and a missing quarter. Only the exact non-null archived
+    target may be labelled As recorded; epoch inference and current configuration
+    must remain separate. Repeat across both 02:00 hours on 25 October 2026.
+14. On Android and desktop confirm Contracts shows one **Open integration
+    settings** action, names the selected meter, and does not imply three distinct
+    actions when all navigation leads to the same supported settings page.

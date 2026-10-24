@@ -1,4 +1,4 @@
-# Dashboard guide — all seven tabs
+# Dashboard guide — all eight tabs
 
 The single SI Grid Monitor sidebar panel shows the **active meter** in a selector at the top. With multiple entries, always verify the displayed name before interpreting measurements. Each meter owns its settings and archive.
 
@@ -67,3 +67,27 @@ Displays tariff blocks, seasons, rule versions, holiday and DST classification. 
 2. **Quality versus value**: a numeric estimate can exist while the quarter remains incomplete or contractually unconfirmed.
 
 Read [Calculations](calculations.md), [Forecasts](forecasts.md), and [Data quality](data-quality.md).
+# Contracts
+
+The eighth tab is scoped to the active meter. It shows current assignment health,
+the complete configured timeline including gaps/future assignments, a B1-B5
+before/after comparison, and append-only audit events newest first. Older events
+remain available through bounded pages instead of being discarded after the
+newest 200.
+
+The report keeps four kinds of evidence separate:
+
+- **Current assignments** are the schedule configured now.
+- **Historical configuration snapshots** show what the integration stored from
+  an effective timestamp, including pre-V1.0.2 epochs. A snapshot is evidence of
+  stored configuration, not an invented user-edit event.
+- **Archived-quarter evidence** is the immutable target (including an explicitly
+  unknown target) saved with an individual completed quarter.
+- **Contract audit events** describe user actions recorded after the audit system
+  became available.
+
+Administrators see one accurately labelled **Open integration settings** action.
+It uses Home Assistant's supported integration route and identifies the selected
+meter; choose **Configure** beside that meter. SI Grid Monitor does not fabricate
+three different shortcuts to the same page and the custom panel does not take
+over the native Configure route.

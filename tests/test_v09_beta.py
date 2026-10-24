@@ -687,7 +687,7 @@ def test_setup_timeout_defers_then_reopens_archive_on_successful_retry(
         rows = reopened.list_quarters(entry.entry_id, start, start + timedelta(minutes=15))
         assert len(rows) == 1
         assert rows[0]["import_kwh"] == pytest.approx(0.25)
-        assert reopened.schema_version == 6
+        assert reopened.schema_version == 7
         reopened.close()
 
     _Runtime.instances.clear()
@@ -811,7 +811,7 @@ def test_upgrade_reopen_and_reinstall_preserve_each_meter_namespace(tmp_path: Pa
 
     reopened = QuarterArchive(path)
     reopened.open()
-    assert reopened.schema_version == 6
+    assert reopened.schema_version == 7
     meter_a = reopened.list_quarters("meter-a", start, start + timedelta(hours=1))
     assert len(meter_a) == 1
     assert len(reopened.list_quarters("meter-b", start, start + timedelta(hours=1))) == 1
@@ -907,7 +907,7 @@ def test_v096_mode_d_schema6_archive_survives_disable_and_source_migration(
 
     migrated = QuarterArchive(path)
     migrated.open()
-    assert migrated.schema_version == 6
+    assert migrated.schema_version == 7
     assert dict(migrated.list_quarters(namespace, start, start + timedelta(minutes=15))[0]) == (
         original_row
     )
@@ -948,9 +948,9 @@ def test_beta_version_frontend_and_hacs_package_are_consistent() -> None:
         encoding="utf-8"
     )
     hacs = json.loads((ROOT / "hacs.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == VERSION == "1.0.1"
-    assert "dashboard-model.mjs?v=1.0.1" in dashboard
-    assert "dashboard-i18n.mjs?v=1.0.1" in dashboard
+    assert manifest["version"] == VERSION == "1.0.2"
+    assert "dashboard-model.mjs?v=1.0.2" in dashboard
+    assert "dashboard-i18n.mjs?v=1.0.2" in dashboard
     assert hacs["name"] == "SI Grid Monitor"
     assert not any(ROOT.joinpath(name).exists() for name in ("release.zip", "dist.zip"))
 
@@ -1377,6 +1377,74 @@ def test_options_flow_can_shorten_and_extend_dated_assignments_midyear() -> None
     assert final_schedule.periods[1].block_targets_kw == later_targets
 
 
+def test_contract_preview_rejects_a_stale_second_session() -> None:
+    """A preview cannot overwrite a schedule saved by another OptionsFlow session."""
+
+    _ensure_config_flow_stubs()
+    from custom_components.si_grid_monitor.config_flow import SIGridMonitorOptionsFlow
+
+    original = ContractedPowerSchedule(
+        (
+            ContractedPowerPeriod(
+                date(2026, 1, 1),
+                date(2026, 12, 31),
+                (1.0, 1.1, 1.2, 1.3, 1.4),
+                "original",
+            ),
+        )
+    )
+    first_change = original.schedule_change(
+        0,
+        ContractedPowerPeriod(
+            date(2026, 10, 25),
+            date(2026, 12, 31),
+            (2.0, 2.1, 2.2, 2.3, 2.4),
+            "session_one",
+        ),
+    )
+    second_change = original.schedule_change(
+        0,
+        ContractedPowerPeriod(
+            date(2026, 7, 1),
+            date(2026, 9, 30),
+            (3.0, 3.1, 3.2, 3.3, 3.4),
+            "session_two",
+        ),
+    )
+    entry = _options_flow_entry(original)
+    stale_flow = SIGridMonitorOptionsFlow()
+    stale_flow.config_entry = entry
+    stale_flow.async_show_form = lambda **kwargs: kwargs  # type: ignore[method-assign]
+    saves: list[dict[str, Any]] = []
+    stale_flow.async_create_entry = lambda **kwargs: saves.append(kwargs) or kwargs  # type: ignore[method-assign]
+
+    stale_flow._preview(
+        first_change,
+        event_type="SCHEDULED_CHANGE",
+        affected=first_change.periods[-1],
+    )
+
+    concurrent_flow = SIGridMonitorOptionsFlow()
+    concurrent_flow.config_entry = entry
+    concurrent_flow.async_create_entry = lambda **kwargs: kwargs  # type: ignore[method-assign]
+    concurrent_result = concurrent_flow._save_schedule(
+        second_change,
+        event_type="SCHEDULED_CHANGE",
+        affected=second_change.periods[1],
+    )
+    entry.options = concurrent_result["data"]
+
+    result = _run(stale_flow.async_step_contract_preview({"confirm": True}))
+
+    assert result["errors"] == {"base": "stale_contract_preview"}
+    assert saves == []
+    assert (
+        contracted_power_schedule_from_json(entry.options[CONF_CONTRACTED_POWER_PERIODS])
+        == second_change
+    )
+    assert stale_flow._pending_schedule is None
+
+
 def test_kw_kwh_entities_publish_full_precision_with_three_digit_display_hint() -> None:
     source = (ROOT / "custom_components/si_grid_monitor/sensor.py").read_text(encoding="utf-8")
     assert "UnitOfPower.KILO_WATT,\n            UnitOfEnergy.KILO_WATT_HOUR," in source
@@ -1482,7 +1550,7 @@ def test_meter_archive_removal_is_entry_scoped_and_backup_is_reopenable(tmp_path
     assert other.exists()
     restored = QuarterArchive(backup)
     restored.open()
-    assert restored.schema_version == 6
+    assert restored.schema_version == 7
     assert len(restored.list_quarters("meter-a", start, start + timedelta(minutes=15))) == 1
     restored.close()
 
@@ -1976,7 +2044,7 @@ def test_real_loop_shutdown_cancellation_finishes_archive_and_reopens(
         rows = runtime.archive.list_quarters(entry.entry_id, start, start + timedelta(minutes=15))
         assert len(rows) == 1
         assert rows[0]["import_kwh"] == pytest.approx(0.25)
-        assert runtime.archive.schema_version == 6
+        assert runtime.archive.schema_version == 7
         runtime.archive.close()
 
     asyncio.run(scenario())

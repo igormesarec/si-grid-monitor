@@ -16,10 +16,10 @@ def test_v08_versions_and_frontend_cache_keys_are_consistent() -> None:
     dashboard = (ROOT / "custom_components/si_grid_monitor/frontend/dashboard.js").read_text(
         encoding="utf-8"
     )
-    assert manifest["version"] == VERSION == "1.0.1"
-    assert "dashboard-model.mjs?v=1.0.1" in dashboard
-    assert "dashboard-i18n.mjs?v=1.0.1" in dashboard
-    assert SCHEMA_VERSION == 6
+    assert manifest["version"] == VERSION == "1.0.2"
+    assert "dashboard-model.mjs?v=1.0.2" in dashboard
+    assert "dashboard-i18n.mjs?v=1.0.2" in dashboard
+    assert SCHEMA_VERSION == 7
 
 
 def test_pages_workflow_builds_preview_but_cannot_deploy() -> None:

@@ -1,8 +1,8 @@
 # History, archive, checkpointing and recovery
 
 SI Grid Monitor stores completed 15-minute quarter **summaries** in an
-integration-owned SQLite schema-6 database. Archive namespaces are specific to
-the configuration entry, and retained data survives ordinary Home Assistant
+integration-owned SQLite schema-7 database. Existing schema-6 archives migrate
+additively. Archive namespaces are specific to the configuration entry, and retained data survives ordinary Home Assistant
 Recorder purges.
 
 ## What it stores
@@ -55,3 +55,20 @@ reports but requires disk monitoring and independent backups. "Forever" does
 not mean immune to filesystem failure, deliberate deletion or lost HA backups.
 
 See [Multiple meters](multiple-meters.md), [Dashboard guide](dashboard-guide.md), [Testing](testing-and-validation.md).
+# Contract audit and immutable quarter evidence
+
+Schema 7 adds an append-only, per-meter contract-edit audit. It does not alter
+schema-6 quarter rows. A completed quarter keeps its original target, source
+epoch, quality, tariff version, simulation state and confirmed/unconfirmed
+exceedance status after later contract edits.
+
+The audit records V1.0.2 user actions. Older source epochs are shown separately
+as historical configuration snapshots; they are not fabricated user-edit events
+or signed distributor contracts. Home Assistant config-entry options and SQLite
+are separate stores, so a pending idempotent audit intent is reconciled on
+runtime startup rather than falsely claimed as one atomic cross-store commit.
+
+The Contracts report pages through this append-only audit, so older events remain
+retrievable. Configuration snapshots and aggregated archived-quarter target
+evidence are displayed in separate sections with their own certainty and
+provenance.

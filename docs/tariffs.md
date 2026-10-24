@@ -33,3 +33,24 @@ Example **fixture only**: B1 3.500, B2 3.900, B3 4.100, B4 4.200, B5 4.200 kW. T
 This manual describes bundled code behavior, **not a legal ruling**, and intentionally does not claim unverified tariff years as official.
 
 See [Configuration](configuration.md) and [Calculations](calculations.md).
+# Contract target interpretations
+
+Tariff rules determine the active B1-B5 block; a dated contract assignment
+supplies that block's kW target. These remain independent.
+
+For historical dates the calendar exposes two values:
+
+- **As recorded** uses only the exact target stored with an archived quarter.
+  If that row stored a null target, it remains **unknown**; the current schedule
+  or an epoch must not silently fill it.
+- **Historical configuration inference**, when separately shown, comes from a
+  configuration snapshot effective at that time. It is useful context but is
+  not archived-quarter evidence and is never promoted to a confirmed target.
+- **Current configuration** applies the schedule configured now.
+
+A retroactive assignment is not proof of what the integration knew earlier.
+Historical calendar cells therefore use the as-recorded value or show it as
+unavailable; they do not substitute the current configured target. Unknown
+contract targets remain unknown while block/rule classification remains visible.
+Repeated Ljubljana 02:00 hours on the autumn DST transition retain distinct UTC
+identities while sharing the same local-date assignment.

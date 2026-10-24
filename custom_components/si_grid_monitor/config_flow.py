@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+import uuid
 from datetime import UTC, date, datetime
 from typing import Any
 
@@ -11,6 +14,7 @@ from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT, STATE_UNAVAILABLE, STA
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 from homeassistant.helpers import selector
+from homeassistant.util import dt as dt_util
 
 from .adapters import AdapterError, ImportOnlyPowerAdapter, SeparatePowerAdapter, SignedPowerAdapter
 from .const import (
@@ -20,6 +24,7 @@ from .const import (
     CONF_ARCHIVE_REMOVAL_CONFIRMATION,
     CONF_ARCHIVE_REMOVAL_CONFIRMED_AT,
     CONF_ASSIGNMENT_ACTION,
+    CONF_ASSIGNMENT_CHANGE_END_DATE,
     CONF_ASSIGNMENT_END_DATE,
     CONF_ASSIGNMENT_PROVENANCE,
     CONF_ASSIGNMENT_RECORDED_ON,
@@ -30,6 +35,7 @@ from .const import (
     CONF_EXPORT_POWER_ENTITY,
     CONF_IMPORT_POWER_ENTITY,
     CONF_METER_NAME,
+    CONF_PENDING_CONTRACT_AUDIT,
     CONF_POSITIVE_MEANS_IMPORT,
     CONF_POWER_ENTITY,
     CONF_RETENTION,
@@ -92,6 +98,14 @@ def _as_date(value: date | str) -> date:
     return value if isinstance(value, date) else date.fromisoformat(value)
 
 
+def _local_today() -> date:
+    """Return the Slovenian contract date, independent of server timezone."""
+
+    from .engine import LJUBLJANA
+
+    return dt_util.utcnow().astimezone(LJUBLJANA).date()
+
+
 def _period_from_input(data: dict[str, Any]) -> ContractedPowerPeriod:
     recorded = data.get(CONF_ASSIGNMENT_RECORDED_ON)
     return ContractedPowerPeriod(
@@ -105,17 +119,19 @@ def _period_from_input(data: dict[str, Any]) -> ContractedPowerPeriod:
 
 def _period_schema(period: ContractedPowerPeriod | None = None) -> vol.Schema:
     targets = period.block_targets_kw if period else (DEFAULT_TARGET_KW,) * 5
+    recorded_key: Any = (
+        vol.Optional(CONF_ASSIGNMENT_RECORDED_ON, default=period.recorded_on)
+        if period is not None and period.recorded_on is not None
+        else vol.Optional(CONF_ASSIGNMENT_RECORDED_ON)
+    )
     values: dict[Any, Any] = {
         vol.Required(
-            CONF_ASSIGNMENT_START_DATE, default=period.effective_from if period else date.today()
+            CONF_ASSIGNMENT_START_DATE, default=period.effective_from if period else _local_today()
         ): selector.DateSelector(),
         vol.Required(
-            CONF_ASSIGNMENT_END_DATE, default=period.effective_to if period else date.today()
+            CONF_ASSIGNMENT_END_DATE, default=period.effective_to if period else _local_today()
         ): selector.DateSelector(),
-        vol.Optional(
-            CONF_ASSIGNMENT_RECORDED_ON,
-            default=period.recorded_on if period and period.recorded_on else None,
-        ): selector.DateSelector(),
+        recorded_key: selector.DateSelector(),
         vol.Required(
             CONF_ASSIGNMENT_PROVENANCE, default=period.provenance if period else "user_configured"
         ): selector.TextSelector(),
@@ -124,6 +140,34 @@ def _period_schema(period: ContractedPowerPeriod | None = None) -> vol.Schema:
         field, field_selector = _number_field(key, value)
         values[field] = field_selector
     return vol.Schema(values)
+
+
+def _schedule_summary(schedule: ContractedPowerSchedule) -> str:
+    if not schedule.periods:
+        return "No assignments"
+    return "\n".join(
+        f"{period.effective_from.isoformat()} - {period.effective_to.isoformat()}: "
+        + "/".join(f"{target:.3f}" for target in period.block_targets_kw)
+        + " kW"
+        for period in schedule.periods
+    )
+
+
+def _schedule_revision(schedule: ContractedPowerSchedule) -> str:
+    """Return a stable revision for optimistic contract-schedule concurrency."""
+
+    return hashlib.sha256(schedule.to_json().encode()).hexdigest()
+
+
+def _schedule_gap_summary(before: ContractedPowerSchedule, after: ContractedPowerSchedule) -> str:
+    """Describe gaps across the original schedule span for confirmation."""
+
+    if not before.periods:
+        return "None"
+    gaps = after.gaps(before.periods[0].effective_from, before.periods[-1].effective_to)
+    if not gaps:
+        return "None"
+    return ", ".join(f"{start.isoformat()} - {end.isoformat()}" for start, end in gaps)
 
 
 class SIGridMonitorConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -585,6 +629,10 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
     def __init__(self) -> None:
         self._selected_index: int | None = None
         self._pending_archive_backup = True
+        self._pending_schedule: ContractedPowerSchedule | None = None
+        self._pending_event: dict[str, Any] | None = None
+        self._pending_original_schedule_json: str | None = None
+        self._pending_original_revision: str | None = None
 
     @property
     def _current(self) -> dict[str, Any]:
@@ -600,6 +648,127 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
         values = dict(self.config_entry.options)
         values.update(updates)
         return self.async_create_entry(title="", data=values)
+
+    def _save_schedule(
+        self,
+        schedule: ContractedPowerSchedule,
+        *,
+        event_type: str,
+        affected: ContractedPowerPeriod | None,
+        old_schedule_json: str | None = None,
+    ) -> FlowResult:
+        """Save one complete schedule plus recoverable, idempotent audit intent."""
+
+        old_json = old_schedule_json if old_schedule_json is not None else self._schedule.to_json()
+        new_json = schedule.to_json()
+        revision = hashlib.sha256(new_json.encode()).hexdigest()
+        event = {
+            "event_id": str(uuid.uuid4()),
+            "event_utc": datetime.now(UTC).isoformat(),
+            "event_type": event_type,
+            "old_schedule_json": old_json,
+            "new_schedule_json": new_json,
+            "effective_from": affected.effective_from.isoformat() if affected else None,
+            "effective_to": affected.effective_to.isoformat() if affected else None,
+            "provenance": affected.provenance if affected else None,
+            "recorded_on": (
+                affected.recorded_on.isoformat()
+                if affected is not None and affected.recorded_on is not None
+                else None
+            ),
+            "origin": "user_action",
+            "actor": None,
+            "configuration_revision": revision,
+        }
+        raw_pending = self._current.get(CONF_PENDING_CONTRACT_AUDIT, [])
+        try:
+            pending = json.loads(raw_pending) if isinstance(raw_pending, str) else list(raw_pending)
+        except (TypeError, ValueError, json.JSONDecodeError):
+            pending = []
+        pending = [*pending[-49:], event]
+        active = schedule.period_for(_local_today()) or affected
+        updates: dict[str, Any] = {
+            CONF_CONTRACTED_POWER_PERIODS: new_json,
+            CONF_PENDING_CONTRACT_AUDIT: pending,
+            CONF_TARGET_MODE: TARGET_MODE_PER_BLOCK,
+        }
+        if active is not None:
+            updates.update(
+                {
+                    CONF_TARGET_KW: active.block_targets_kw[0],
+                    **dict(zip(TARGET_KEYS, active.block_targets_kw, strict=True)),
+                }
+            )
+        return self._save(updates)
+
+    def _preview(
+        self,
+        schedule: ContractedPowerSchedule,
+        *,
+        event_type: str,
+        affected: ContractedPowerPeriod | None,
+    ) -> FlowResult:
+        original = self._schedule
+        self._pending_schedule = schedule
+        self._pending_event = {"event_type": event_type, "affected": affected}
+        self._pending_original_schedule_json = original.to_json()
+        self._pending_original_revision = _schedule_revision(original)
+        if not hasattr(self, "async_show_form"):
+            return self._save_schedule(schedule, event_type=event_type, affected=affected)
+        return self.async_show_form(
+            step_id="contract_preview",
+            data_schema=vol.Schema(
+                {vol.Required("confirm", default=False): selector.BooleanSelector()}
+            ),
+            description_placeholders={
+                "before": _schedule_summary(original),
+                "after": _schedule_summary(schedule),
+                "gaps": _schedule_gap_summary(self._schedule, schedule),
+            },
+        )
+
+    async def async_step_contract_preview(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        if self._pending_schedule is None or self._pending_event is None:
+            return await self.async_step_assignments()
+        if user_input is not None and bool(user_input.get("confirm")):
+            current_schedule = self._schedule
+            if self._pending_original_revision != _schedule_revision(current_schedule):
+                pending = self._pending_schedule
+                self._pending_schedule = None
+                self._pending_event = None
+                self._pending_original_schedule_json = None
+                self._pending_original_revision = None
+                return self.async_show_form(
+                    step_id="contract_preview",
+                    data_schema=vol.Schema(
+                        {vol.Required("confirm", default=False): selector.BooleanSelector()}
+                    ),
+                    errors={"base": "stale_contract_preview"},
+                    description_placeholders={
+                        "before": _schedule_summary(current_schedule),
+                        "after": _schedule_summary(pending),
+                        "gaps": _schedule_gap_summary(current_schedule, pending),
+                    },
+                )
+            return self._save_schedule(
+                self._pending_schedule,
+                event_type=str(self._pending_event["event_type"]),
+                affected=self._pending_event["affected"],
+                old_schedule_json=self._pending_original_schedule_json,
+            )
+        return self.async_show_form(
+            step_id="contract_preview",
+            data_schema=vol.Schema(
+                {vol.Required("confirm", default=False): selector.BooleanSelector()}
+            ),
+            description_placeholders={
+                "before": _schedule_summary(self._schedule),
+                "after": _schedule_summary(self._pending_schedule),
+                "gaps": _schedule_gap_summary(self._schedule, self._pending_schedule),
+            },
+        )
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         mode = str(self._current.get(CONF_SOURCE_MODE, SOURCE_SIGNED_POWER))
@@ -786,10 +955,14 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
             self._selected_index = int(index)
             if operation == "remove":
                 return await self.async_step_remove_assignment()
+            if operation == "schedule":
+                return await self.async_step_schedule_change()
+            if operation == "correct":
+                return await self.async_step_correct_assignment()
             return await self.async_step_edit_assignment()
         options = []
         for index, period in enumerate(self._schedule.periods):
-            today = date.today()
+            today = _local_today()
             status = (
                 "active"
                 if period.effective_from <= today <= period.effective_to
@@ -804,7 +977,9 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
             )
             options.extend(
                 (
-                    {"value": f"edit:{index}", "label": f"Edit · {label}"},
+                    {"value": f"edit:{index}", "label": f"Edit details · {label}"},
+                    {"value": f"schedule:{index}", "label": f"Schedule change · {label}"},
+                    {"value": f"correct:{index}", "label": f"Correct assignment · {label}"},
                     {"value": f"remove:{index}", "label": f"Remove · {label}"},
                 )
             )
@@ -830,34 +1005,139 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
     async def async_step_edit_assignment(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
-        return await self._assignment_form("edit_assignment", user_input)
+        if self._selected_index is None:
+            return await self.async_step_assignments()
+        existing = self._schedule.periods[self._selected_index]
+        if user_input is not None:
+            if CONF_ASSIGNMENT_START_DATE in user_input:
+                # Compatibility for an in-progress V1.0.1 flow restored across
+                # upgrade. New menus route full corrections to the explicit step.
+                return await self._assignment_form(
+                    "correct_assignment", user_input, event_type="CORRECTED"
+                )
+            recorded = user_input.get(CONF_ASSIGNMENT_RECORDED_ON)
+            replacement = ContractedPowerPeriod(
+                existing.effective_from,
+                existing.effective_to,
+                existing.block_targets_kw,
+                str(user_input.get(CONF_ASSIGNMENT_PROVENANCE) or "user_configured"),
+                _as_date(recorded) if recorded else None,
+            )
+            periods = list(self._schedule.periods)
+            periods[self._selected_index] = replacement
+            return self._preview(
+                ContractedPowerSchedule(tuple(periods)),
+                event_type="CORRECTED",
+                affected=replacement,
+            )
+        recorded_key: Any = (
+            vol.Optional(CONF_ASSIGNMENT_RECORDED_ON, default=existing.recorded_on)
+            if existing.recorded_on is not None
+            else vol.Optional(CONF_ASSIGNMENT_RECORDED_ON)
+        )
+        return self.async_show_form(
+            step_id="edit_assignment",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_ASSIGNMENT_PROVENANCE, default=existing.provenance
+                    ): selector.TextSelector(),
+                    recorded_key: selector.DateSelector(),
+                }
+            ),
+        )
 
-    async def _assignment_form(self, step_id: str, user_input: dict[str, Any] | None) -> FlowResult:
+    async def async_step_correct_assignment(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        return await self._assignment_form("correct_assignment", user_input, event_type="CORRECTED")
+
+    async def async_step_schedule_change(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        if self._selected_index is None:
+            return await self.async_step_assignments()
+        existing = self._schedule.periods[self._selected_index]
         errors: dict[str, str] = {}
+        if user_input is not None:
+            try:
+                start = _as_date(user_input[CONF_ASSIGNMENT_START_DATE])
+                raw_end = user_input.get(CONF_ASSIGNMENT_CHANGE_END_DATE)
+                end = _as_date(raw_end) if raw_end else existing.effective_to
+                replacement = ContractedPowerPeriod(
+                    start,
+                    end,
+                    tuple(float(user_input[key]) for key in TARGET_KEYS),  # type: ignore[arg-type]
+                    str(user_input.get(CONF_ASSIGNMENT_PROVENANCE) or "user_configured"),
+                    (
+                        _as_date(user_input[CONF_ASSIGNMENT_RECORDED_ON])
+                        if user_input.get(CONF_ASSIGNMENT_RECORDED_ON)
+                        else None
+                    ),
+                )
+                schedule = self._schedule.schedule_change(self._selected_index, replacement)
+            except (KeyError, TypeError, ValueError):
+                errors["base"] = "invalid_scheduled_contract_change"
+            else:
+                return self._preview(schedule, event_type="SCHEDULED_CHANGE", affected=replacement)
+        values: dict[Any, Any] = {
+            vol.Required(
+                CONF_ASSIGNMENT_START_DATE, default=existing.effective_from
+            ): selector.DateSelector(),
+            vol.Optional(CONF_ASSIGNMENT_CHANGE_END_DATE): selector.DateSelector(),
+            vol.Optional(CONF_ASSIGNMENT_RECORDED_ON): selector.DateSelector(),
+            vol.Required(
+                CONF_ASSIGNMENT_PROVENANCE, default="user_configured"
+            ): selector.TextSelector(),
+        }
+        for key, target in zip(TARGET_KEYS, existing.block_targets_kw, strict=True):
+            field, field_selector = _number_field(key, target)
+            values[field] = field_selector
+        return self.async_show_form(
+            step_id="schedule_change", data_schema=vol.Schema(values), errors=errors
+        )
+
+    async def _assignment_form(
+        self,
+        step_id: str,
+        user_input: dict[str, Any] | None,
+        *,
+        event_type: str = "CREATED",
+    ) -> FlowResult:
+        errors: dict[str, str] = {}
+        placeholders: dict[str, str] = {}
         periods = list(self._schedule.periods)
         existing = periods[self._selected_index] if self._selected_index is not None else None
         if user_input is not None:
             try:
                 replacement = _period_from_input(user_input)
+                conflict = self._schedule.conflict_for(
+                    replacement, exclude_index=self._selected_index
+                )
+                if conflict is not None:
+                    placeholders["conflict"] = (
+                        f"{conflict.effective_from.strftime('%d.%m.%Y')} to "
+                        f"{conflict.effective_to.strftime('%d.%m.%Y')}"
+                    )
+                    raise ValueError("overlap")
                 if self._selected_index is None:
                     periods.append(replacement)
                 else:
                     periods[self._selected_index] = replacement
                 schedule = ContractedPowerSchedule(tuple(periods))
-            except ValueError:
-                errors["base"] = "invalid_contracted_power_periods"
-            else:
-                active = schedule.period_for(date.today()) or replacement
-                return self._save(
-                    {
-                        CONF_CONTRACTED_POWER_PERIODS: schedule.to_json(),
-                        CONF_TARGET_MODE: TARGET_MODE_PER_BLOCK,
-                        CONF_TARGET_KW: active.block_targets_kw[0],
-                        **dict(zip(TARGET_KEYS, active.block_targets_kw, strict=True)),
-                    }
+            except ValueError as err:
+                errors["base"] = (
+                    "overlapping_contracted_power_period"
+                    if str(err) == "overlap"
+                    else "invalid_contracted_power_periods"
                 )
+            else:
+                return self._preview(schedule, event_type=event_type, affected=replacement)
         return self.async_show_form(
-            step_id=step_id, data_schema=_period_schema(existing), errors=errors
+            step_id=step_id,
+            data_schema=_period_schema(existing),
+            errors=errors,
+            description_placeholders=placeholders,
         )
 
     async def async_step_remove_assignment(
@@ -867,9 +1147,11 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
             return await self.async_step_assignments()
         if user_input is not None and user_input["confirm"]:
             periods = list(self._schedule.periods)
-            periods.pop(self._selected_index)
-            return self._save(
-                {CONF_CONTRACTED_POWER_PERIODS: ContractedPowerSchedule(tuple(periods)).to_json()}
+            removed = periods.pop(self._selected_index)
+            return self._preview(
+                ContractedPowerSchedule(tuple(periods)),
+                event_type="REMOVED_FROM_ACTIVE_SCHEDULE",
+                affected=removed,
             )
         return self.async_show_form(
             step_id="remove_assignment",
