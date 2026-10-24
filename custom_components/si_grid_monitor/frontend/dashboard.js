@@ -108,6 +108,7 @@ export class SIGridMonitorPanel extends HTMLElement {
     this._calendarError = null;
     this._contracts = null;
     this._contractsError = null;
+    this._contractSelection = [];
     this._transitions = null;
     this._period = null;
     this._blocks = null;
@@ -1200,10 +1201,14 @@ export class SIGridMonitorPanel extends HTMLElement {
       if (!period) return "";
       const today = report.today;
       const status = period.effective_to < today ? this._t("contracts.previous") : period.effective_from > today ? this._t("contracts.upcoming") : this._t("contracts.active");
-      return `<button class="contract-period" data-contract-period="${index}"><strong>${esc(period.effective_from)} – ${esc(period.effective_to)}</strong><span>${esc(status)}</span><span>${period.block_targets_kw.map((value, block) => `B${block + 1} ${fmt(value)} kW`).join(" · ")}</span><small>${esc(period.provenance || this._t("contracts.user_configured"))}${period.recorded_on ? ` · ${esc(this._t("contracts.record"))} ${esc(period.recorded_on)}` : ""}</small></button>`;
+      const selected = this._contractSelection.includes(index);
+      return `<button class="contract-period ${selected ? "selected" : ""}" data-contract-period="${index}" aria-pressed="${selected}"><strong>${esc(period.effective_from)} – ${esc(period.effective_to)}</strong><span>${esc(status)}</span><span>${period.block_targets_kw.map((value, block) => `B${block + 1} ${fmt(value)} kW`).join(" · ")}</span><small>${esc(period.provenance || this._t("contracts.user_configured"))}${period.recorded_on ? ` · ${esc(this._t("contracts.record"))} ${esc(period.recorded_on)}` : ""}</small></button>`;
     }).join("") || `<p>${esc(this._t("contracts.none_configured"))}</p>`;
-    const previous = periods.length > 1 ? periods[periods.length - 2] : null;
-    const next = periods.length > 1 ? periods[periods.length - 1] : null;
+    const selectedIndexes = this._contractSelection.length === 2
+      ? [...this._contractSelection].sort((a, b) => a - b)
+      : periods.length > 1 ? [periods.length - 2, periods.length - 1] : [];
+    const previous = periods[selectedIndexes[0]] || null;
+    const next = periods[selectedIndexes[1]] || null;
     const comparison = previous && next ? `<table><thead><tr><th>${esc(this._t("contracts.block"))}</th><th>${esc(this._t("contracts.previous_kw"))}</th><th>${esc(this._t("contracts.new_kw"))}</th><th>${esc(this._t("contracts.difference_kw"))}</th></tr></thead><tbody>${previous.block_targets_kw.map((value, index) => `<tr><th>B${index + 1}</th><td>${fmt(value)}</td><td>${fmt(next.block_targets_kw[index])}</td><td>${Number(next.block_targets_kw[index] - value) >= 0 ? "+" : ""}${fmt(next.block_targets_kw[index] - value)}</td></tr>`).join("")}</tbody></table>` : `<p>${esc(this._t("contracts.compare_help"))}</p>`;
     const audit = (report.audit_events || []).map(event => `<tr><td>${esc(new Date(event.event_utc).toLocaleString())}</td><td>${esc(event.event_type)}</td><td>${esc(event.effective_from || "—")} – ${esc(event.effective_to || "—")}</td><td>${esc(event.provenance || "—")}</td><td>${esc(event.origin)}</td><td><details><summary>${esc(this._t("contracts.schedules"))}</summary><b>${esc(this._t("contracts.before"))}</b><code>${esc(event.old_schedule_json)}</code><b>${esc(this._t("contracts.after"))}</b><code>${esc(event.new_schedule_json)}</code><small>${esc(event.configuration_revision)}</small></details></td></tr>`).join("") || `<tr><td colspan="6">${esc(this._t("contracts.no_audit"))}</td></tr>`;
     const warning = health.level && health.level !== "ok" ? `<div class="notice contract-warning" role="alert"><strong>${esc(String(health.level).toUpperCase())}</strong> · ${esc(readableReason(health.reason))}${health.gap_start ? ` · ${esc(health.gap_start)}` : ""}</div>` : "";
@@ -1312,6 +1317,13 @@ export class SIGridMonitorPanel extends HTMLElement {
     root.querySelector("[data-retry-day]")?.addEventListener("click", () => this._loadTab());
     root.querySelector("[data-retry-calendar]")?.addEventListener("click", () => this._loadTab());
     root.querySelector("[data-retry-contracts]")?.addEventListener("click", () => this._loadTab());
+    root.querySelectorAll("[data-contract-period]").forEach(button => button.addEventListener("click", () => {
+      const index = Number(button.dataset.contractPeriod);
+      const selected = this._contractSelection.filter(value => value !== index);
+      if (!this._contractSelection.includes(index)) selected.push(index);
+      this._contractSelection = selected.slice(-2);
+      this._render();
+    }));
     root.querySelectorAll("[data-manage-contracts]").forEach(button => button.addEventListener("click", () => {
       history.pushState(null, "", "/config/integrations/integration/si_grid_monitor");
       window.dispatchEvent(new Event("location-changed"));
@@ -1710,7 +1722,7 @@ export class SIGridMonitorPanel extends HTMLElement {
   }
 
   _contractStyles() {
-    return `.contract-timeline{display:grid;gap:10px}.contract-period{display:grid;grid-template-columns:minmax(170px,.8fr) auto minmax(260px,2fr);gap:10px;align-items:center;text-align:left;width:100%}.contract-period small{grid-column:1/-1}.contract-gap{border:2px dashed var(--warning-color,#f59e0b);padding:12px;background:color-mix(in srgb,var(--warning-color,#f59e0b) 8%,transparent)}.contract-warning{border-left:4px solid #dc2626}.table-wrap{max-width:100%;overflow-x:auto}.contracts-status code{display:block;max-width:420px;white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:700px){.contract-period{grid-template-columns:1fr;min-height:64px}.contract-period small{grid-column:1}.contracts-status .row{align-items:stretch;flex-direction:column}.contracts-status .row button{min-height:44px}}`;
+    return `.contract-timeline{display:grid;gap:10px}.contract-period{display:grid;grid-template-columns:minmax(170px,.8fr) auto minmax(260px,2fr);gap:10px;align-items:center;text-align:left;width:100%}.contract-period.selected{outline:3px solid var(--primary-color,#03a9f4);outline-offset:1px}.contract-period small{grid-column:1/-1}.contract-gap{border:2px dashed var(--warning-color,#f59e0b);padding:12px;background:color-mix(in srgb,var(--warning-color,#f59e0b) 8%,transparent)}.contract-warning{border-left:4px solid #dc2626}.table-wrap{max-width:100%;overflow-x:auto}.contracts-status code{display:block;max-width:420px;white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:700px){.contract-period{grid-template-columns:1fr;min-height:64px}.contract-period small{grid-column:1}.contracts-status .row{align-items:stretch;flex-direction:column}.contracts-status .row button{min-height:44px}}`;
   }
 
   _historyStyles() {

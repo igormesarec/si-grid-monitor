@@ -955,6 +955,10 @@ test("CONTRACTS timeline is responsive and keeps three-decimal comparison values
   const css = panel._contractStyles();
   assert.match(css, /@media\(max-width:700px\)/);
   assert.match(css, /grid-template-columns:1fr/);
+  panel._contractSelection = [0, 1];
+  const selectedHtml = panel._contractsView();
+  assert.equal((selectedHtml.match(/aria-pressed="true"/g) || []).length, 2);
+  assert.match(selectedHtml, /\+1\.000/);
 });
 
 test("Tariff Calendar labels as-recorded evidence separately from current configuration", () => {
