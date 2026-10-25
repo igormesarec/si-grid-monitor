@@ -26,13 +26,19 @@ All notable changes to SI Grid Monitor will be documented here.
 - Reduced changing public attributes and marked retained high-frequency
   diagnostic attributes unrecorded, protecting both Recorder and InfluxDB by
   preventing the underlying HA state events rather than relying on exclusions.
-- Added a deterministic two-meter full-day real-entity benchmark using actual
-  native values, availability and attributes. Recorder-like allocation plus an
-  explicitly unverified InfluxDB allowance and archive allowance project about
-  510.5 MB/year; physical InfluxDB 1.x storage remains a manual acceptance item.
+- Added deterministic two-meter real-entity benchmarks for true 23-, 24-, and
+  25-hour Europe/Ljubljana days (92/96/100 quarters). The enhanced Recorder-like
+  model projects 625–652 MB/year including an explicitly unverified InfluxDB
+  allowance and archive allowance; physical storage remains a manual gate.
 - Removed a per-second tariff wall-clock attribute, limited zero-crossing bypass
-  to CAN ADD/MUST REDUCE signals with hysteresis, and added prompt/rearmed
-  large-change handling without changing the one-second calculation engine.
+  to actionable signals, added a 30-second continuously-safe clear for projected
+  exceedance, and made every materially worse MUST REDUCE increase or CAN ADD
+  decrease prompt without changing the one-second calculation engine.
+- Explicit source unavailability now immediately hides dependent advice without
+  ingesting zero or changing accumulated energy; callback failures are isolated.
+- Truncated diagnostics no longer annualize incomplete evidence. Overview shows
+  selected-meter activity alongside all-meter budget totals, while Custom
+  Options estimates use selected intervals, fast entities and actual meter count.
 - Reworked Contracts evidence/audit content into mobile cards while retaining
   desktop tables, and corrected calendar scroll alignment and repeated-hour offsets.
 

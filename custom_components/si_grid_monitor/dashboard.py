@@ -232,7 +232,9 @@ def ws_publishing(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> 
             else None
         ),
         "estimate_status": (
-            "ready"
+            "truncated"
+            if any(item["estimate_status"] == "truncated" for item in meters)
+            else "ready"
             if meters and all(item["estimate_status"] == "ready" for item in meters)
             else "warming_up"
         ),

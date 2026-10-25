@@ -607,6 +607,11 @@ class SIGridSensor(SensorEntity):
             return False
         if (
             self.entity_description.key in LIVE_FORECAST_SENSOR_KEYS
+            and not self.runtime.source_available
+        ):
+            return False
+        if (
+            self.entity_description.key in LIVE_FORECAST_SENSOR_KEYS
             and not self.runtime.instantaneous_power_known
         ):
             return False
@@ -616,6 +621,8 @@ class SIGridSensor(SensorEntity):
             "sustained_can_add_power",
             "sustained_must_reduce_power",
         }:
+            if not self.runtime.source_available:
+                return False
             forecast = self.runtime.sustained_forecast
             if forecast is None:
                 return False
@@ -624,7 +631,10 @@ class SIGridSensor(SensorEntity):
                 if self.entity_description.key == "sustained_can_add_power"
                 else forecast.must_reduce_kw is not None
             )
-        return not (self.entity_description.requires_fresh_input and snapshot.input_stale)
+        return not (
+            self.entity_description.requires_fresh_input
+            and (not self.runtime.source_available or snapshot.input_stale)
+        )
 
     @property
     def native_value(self) -> float | int | str | None:

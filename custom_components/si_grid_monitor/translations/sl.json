@@ -256,16 +256,16 @@
           "publishing_actionable_interval_seconds": "Običajna pogostost uporabnih vrednosti. Prehodi čez nič ter kritični prehodi ostanejo takojšnji.",
           "publishing_power_deadband_kw": "Manjše spremembe kW pod to vrednostjo se združijo.",
           "publishing_energy_deadband_kwh": "Manjše spremembe kWh pod to vrednostjo se združijo.",
-          "publishing_actionable_delta_kw": "Sprememba CAN ADD ali MUST REDUCE s tolikšno ali večjo razliko v kW se objavi pri naslednjem vrednotenju. Ponovne nujne objave se omogočijo po petih minutah.",
+          "publishing_actionable_delta_kw": "Bistveno slabše povečanje MUST REDUCE ali zmanjšanje CAN ADD s tolikšno ali večjo razliko v kW se objavi pri naslednjem vrednotenju. Varna izboljšanja ostanejo združena.",
           "publishing_actionable_hysteresis_kw": "CAN ADD in MUST REDUCE se takoj vključita šele nad tem pragom v kW; vrnitev na nič ostane takojšnja.",
           "publishing_fast_entities": "Izbrane entitete objavijo vsako pomembno spremembo. To poveča izhod Recorderja in InfluxDB."
         }
       },
       "publishing_preview": {
         "title": "Pregled vpliva objavljanja",
-        "description": "Profil: {profile}\nOcenjeni izhod dveh merilnikov: {annual_mb} MB/leto ({budget_pct} % proračuna 1 GB). To je načrtovalna ocena in ne zajamčena fizična zasedenost zbirke.",
+        "description": "Profil: {profile}\nNastavljeni merilniki: {meter_count}\nOcenjeni izhod: {annual_mb} MB/leto ({budget_pct} % proračuna 1 GB). Ocena uporablja izbrane intervale in 15-sekundno predpostavko sprememb za hitre entitete. Je načrtovalna smernica, ne jamstvo fizične zasedenosti Recorderja ali InfluxDB.",
         "data": {"confirm": "Uporabi nastavitve objavljanja"},
-        "data_description": {"confirm": "Potrdite po pregledu načrtovalne ocene za dva merilnika in razmerja med avtomatizacijami ter shranjevanjem."}
+        "data_description": {"confirm": "Potrdite po pregledu ocene za trenutno število merilnikov in razmerja med avtomatizacijami ter shranjevanjem."}
       },
       "restore_publishing_defaults": {
         "title": "Obnovi priporočene nastavitve objavljanja",

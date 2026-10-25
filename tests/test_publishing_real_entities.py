@@ -9,9 +9,11 @@ import sqlite3
 import sys
 import types
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, time, timedelta
+from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -141,6 +143,12 @@ def _entity(key: str, runtime: _Runtime, sensor_module):
     return sensor_module.sensor.SIGridSensor(runtime, entry, description)
 
 
+def _binary_entity(key: str, runtime: _Runtime, sensor_module):
+    description = next(item for item in sensor_module.binary.BINARY_SENSORS if item.key == key)
+    entry = SimpleNamespace(entry_id="entry-real", title="Real entity meter")
+    return sensor_module.binary.SIGridBinarySensor(runtime, entry, description)
+
+
 def _run_entity(
     entity,
     runtime: _Runtime,
@@ -246,6 +254,33 @@ def test_real_day_type_entity_changes_at_local_midnight_without_heartbeat(sensor
     assert [item.value for item in writes] == ["nonworking", "working"]
 
 
+def test_explicit_source_unavailability_immediately_hides_advice(sensor_module) -> None:
+    runtime = _Runtime()
+    now = datetime(2026, 10, 25, 12, 1, tzinfo=UTC)
+    _prepare_live_runtime(runtime, now, 2.0, stale=False)
+    advice = _entity("can_add_power", runtime, sensor_module)
+    projected = _binary_entity("projected_exceedance", runtime, sensor_module)
+    stale = _binary_entity("input_stale", runtime, sensor_module)
+    assert advice.available is True
+    assert projected.available is True
+    assert stale.is_on is False
+
+    # No elapsed stale timeout is required: the explicit HA source failure is
+    # authoritative immediately, while the last evidenced engine snapshot is
+    # retained for archive integrity.
+    runtime.source_available = False
+    runtime.source_status_reason = "source unavailable"
+    assert advice.available is False
+    assert projected.available is False
+    assert stale.is_on is True
+
+    runtime.source_available = True
+    runtime.source_status_reason = None
+    assert advice.available is True
+    assert projected.available is True
+    assert stale.is_on is False
+
+
 def _live_snapshot(now: datetime, signed_kw: float, *, stale: bool) -> EngineSnapshot:
     bounds = quarter_bounds(now)
     elapsed = max(1.0, (now - bounds.start_utc).total_seconds())
@@ -343,10 +378,24 @@ def _prepare_live_runtime(runtime: _Runtime, now: datetime, signed_kw: float, st
     )
 
 
-def test_real_two_meter_full_day_storage_projection(sensor_module, tmp_path: Path) -> None:
-    """Exercise real entity readers for a DST day; Influx remains unverified."""
+@pytest.mark.parametrize(
+    ("local_day", "expected_seconds", "expected_quarters"),
+    (
+        (date(2026, 3, 29), 82_800, 92),
+        (date(2026, 4, 2), 86_400, 96),
+        (date(2026, 10, 25), 90_000, 100),
+    ),
+)
+def test_real_two_meter_full_day_storage_projection(
+    sensor_module,
+    tmp_path: Path,
+    local_day: date,
+    expected_seconds: int,
+    expected_quarters: int,
+) -> None:
+    """Exercise real entities on 23/24/25-hour local days."""
 
-    database = sqlite3.connect(tmp_path / "real-publishing-benchmark.sqlite")
+    database = sqlite3.connect(tmp_path / f"real-publishing-{local_day}.sqlite")
     database.executescript(
         """
         PRAGMA journal_mode=WAL;
@@ -356,23 +405,44 @@ def test_real_two_meter_full_day_storage_projection(sensor_module, tmp_path: Pat
         );
         CREATE TABLE states(
             state_id INTEGER PRIMARY KEY,
+            metadata_id INTEGER NOT NULL,
             meter INTEGER NOT NULL,
             entity_key TEXT NOT NULL,
             state TEXT,
             attributes_id INTEGER NOT NULL,
-            updated_ts REAL NOT NULL
+            last_changed_ts REAL NOT NULL,
+            last_updated_ts REAL NOT NULL,
+            last_reported_ts REAL NOT NULL,
+            old_state_id INTEGER,
+            context_id_bin BLOB
         );
-        CREATE INDEX ix_states_meter_time ON states(meter, updated_ts);
-        CREATE INDEX ix_states_entity_time ON states(entity_key, updated_ts);
+        CREATE INDEX ix_states_meter_time ON states(meter, last_updated_ts);
+        CREATE INDEX ix_states_entity_time ON states(entity_key, last_updated_ts);
+        CREATE INDEX ix_states_metadata_time ON states(metadata_id, last_updated_ts);
         """
     )
-    current_time = datetime(2026, 10, 25, tzinfo=UTC)
+    ljubljana = ZoneInfo("Europe/Ljubljana")
+    current_time = datetime.combine(local_day, time.min, tzinfo=ljubljana).astimezone(UTC)
+    end_time = datetime.combine(
+        local_day + timedelta(days=1), time.min, tzinfo=ljubljana
+    ).astimezone(UTC)
+    assert int((end_time - current_time).total_seconds()) == expected_seconds
     counts: dict[tuple[int, str], int] = {}
 
-    def write_state(meter: int, key: str, reader, unrecorded: frozenset[str]) -> None:
+    def write_state(
+        meter: int,
+        key: str,
+        reader,
+        unrecorded: frozenset[str],
+        standard_attributes: dict[str, object],
+    ) -> None:
         state = reader()
+        recorded_attributes = {
+            key: value for key, value in state.attributes.items() if key not in unrecorded
+        }
+        recorded_attributes.update(standard_attributes)
         attributes = json.dumps(
-            {key: value for key, value in state.attributes.items() if key not in unrecorded},
+            recorded_attributes,
             sort_keys=True,
             default=str,
         )
@@ -383,9 +453,20 @@ def test_real_two_meter_full_day_storage_projection(sensor_module, tmp_path: Pat
             "SELECT attributes_id FROM state_attributes WHERE shared_attrs = ?", (attributes,)
         ).fetchone()[0]
         database.execute(
-            "INSERT INTO states(meter, entity_key, state, attributes_id, updated_ts) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (meter, key, str(state.value), attributes_id, current_time.timestamp()),
+            "INSERT INTO states(metadata_id, meter, entity_key, state, attributes_id, "
+            "last_changed_ts, last_updated_ts, last_reported_ts, context_id_bin) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                meter * 1000 + abs(hash(key)) % 1000,
+                meter,
+                key,
+                str(state.value),
+                attributes_id,
+                current_time.timestamp(),
+                current_time.timestamp(),
+                current_time.timestamp(),
+                b"benchmark-context",
+            ),
         )
         counts[(meter, key)] = counts.get((meter, key), 0) + 1
 
@@ -404,29 +485,49 @@ def test_real_two_meter_full_day_storage_projection(sensor_module, tmp_path: Pat
             entity = sensor_module.sensor.SIGridSensor(runtime, entry, description)
             reader = entity._publication_state
             unrecorded = entity._unrecorded_attributes
+            standard_attributes = {
+                "friendly_name": f"Meter {meter + 1} {description.key}",
+                "unit_of_measurement": description.native_unit_of_measurement,
+                "device_class": description.device_class,
+                "state_class": description.state_class,
+            }
             controller.register(
                 description.key,
                 sensor_module.sensor.SENSOR_PUBLISHING_POLICIES[description.key],
                 reader,
-                lambda meter=meter, key=description.key, reader=reader, unrecorded=unrecorded: (
-                    write_state(meter, key, reader, unrecorded)
+                partial(
+                    write_state,
+                    meter,
+                    description.key,
+                    reader,
+                    unrecorded,
+                    standard_attributes,
                 ),
             )
         for description in sensor_module.binary.BINARY_SENSORS:
             entity = sensor_module.binary.SIGridBinarySensor(runtime, entry, description)
             reader = entity._publication_state
             unrecorded = entity._unrecorded_attributes
+            standard_attributes = {
+                "friendly_name": f"Meter {meter + 1} {description.key}",
+            }
             controller.register(
                 description.key,
                 sensor_module.binary.BINARY_SENSOR_PUBLISHING_POLICIES[description.key],
                 reader,
-                lambda meter=meter, key=description.key, reader=reader, unrecorded=unrecorded: (
-                    write_state(meter, key, reader, unrecorded)
+                partial(
+                    write_state,
+                    meter,
+                    description.key,
+                    reader,
+                    unrecorded,
+                    standard_attributes,
                 ),
             )
 
     start = current_time
-    for second in range(24 * 60 * 60):
+    quarter_starts: set[datetime] = set()
+    for second in range(expected_seconds):
         current_time = start + timedelta(seconds=second)
         hour = second / 3600
         signed_kw = 1.6 + 1.1 * math.sin(hour * math.pi / 6)
@@ -438,6 +539,8 @@ def test_real_two_meter_full_day_storage_projection(sensor_module, tmp_path: Pat
         for meter, (runtime, controller) in enumerate(zip(runtimes, controllers, strict=True)):
             meter_kw = signed_kw + meter * 0.05
             _prepare_live_runtime(runtime, current_time, meter_kw, stale)
+            if meter == 0:
+                quarter_starts.add(runtime.snapshot.bounds.start_utc)
             if second == 12 * 3600:
                 runtime.current_block_targets_kw = (3.6, 4.0, 4.2, 4.3, 4.3)
             # Exercise a ten-minute burst with two source reports per second;
@@ -456,8 +559,9 @@ def test_real_two_meter_full_day_storage_projection(sensor_module, tmp_path: Pat
     event_count = int(database.execute("SELECT COUNT(*) FROM states").fetchone()[0])
     database.close()
 
-    annual_recorder_like = day_sqlite_bytes * 365
-    unverified_influx_allowance = event_count * 365 * 140
+    annual_factor = 365 * 86_400 / expected_seconds
+    annual_recorder_like = day_sqlite_bytes * annual_factor
+    unverified_influx_allowance = event_count * annual_factor * 140
     projected_total = annual_recorder_like + unverified_influx_allowance + 80_000_000
     assert projected_total < STORAGE_BUDGET_BYTES_PER_YEAR, {
         "day_sqlite_bytes": day_sqlite_bytes,
@@ -465,19 +569,20 @@ def test_real_two_meter_full_day_storage_projection(sensor_module, tmp_path: Pat
         "projected_total": projected_total,
         "top_counts": sorted(counts.items(), key=lambda item: item[1], reverse=True)[:10],
     }
-    assert all(controller.internal_timer_ticks == 86_400 for controller in controllers)
-    assert all(controller.publishing_evaluations == 87_600 for controller in controllers)
+    assert len(quarter_starts) == expected_quarters
+    assert all(controller.internal_timer_ticks == expected_seconds for controller in controllers)
     assert all(
-        controller.diagnostics(start + timedelta(days=1))["estimate_status"] == "ready"
-        for controller in controllers
+        controller.publishing_evaluations == expected_seconds + 1200 for controller in controllers
     )
     assert all(
-        controller.diagnostics(start + timedelta(days=1))["influxdb_physical_storage_verified"]
-        is False
+        controller.diagnostics(end_time)["estimate_status"] == "ready" for controller in controllers
+    )
+    assert all(
+        controller.diagnostics(end_time)["influxdb_physical_storage_verified"] is False
         for controller in controllers
     )
     assert counts
-    assert max(counts.values()) < 86_400
+    assert max(counts.values()) < expected_seconds
 
     # These real-entity counts make the before/after evidence reviewable.  The
     # workload executes 87,600 publishing evaluations per meter; the values
@@ -485,7 +590,7 @@ def test_real_two_meter_full_day_storage_projection(sensor_module, tmp_path: Pat
     def count_for(key: str) -> int:
         return sum(count for (_meter, entity_key), count in counts.items() if entity_key == key)
 
-    assert count_for("sustained_can_add_power") == 216
-    assert count_for("sustained_must_reduce_power") == 216
-    assert count_for("current_interval_import_average") == 192
-    assert count_for("quarter_import_kwh_so_far") == 192
+    assert 0 < count_for("sustained_can_add_power") < expected_seconds
+    assert 0 < count_for("sustained_must_reduce_power") < expected_seconds
+    assert count_for("current_interval_import_average") == expected_quarters * 2
+    assert count_for("quarter_import_kwh_so_far") == expected_quarters * 2

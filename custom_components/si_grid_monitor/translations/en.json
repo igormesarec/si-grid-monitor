@@ -256,16 +256,16 @@
           "publishing_actionable_interval_seconds": "Normal cadence for changed CAN ADD, MUST REDUCE and forecast values. Zero crossings and critical transitions remain immediate.",
           "publishing_power_deadband_kw": "Minor kW changes below this value are coalesced until another meaningful change occurs.",
           "publishing_energy_deadband_kwh": "Minor kWh changes below this value are coalesced until another meaningful change occurs.",
-          "publishing_actionable_delta_kw": "A CAN ADD or MUST REDUCE change at or above this kW difference is published on the next evaluation. Repeated urgent publications are rearmed after five minutes.",
+          "publishing_actionable_delta_kw": "A materially worse MUST REDUCE increase or CAN ADD decrease at or above this kW difference is published on the next evaluation. Safe improvements remain coalesced.",
           "publishing_actionable_hysteresis_kw": "CAN ADD and MUST REDUCE activate immediately only after rising above this kW threshold; clearing to zero remains immediate.",
           "publishing_fast_entities": "Selected entities publish every meaningful value change. Faster third-party automation evaluation increases Recorder and InfluxDB output."
         }
       },
       "publishing_preview": {
         "title": "Review publishing impact",
-        "description": "Profile: {profile}\nEstimated two-meter output: {annual_mb} MB/year ({budget_pct}% of the 1 GB engineering budget). This is a planning estimate, not guaranteed physical database allocation.",
+        "description": "Profile: {profile}\nConfigured meters: {meter_count}\nEstimated output: {annual_mb} MB/year ({budget_pct}% of the 1 GB engineering budget). The estimate uses the selected intervals and a 15-second changed-state allowance for fast entities. It is planning guidance, not guaranteed physical Recorder or InfluxDB allocation.",
         "data": {"confirm": "Apply publishing settings"},
-        "data_description": {"confirm": "Confirm after reviewing the two-meter planning estimate and automation/storage trade-off."}
+        "data_description": {"confirm": "Confirm after reviewing the current meter-count estimate and automation/storage trade-off."}
       },
       "restore_publishing_defaults": {
         "title": "Restore recommended publishing defaults",

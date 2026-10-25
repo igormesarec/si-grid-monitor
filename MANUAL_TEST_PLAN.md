@@ -32,7 +32,7 @@ presentation still require real Home Assistant validation.
    safe simulated warning. Confirm internal quarter energy remains accurate while
    stable entities do not produce one-second Home Assistant history.
 4. In Overview → **Data Publishing & Storage**, compare hour/day/week scopes for
-   each meter and both combined. Confirm timer ticks remain near 60/minute,
+   selected-meter detail and the all-meter combined total. Confirm timer ticks remain near 60/minute,
    publishing evaluations can be higher when source reports arrive, routine
    publications are much lower, and critical transitions are prompt. During the
    first hour the annual estimate must say it is warming up; a truncated event
@@ -47,14 +47,22 @@ presentation still require real Home Assistant validation.
    details must not recreate a one-second stream. No SI Grid Monitor-specific
    exclusions should be required after independent validation.
 8. Measure physical growth for the real 60-day Recorder and unlimited-retention
-   InfluxDB installation. CI's real-entity workload projects about 510.5 MB/year
-   for two meters, but its InfluxDB component is an unverified allowance—not a
+   InfluxDB installation. CI's three civil-day real-entity workloads project
+   about 625–652 MB/year for two meters, but their InfluxDB component is an unverified allowance—not a
    physical measurement. Follow the non-destructive commands in
    `docs/data-publishing-and-storage.md`; record event counts, filesystem growth,
    series cardinality and unrelated writers.
 9. Only after success, remove temporary exclusions deliberately. Use the
    backup-first manual guide for old data; confirm V1.0.3 itself performs no
    purge, VACUUM, retention change or InfluxDB deletion.
+10. Hold projected demand around its target for 3,600 seconds. Confirm unsafe
+    activation appears on the next evaluation, false does not chatter, and 30
+    continuously safe seconds clear it. Repeat source outage and recovery.
+11. Drive MUST REDUCE through 0.200 → 1.000 → 2.500 kW and verify every
+    materially worse step is prompt. Drive CAN ADD downward by the configured
+    material delta and verify the headroom loss is prompt; safe improvements may
+    remain coalesced. These are billing-energy-budget signals, not electrical
+    protection authorization.
 
 ## V1.0.3 mobile Contracts and calendar acceptance
 

@@ -975,8 +975,20 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
 
         if self._pending_publishing is None:
             return await self.async_step_data_publishing()
+        try:
+            meter_count = max(1, len(self.hass.config_entries.async_entries(DOMAIN)))
+        except (AttributeError, TypeError):
+            meter_count = 1
         estimate = projected_profile_bytes_per_year(
-            profile=str(self._pending_publishing[CONF_PUBLISHING_PROFILE]), meter_count=2
+            profile=str(self._pending_publishing[CONF_PUBLISHING_PROFILE]),
+            meter_count=meter_count,
+            routine_interval_seconds=int(
+                self._pending_publishing[CONF_PUBLISHING_ROUTINE_INTERVAL_SECONDS]
+            ),
+            actionable_interval_seconds=int(
+                self._pending_publishing[CONF_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS]
+            ),
+            fast_entities=tuple(self._pending_publishing[CONF_PUBLISHING_FAST_ENTITIES]),
         )
         if user_input is not None and bool(user_input.get("confirm")):
             pending = self._pending_publishing
@@ -989,6 +1001,7 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
             ),
             description_placeholders={
                 "profile": str(self._pending_publishing[CONF_PUBLISHING_PROFILE]),
+                "meter_count": str(meter_count),
                 "annual_mb": f"{estimate / 1_000_000:.1f}",
                 "budget_pct": f"{estimate / STORAGE_BUDGET_BYTES_PER_YEAR * 100:.1f}",
             },

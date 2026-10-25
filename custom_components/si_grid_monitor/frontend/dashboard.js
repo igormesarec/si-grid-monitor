@@ -142,6 +142,7 @@ export class SIGridMonitorPanel extends HTMLElement {
     this._contractAuditPage = 1;
     this._transitions = null;
     this._publishing = null;
+    this._publishingAll = null;
     this._publishingWindowSeconds ??= 3600;
     this._period = null;
     this._blocks = null;
@@ -208,12 +209,18 @@ export class SIGridMonitorPanel extends HTMLElement {
   }
 
   async _call(type, extra = {}, entryId = this._entryId) {
-    if (!entryId) throw new Error("No SI Grid Monitor meter is selected");
-    return this._hass.connection.sendMessagePromise({
+    if (entryId === undefined || entryId === "") {
+      throw new Error("No SI Grid Monitor meter is selected");
+    }
+    const message = {
       type: `si_grid_monitor/${type}`,
-      entry_id: entryId,
       ...extra,
-    });
+    };
+    // A deliberate null is reserved for bounded installation-wide endpoints
+    // such as publishing diagnostics. Measurement and archive calls always
+    // pass the selected entry id explicitly.
+    if (entryId !== null) message.entry_id = entryId;
+    return this._hass.connection.sendMessagePromise(message);
   }
 
   _storedEntryId() {
@@ -314,15 +321,17 @@ export class SIGridMonitorPanel extends HTMLElement {
     const entryId = this._entryId;
     try {
       if (this._tab === "overview") {
-        const [live, transitions, publishing] = await Promise.all([
+        const [live, transitions, publishing, publishingAll] = await Promise.all([
           this._call("current", {}, entryId),
           this._call("transitions", {}, entryId),
           this._call("publishing", {window_seconds: this._publishingWindowSeconds}, entryId),
+          this._call("publishing", {window_seconds: this._publishingWindowSeconds}, null),
         ]);
         if (!this._gate.accepts(token)) return;
         this._live = live;
         this._transitions = transitions;
         this._publishing = publishing;
+        this._publishingAll = publishingAll;
       } else if (this._tab === "today") {
         const day = await this._call("day", {date: this._selectedDate}, entryId);
         if (!this._gate.accepts(token)) return;
@@ -888,13 +897,13 @@ export class SIGridMonitorPanel extends HTMLElement {
       : "";
     const currentForecastQuality = forecast.smoothed_future_quality || "unavailable";
     const currentForecastStatus = currentForecastQuality === "unavailable"
-      ? `Unavailable: ${forecast.smoothed_future_reason || "no supported smoothed forecast"}`
-      : `${currentForecastQuality}${forecast.smoothed_future_reason ? `: ${forecast.smoothed_future_reason}` : ""}`;
+      ? `${this._t("common.unavailable")}: ${this._reason(forecast.smoothed_future_reason || "no_valid_measurement")}`
+      : `${this._t("common.available")}${forecast.smoothed_future_reason ? `: ${this._reason(forecast.smoothed_future_reason)}` : ""}`;
     const sustainedStatus = sustained.quality === "available"
-      ? `Available · ${fmt(sustained.coverage_seconds, 0)} s coverage`
+      ? this._t("forecast.available_coverage", {seconds: fmt(sustained.coverage_seconds, 0)})
       : `${this._t("common.unavailable")}: ${this._reason(sustained.reason || "insufficient_coverage")}`;
-    return `<section class="card hero"><div class="herohead"><div><p class="eyebrow">CURRENT FIXED 15-MINUTE INTERVAL</p><h2>${esc(quarter.start_local.slice(0, 10))} · ${esc(quarter.start_local.slice(11, 16))}–${esc(quarter.end_local.slice(11, 16))}</h2><p>B${esc(tariff.block)} · ${fmt(tariff.target_kw)} kW · ${esc(quarter.quality)}</p></div><div class="count" data-countdown>--:--</div></div>
-      <div class="direction"><div class="import"><span>IMPORT</span><b>${fmt(power.import_kw)} kW</b></div><div class="export"><span>EXPORT</span><b>${power.export_known === false ? "Unknown" : `${fmt(power.export_kw)} kW`}</b></div></div>${this._liveChart(live)}${this._energyChart(live)}
+    return `<section class="card hero"><div class="herohead"><div><p class="eyebrow">${esc(this._t("overview.current_interval"))}</p><h2>${esc(quarter.start_local.slice(0, 10))} · ${esc(quarter.start_local.slice(11, 16))}–${esc(quarter.end_local.slice(11, 16))}</h2><p>B${esc(tariff.block)} · ${fmt(tariff.target_kw)} kW · ${esc(quarter.quality)}</p></div><div class="count" data-countdown>--:--</div></div>
+      <div class="direction"><div class="import"><span>${esc(this._t("overview.import"))}</span><b>${fmt(power.import_kw)} kW</b></div><div class="export"><span>${esc(this._t("overview.export"))}</span><b>${power.export_known === false ? esc(this._t("common.unknown")) : `${fmt(power.export_kw)} kW`}</b></div></div>${this._liveChart(live)}${this._energyChart(live)}
       <div class="grid">${this._metric("Signed grid power", fmt(power.signed_kw), "kW")}${this._metric("Source observation age", fmt(power.source_age_seconds, 0), "seconds")}${this._metric("Imported so far", fmt(quarter.import_kwh, 3), "kWh")}${this._metric("Exported so far", power.export_known === false ? "Unknown" : fmt(quarter.export_kwh, 3), power.export_known === false ? "" : "kWh")}${this._metric("Import average", fmt(quarter.import_average_kw), "kW")}${this._metric("Instant projected final quarter average", fmt(displayedInstantForecast), "kW")}${this._metric("Smoothed projected final quarter average", fmt(displayedSmoothedForecast), "kW")}${this._metric("Current-quarter forecast status", currentForecastStatus)}${this._metric("Utilization", fmtPct(forecast.current_utilization_pct), "%")}${this._metric("Remaining budget", fmt(forecast.budget_remaining_kwh, 3), "kWh")}${this._metric("Allowed remainder", fmt(forecast.allowed_remaining_import_kw), "kW")}${this._metric("CAN ADD THIS QUARTER", fmt(forecast.can_add_kw), "kW", "good")}${this._metric("MUST REDUCE THIS QUARTER", fmt(forecast.must_reduce_kw), "kW", forecast.must_reduce_kw > 0 ? "bad" : "")}${this._metric("SUSTAINED CAN ADD", fmt(sustained.can_add_kw), "kW", "accent")}${this._metric("SUSTAINED MUST REDUCE", fmt(sustained.must_reduce_kw), "kW", sustained.must_reduce_kw > 0 ? "bad" : "")}${this._metric("Sustained forecast quality", sustainedStatus)}${this._metric("Sustained horizon", sustained.horizon_minutes, "minutes")}</div>${projectionWarning}
       <p class="safety"><strong>Electrical safety:</strong> CAN ADD and sustained headroom are billing-energy-budget estimates only. They are not permission or assurance that the breaker, phases, grid connection, wiring, or inverter can carry that instantaneous load.</p></section>
       ${this._transitionCard()}${this._publishingView()}<section class="card"><div class="row"><h2>Quarter archive</h2><button data-prev>Previous quarter</button><button data-next>Next quarter</button><button data-live>Current / live</button></div>${this._historicalCard()}</section>`;
@@ -904,21 +913,23 @@ export class SIGridMonitorPanel extends HTMLElement {
     const report = this._publishing;
     if (!report) return "";
     const totals = report.totals || {};
-    const estimateReady = totals.estimate_status === "ready";
-    const warning = estimateReady && Number(totals.budget_utilization_pct || 0) >= 100
+    const installation = this._publishingAll || report;
+    const installationTotals = installation.totals || {};
+    const estimateReady = installationTotals.estimate_status === "ready";
+    const warning = estimateReady && Number(installationTotals.budget_utilization_pct || 0) >= 100
       ? this._t("publishing.budget_exceeded")
-      : estimateReady && Number(totals.budget_utilization_pct || 0) >= 80
+      : estimateReady && Number(installationTotals.budget_utilization_pct || 0) >= 80
         ? this._t("publishing.budget_warning") : "";
     const profiles = [...new Set((report.meters || []).map(item => item.profile))].join(", ");
     const top = (report.meters || []).flatMap(meter => (meter.top_entities || []).map(item => ({
       ...item, meter: meter.title,
     }))).sort((left, right) => right.count - left.count).slice(0, 10);
     const notices = [
-      !estimateReady ? this._t("publishing.warming_up") : "",
-      totals.event_history_truncated ? this._t("publishing.history_truncated") : "",
+      installationTotals.estimate_status === "warming_up" ? this._t("publishing.warming_up") : "",
+      installationTotals.event_history_truncated ? this._t("publishing.history_truncated") : "",
       this._t("publishing.influx_unverified"),
     ].filter(Boolean).map(item => `<p class="note">${esc(item)}</p>`).join("");
-    return `<section class="card publishing-report"><div class="herohead"><div><p class="eyebrow">${esc(this._t("publishing.eyebrow"))}</p><h2>${esc(this._t("publishing.title"))}</h2><p>${esc(this._t("publishing.estimate_notice"))}</p></div><label>${esc(this._t("publishing.window"))}<select data-publishing-window><option value="3600" ${this._publishingWindowSeconds === 3600 ? "selected" : ""}>${esc(this._t("publishing.hour"))}</option><option value="86400" ${this._publishingWindowSeconds === 86400 ? "selected" : ""}>${esc(this._t("publishing.day"))}</option><option value="604800" ${this._publishingWindowSeconds === 604800 ? "selected" : ""}>${esc(this._t("publishing.week"))}</option></select></label></div><div class="grid">${this._metric(this._t("publishing.profile"), profiles || "—")}${this._metric(this._t("publishing.meters"), report.meter_count ?? 0)}${this._metric(this._t("publishing.timer_ticks_per_minute"), fmt(totals.internal_timer_ticks_per_minute, 1))}${this._metric(this._t("publishing.evaluations_per_minute"), fmt(totals.publishing_evaluations_per_minute, 1))}${this._metric(this._t("publishing.states_per_minute"), fmt(totals.publications_per_minute, 2))}${this._metric(this._t("publishing.suppressed_unchanged"), totals.suppressed_unchanged ?? 0)}${this._metric(this._t("publishing.suppressed_policy"), totals.suppressed_policy ?? 0)}${this._metric(this._t("publishing.suppressed_attributes"), totals.suppressed_attribute_only ?? 0)}${this._metric(this._t("publishing.critical"), totals.critical_publications ?? 0)}${this._metric(this._t("publishing.annual_estimate"), estimateReady ? fmt(Number(totals.estimated_total_bytes_per_year) / 1000000, 1) : "—", estimateReady ? "MB/year" : "")}${this._metric(this._t("publishing.budget_use"), estimateReady ? fmt(totals.budget_utilization_pct, 1) : "—", estimateReady ? "%" : "")}</div>${notices}${warning ? `<p class="error">${esc(warning)}</p>` : ""}<details><summary>${esc(this._t("publishing.top_entities"))}</summary>${top.length ? `<table><thead><tr><th>${esc(this._t("publishing.meter"))}</th><th>${esc(this._t("publishing.entity"))}</th><th>${esc(this._t("publishing.publications"))}</th></tr></thead><tbody>${top.map(item => `<tr><td>${esc(item.meter)}</td><td><code>${esc(item.entity_key)}</code></td><td>${item.count}</td></tr>`).join("")}</tbody></table>` : `<p>${esc(this._t("publishing.no_events"))}</p>`}</details></section>`;
+    return `<section class="card publishing-report"><div class="herohead"><div><p class="eyebrow">${esc(this._t("publishing.eyebrow"))}</p><h2>${esc(this._t("publishing.title"))}</h2><p>${esc(this._t("publishing.estimate_notice"))}</p></div><label>${esc(this._t("publishing.window"))}<select data-publishing-window><option value="3600" ${this._publishingWindowSeconds === 3600 ? "selected" : ""}>${esc(this._t("publishing.hour"))}</option><option value="86400" ${this._publishingWindowSeconds === 86400 ? "selected" : ""}>${esc(this._t("publishing.day"))}</option><option value="604800" ${this._publishingWindowSeconds === 604800 ? "selected" : ""}>${esc(this._t("publishing.week"))}</option></select></label></div><div class="grid">${this._metric(this._t("publishing.profile"), profiles || "—")}${this._metric(this._t("publishing.meters"), installation.meter_count ?? 0)}${this._metric(this._t("publishing.timer_ticks_per_minute"), fmt(totals.internal_timer_ticks_per_minute, 1))}${this._metric(this._t("publishing.evaluations_per_minute"), fmt(totals.publishing_evaluations_per_minute, 1))}${this._metric(this._t("publishing.states_per_minute"), fmt(totals.publications_per_minute, 2))}${this._metric(this._t("publishing.suppressed_unchanged"), totals.suppressed_unchanged ?? 0)}${this._metric(this._t("publishing.suppressed_policy"), totals.suppressed_policy ?? 0)}${this._metric(this._t("publishing.suppressed_attributes"), totals.suppressed_attribute_only ?? 0)}${this._metric(this._t("publishing.critical"), totals.critical_publications ?? 0)}${this._metric(this._t("publishing.annual_estimate"), estimateReady ? fmt(Number(installationTotals.estimated_total_bytes_per_year) / 1000000, 1) : "—", estimateReady ? "MB/year" : "")}${this._metric(this._t("publishing.budget_use"), estimateReady ? fmt(installationTotals.budget_utilization_pct, 1) : "—", estimateReady ? "%" : "")}</div>${notices}${warning ? `<p class="error">${esc(warning)}</p>` : ""}<details><summary>${esc(this._t("publishing.top_entities"))}</summary>${top.length ? `<table><thead><tr><th>${esc(this._t("publishing.meter"))}</th><th>${esc(this._t("publishing.entity"))}</th><th>${esc(this._t("publishing.publications"))}</th></tr></thead><tbody>${top.map(item => `<tr><td>${esc(item.meter)}</td><td><code>${esc(item.entity_key)}</code></td><td>${item.count}</td></tr>`).join("")}</tbody></table>` : `<p>${esc(this._t("publishing.no_events"))}</p>`}</details></section>`;
   }
 
   _transitionCard() {
@@ -926,13 +937,13 @@ export class SIGridMonitorPanel extends HTMLElement {
     const rows = data.transitions || [];
     const lower = data.next_lower_target;
     const forecastText = !lower ? "" : !lower.inside_sustained_horizon
-      ? "This lower limit is outside the sustained forecast horizon and is informational only."
+      ? this._t("transition.outside_horizon")
       : lower.forecast_status === "reduction_needed"
-        ? `Forecast reduction needed over the ${data.sustained_horizon_minutes}-minute horizon. Limiting quarter: ${esc(data.sustained_limiting_quarter_start_utc || "not identified")}.`
+        ? this._t("transition.reduction_needed", {horizon: data.sustained_horizon_minutes, quarter: data.sustained_limiting_quarter_start_utc || this._t("transition.not_identified")})
         : lower.forecast_status === "no_reduction_projected"
-          ? `No reduction projected over the ${data.sustained_horizon_minutes}-minute horizon; the threshold still becomes lower.`
-          : `Forecast unavailable: ${esc(lower.forecast_reason || "missing, stale or insufficient measurements")}.`;
-    return `<section class="card"><h2>Next tariff transition</h2><div class="grid">${this._metric("Current block", data.current_block ? `B${data.current_block}` : "Unknown")}${this._metric("Current contracted target", fmt(data.current_target_kw), "kW")}${this._metric("Sustained horizon", data.sustained_horizon_minutes ?? "—", "minutes")}</div><div class="transition-list">${rows.map(row => `<div><b>B${esc(row.from_block)} → B${esc(row.to_block)}</b><span>${esc(row.local_datetime?.replace("T", " ").slice(0, 16))} · ${fmt(row.seconds_until / 60, 0)} min</span><span>${fmt(row.from_target_kw)} → ${fmt(row.to_target_kw)} kW · ${esc(row.direction)} ${row.difference_kw == null ? "" : `(${row.difference_kw >= 0 ? "+" : ""}${fmt(row.difference_kw)} kW)`}</span></div>`).join("") || "No verified transition found"}</div><h3>Next lower contracted-power target</h3><p>${lower ? `B${esc(lower.to_block)} at ${esc(lower.local_datetime?.replace("T", " ").slice(0, 16))}: ${fmt(lower.from_target_kw)} → ${fmt(lower.to_target_kw)} kW. Limit decreases by ${fmt(lower.decrease_kw)} kW.` : "No verified lower target within the bounded lookahead."}</p>${lower ? `<p>${forecastText}</p>` : ""}</section>`;
+          ? this._t("transition.no_reduction", {horizon: data.sustained_horizon_minutes})
+          : this._t("transition.unavailable", {reason: this._reason(lower.forecast_reason || "insufficient_coverage")});
+    return `<section class="card"><h2>${esc(this._t("transition.title"))}</h2><div class="grid">${this._metric(this._t("transition.current_block"), data.current_block ? `B${data.current_block}` : this._t("common.unknown"))}${this._metric(this._t("transition.current_target"), fmt(data.current_target_kw), "kW")}${this._metric(this._t("transition.horizon"), data.sustained_horizon_minutes ?? "—", this._t("common.minutes"))}</div><div class="transition-list">${rows.map(row => `<div><b>B${esc(row.from_block)} → B${esc(row.to_block)}</b><span>${esc(row.local_datetime?.replace("T", " ").slice(0, 16))} · ${fmt(row.seconds_until / 60, 0)} min</span><span>${fmt(row.from_target_kw)} → ${fmt(row.to_target_kw)} kW · ${esc(this._t(`transition.direction_${row.direction}`))} ${row.difference_kw == null ? "" : `(${row.difference_kw >= 0 ? "+" : ""}${fmt(row.difference_kw)} kW)`}</span></div>`).join("") || esc(this._t("transition.none"))}</div><h3>${esc(this._t("transition.next_lower"))}</h3><p>${lower ? esc(this._t("transition.lower_detail", {block: lower.to_block, time: lower.local_datetime?.replace("T", " ").slice(0, 16), from: fmt(lower.from_target_kw), to: fmt(lower.to_target_kw), decrease: fmt(lower.decrease_kw)})) : esc(this._t("transition.no_lower"))}</p>${lower ? `<p>${esc(forecastText)}</p>` : ""}</section>`;
   }
 
   _historicalCard() {

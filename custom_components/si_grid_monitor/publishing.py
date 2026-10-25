@@ -8,6 +8,7 @@ external state consumers such as InfluxDB from calculation-rate event streams.
 from __future__ import annotations
 
 import json
+import logging
 from collections import Counter, deque
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -37,8 +38,9 @@ from .const import (
 
 STORAGE_BUDGET_BYTES_PER_YEAR = 1_000_000_000
 SECONDS_PER_YEAR = 365 * 24 * 60 * 60
+SECONDS_PER_DAY = 24 * 60 * 60
 MIN_ESTIMATE_OBSERVATION_SECONDS = 3600
-URGENT_ACTIONABLE_REARM_SECONDS = 300
+CRITICAL_SAFE_CLEAR_DEBOUNCE_SECONDS = 30
 ACTIONABLE_ZERO_TRANSITION_KEYS = frozenset(
     {
         "can_add_power",
@@ -47,6 +49,10 @@ ACTIONABLE_ZERO_TRANSITION_KEYS = frozenset(
         "sustained_must_reduce_power",
     }
 )
+ACTIONABLE_INCREASE_IS_ADVERSE = frozenset({"must_reduce_power", "sustained_must_reduce_power"})
+ACTIONABLE_DECREASE_IS_ADVERSE = frozenset({"can_add_power", "sustained_can_add_power"})
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class PublishingClass(StrEnum):
@@ -161,7 +167,8 @@ class _Registration:
     last_fingerprint: str | None = None
     last_attributes_fingerprint: str | None = None
     last_published_utc: datetime | None = None
-    last_urgent_utc: datetime | None = None
+    last_observed_state: PublicationState | None = None
+    pending_safe_clear_utc: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -223,15 +230,21 @@ class PublishingController:
             should_publish, critical = self._should_publish(
                 registration, state, fingerprint, now_utc
             )
+            registration.last_observed_state = state
             if not should_publish:
                 continue
-            registration.callback()
+            try:
+                registration.callback()
+            except Exception:
+                # One broken entity must not prevent later registrations from
+                # publishing.  Keep the previous durable publication state so
+                # this entity can be retried on the next evaluation.
+                _LOGGER.exception("Failed to publish SI Grid Monitor entity %s", registration.key)
+                continue
             registration.last_state = state
             registration.last_fingerprint = fingerprint
             registration.last_attributes_fingerprint = attributes_fingerprint
             registration.last_published_utc = now_utc
-            if critical and registration.publishing_class == PublishingClass.ACTIONABLE:
-                registration.last_urgent_utc = now_utc
             self.publications += 1
             self.critical_publications += int(critical)
             if self._events.maxlen is not None and len(self._events) == self._events.maxlen:
@@ -256,11 +269,29 @@ class PublishingController:
         previous = registration.last_state
         if previous is None or registration.last_published_utc is None:
             return True, registration.publishing_class == PublishingClass.CRITICAL
+        if state.available != previous.available:
+            registration.pending_safe_clear_utc = None
+            return True, True
+        if registration.key == "projected_exceedance":
+            if bool(state.value):
+                # Hazard assertion (and reassertion after a false observation)
+                # is immediate.  Any pending safe clear is cancelled.
+                registration.pending_safe_clear_utc = None
+            elif bool(previous.value):
+                # Safe clear must be continuously observed to prevent a noisy
+                # threshold from producing a critical event every second.
+                if registration.pending_safe_clear_utc is None:
+                    registration.pending_safe_clear_utc = now_utc
+                if (
+                    now_utc - registration.pending_safe_clear_utc
+                ).total_seconds() < CRITICAL_SAFE_CLEAR_DEBOUNCE_SECONDS:
+                    self.suppressed_policy += 1
+                    return False, False
+                registration.pending_safe_clear_utc = None
+                return True, True
         if fingerprint == registration.last_fingerprint:
             self.suppressed_unchanged += 1
             return False, False
-        if state.available != previous.available:
-            return True, True
         changed_value = state.value != previous.value
         attributes_changed = (
             _attributes_fingerprint(state.attributes) != registration.last_attributes_fingerprint
@@ -281,15 +312,20 @@ class PublishingController:
             self.settings.actionable_hysteresis_kw,
         ):
             return True, True
-        if (
-            registration.key in ACTIONABLE_ZERO_TRANSITION_KEYS
-            and changed_value
-            and (
-                registration.last_urgent_utc is None
-                or (now_utc - registration.last_urgent_utc).total_seconds()
-                >= URGENT_ACTIONABLE_REARM_SECONDS
+        observed_previous = registration.last_observed_state or previous
+        if changed_value and (
+            _actionable_change_is_adverse(
+                registration.key,
+                observed_previous.value,
+                state.value,
+                self.settings.actionable_delta_kw,
             )
-            and _numeric_delta(previous.value, state.value) >= self.settings.actionable_delta_kw
+            or _actionable_change_is_adverse(
+                registration.key,
+                previous.value,
+                state.value,
+                self.settings.actionable_delta_kw,
+            )
         ):
             return True, True
         interval = self._interval_for(registration.publishing_class)
@@ -338,7 +374,10 @@ class PublishingController:
         )
         payload = sum(event.payload_bytes for event in events)
         event_count = len(events)
-        estimate_ready = observed_seconds >= MIN_ESTIMATE_OBSERVATION_SECONDS
+        estimate_ready = (
+            observed_seconds >= MIN_ESTIMATE_OBSERVATION_SECONDS
+            and not self._event_history_truncated
+        )
         annual_factor = SECONDS_PER_YEAR / observed_seconds if estimate_ready else 0.0
         # Recorder estimate includes a conservative row/index allowance; the
         # Influx estimate represents state/field/series protocol overhead. The
@@ -381,7 +420,13 @@ class PublishingController:
                 if annual_total is not None
                 else None
             ),
-            "estimate_status": "ready" if estimate_ready else "warming_up",
+            "estimate_status": (
+                "truncated"
+                if self._event_history_truncated
+                else "ready"
+                if estimate_ready
+                else "warming_up"
+            ),
             "event_history_truncated": self._event_history_truncated,
             "influxdb_physical_storage_verified": False,
             "estimate_method": (
@@ -419,10 +464,22 @@ def _actionable_zero_transition(previous: Any, current: Any, hysteresis_kw: floa
     )
 
 
-def _numeric_delta(previous: Any, current: Any) -> float:
+def _actionable_change_is_adverse(
+    key: str,
+    previous: Any,
+    current: Any,
+    minimum_delta_kw: float,
+) -> bool:
+    """Return whether the latest observed change worsens actionable safety."""
+
     if not isinstance(previous, (int, float)) or not isinstance(current, (int, float)):
-        return 0.0
-    return abs(float(current) - float(previous))
+        return False
+    delta = float(current) - float(previous)
+    if key in ACTIONABLE_INCREASE_IS_ADVERSE:
+        return delta >= minimum_delta_kw
+    if key in ACTIONABLE_DECREASE_IS_ADVERSE:
+        return -delta >= minimum_delta_kw
+    return False
 
 
 def _meaningful_delta(
@@ -439,14 +496,31 @@ def _meaningful_delta(
 
 
 def projected_profile_bytes_per_year(
-    *, profile: str, meter_count: int = 2, entity_count_per_meter: int = 48
+    *,
+    profile: str,
+    meter_count: int = 2,
+    entity_count_per_meter: int = 48,
+    routine_interval_seconds: int | None = None,
+    actionable_interval_seconds: int | None = None,
+    fast_entities: tuple[str, ...] | frozenset[str] = (),
 ) -> int:
-    """Return a documented pre-save planning estimate for OptionsFlow."""
+    """Return a conservative, explicitly assumption-based Options estimate."""
 
     if profile == PUBLISHING_PROFILE_AUTOMATION:
         publications_per_day_per_meter = entity_count_per_meter * 24 * 12
     elif profile == PUBLISHING_PROFILE_CUSTOM:
-        publications_per_day_per_meter = entity_count_per_meter * 24 * 6
+        routine = max(15, int(routine_interval_seconds or 900))
+        actionable = max(1, int(actionable_interval_seconds or 300))
+        # Planning categories deliberately do not claim to predict the user's
+        # future signal. Fast entities use a 15-second source-change allowance;
+        # the preview labels this as an assumption rather than a guarantee.
+        routine_entities = max(0, entity_count_per_meter - 12)
+        publications_per_day_per_meter = (
+            routine_entities * SECONDS_PER_DAY / routine
+            + 8 * SECONDS_PER_DAY / actionable
+            + len(fast_entities) * SECONDS_PER_DAY / 15
+            + 200
+        )
     else:
         # Stable/configuration entities publish only on change; the planning
         # allowance models 16 dynamic entities at 15-minute resolution plus

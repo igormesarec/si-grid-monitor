@@ -16,11 +16,14 @@ source.
 
 V1.0.3 gives every sensor and binary sensor an explicit class:
 
-- **Critical:** immediate genuine state/availability transitions.
+- **Critical:** unsafe activation and availability deterioration are immediate.
+  `projected_exceedance` requires 30 continuously safe seconds before its
+  public false clear, preventing threshold chatter without changing the engine.
 - **Actionable:** CAN ADD, MUST REDUCE and related values. CAN ADD/MUST REDUCE
   activation and clearing use a configurable zero hysteresis. A configurable
-  large-change threshold publishes the first material change on the next
-  evaluation; repeated urgent publications are rearmed after five minutes.
+  threshold publishes every materially worse MUST REDUCE increase or CAN ADD
+  decrease on the next evaluation. Safe improvements can be coalesced; there is
+  no five-minute veto on worsening risk.
 - **Monitoring:** analytical power, energy and forecast values at meaningful
   changes or coarser intervals.
 - **Configuration:** tariff, contract and source values only when changed.
@@ -55,14 +58,17 @@ third-party threshold unless its relevant value is configured for that cadence.
 
 ## Dashboard diagnostics
 
-Overview includes **Data Publishing & Storage** for the selected meter or all
-meters. It reports actual one-second timer ticks separately from publishing
+Overview includes **Data Publishing & Storage** with selected-meter detail and
+a separate combined installation estimate for all configured meters. It reports
+actual one-second timer ticks separately from publishing
 evaluations (which also occur after source reports), HA publications,
 suppressions, critical events, top entity keys, payload estimates and annual
 budget use for the last hour/day/week. Counters are bounded in memory and reset
 when the runtime restarts. Annual estimates remain unavailable during the first
 hour, and the panel warns if its 50,000-event history truncated the selected
-window. Diagnostics do not scan Recorder or create HA diagnostic entities.
+window. When the bounded event buffer truncates, annual values become unknown
+instead of annualizing incomplete evidence. Diagnostics do not scan Recorder or
+create HA diagnostic entities.
 
 The projected sizes distinguish Recorder-like, InfluxDB and internal archive
 components. They are engineering estimates, not measured sizes of the user's
@@ -70,30 +76,28 @@ databases. Warnings at 80% and 100% refer to the 1,000,000,000-byte annual budge
 
 ## Reproducible benchmark
 
-`tests/test_publishing_real_entities.py` runs a complete 86,400-second autumn
-DST workload for each of two meters using the real `SENSORS`, `BINARY_SENSORS`,
+`tests/test_publishing_real_entities.py` runs complete 82,800-, 86,400-, and
+90,000-second Europe/Ljubljana days for two meters using the real `SENSORS`, `BINARY_SENSORS`,
 native values, availability and extra-state attributes. It includes a burst of
 two source reports per second, import, near-zero PV reversals, quarter/tariff
 and contract boundaries, stale/recovery, and the UTC-offset/fold transition.
 Every controller also receives the real one-second timer evaluation. Published
-states are written to a Recorder-like SQLite schema with shared attributes and
-two timestamp indexes; attributes declared unrecorded by the actual entities
-are excluded just as intended by the entity contract.
+states are written to a Recorder-like SQLite schema with shared attributes,
+standard HA attributes, metadata/timestamp/context fields and three indexes;
+attributes declared unrecorded by the actual entities are excluded as intended.
 
-Measured development result:
+Measured development results:
 
-| Component | Annualized two-meter estimate |
-|---|---:|
-| Recorder-like SQLite allocation | about 197.3 MB |
-| Unverified InfluxDB planning allowance | about 233.2 MB |
-| Integration archive allowance (two meters) | 80.0 MB |
-| Combined engineering projection | **about 510.5 MB/year** |
-| Acceptance budget | 1,000 MB/year |
+| Day | Recorder-like | Unverified Influx allowance | Archive allowance | Combined planning result |
+|---|---:|---:|---:|---:|
+| Spring DST (23 h) | 329.2 MB | 232.6 MB | 80.0 MB | **641.8 MB/year** |
+| Normal (24 h) | 312.5 MB | 232.6 MB | 80.0 MB | **625.0 MB/year** |
+| Autumn DST (25 h) | 337.3 MB | 234.1 MB | 80.0 MB | **651.4 MB/year** |
 
-The SQLite part uses actual allocated pages (540,672 bytes and 4,563 state rows
-for the simulated day). For comparison, an uncontrolled entity would have up
-to 87,600 emissions per meter in this workload. Representative measured counts
-from the optimized run are:
+The SQLite part uses allocated pages in the synthetic databases: 864,256 bytes
+and 4,363 rows, 856,064 bytes and 4,551 rows, and 962,560 bytes and 4,773 rows.
+This is closer to Recorder than the earlier simplified table, but it remains a
+test model rather than a physical Home Assistant Recorder measurement.
 
 | Real entity | Uncontrolled ceiling per meter | Published per meter |
 |---|---:|---:|

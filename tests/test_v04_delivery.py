@@ -79,10 +79,15 @@ def test_future_limit_message_distinguishes_forecast_horizon() -> None:
     bundle = (ROOT / "custom_components/si_grid_monitor/frontend/dashboard.js").read_text(
         encoding="utf-8"
     )
+    translations = (
+        ROOT / "custom_components/si_grid_monitor/frontend/dashboard-i18n.mjs"
+    ).read_text(encoding="utf-8")
     assert "lower.inside_sustained_horizon" in bundle
-    assert "Forecast reduction needed" in bundle
-    assert "outside the sustained forecast horizon" in bundle
-    assert "Forecast unavailable" in bundle
+    assert 'this._t("transition.reduction_needed"' in bundle
+    assert 'this._t("transition.outside_horizon")' in bundle
+    assert 'this._t("transition.unavailable"' in bundle
+    assert "Forecast reduction needed" in translations
+    assert "zmanjšanje" in translations
 
 
 def test_v041_setup_exposes_simulation_without_manual_schedule_json() -> None:

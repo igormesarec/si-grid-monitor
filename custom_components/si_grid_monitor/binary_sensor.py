@@ -101,14 +101,24 @@ class SIGridBinarySensor(BinarySensorEntity):
             "projected_exceedance",
             "unrecoverable_interval",
         }:
+            if (
+                self.entity_description.key == "projected_exceedance"
+                and not self.runtime.source_available
+            ):
+                return False
             return self.runtime.current_contractual_available
-        return not (self.entity_description.requires_fresh_input and snapshot.input_stale)
+        return not (
+            self.entity_description.requires_fresh_input
+            and (not self.runtime.source_available or snapshot.input_stale)
+        )
 
     @property
     def is_on(self) -> bool | None:
         snapshot = self.runtime.snapshot
         if snapshot is None:
             return None
+        if self.entity_description.key == "input_stale" and not self.runtime.source_available:
+            return True
         return self.entity_description.value_fn(snapshot)
 
     @property

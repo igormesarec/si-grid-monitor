@@ -397,7 +397,12 @@ test("all dashboard requests remain entry-namespaced after a meter switch", asyn
     await panel._loadTab();
   }
   assert.ok(requests.length >= 9);
-  assert.deepEqual(new Set(requests.map(request => request.entryId)), new Set(["meter-b"]));
+  const installationRequests = requests.filter(request => request.entryId === null);
+  assert.deepEqual(installationRequests.map(request => request.type), ["publishing"]);
+  assert.deepEqual(
+    new Set(requests.filter(request => request.entryId !== null).map(request => request.entryId)),
+    new Set(["meter-b"]),
+  );
   assert.deepEqual(new Set(requests.map(request => request.type)), new Set([
     "current", "transitions", "publishing", "day", "period", "blocks", "exceedances",
     "history", "calendar", "tariff_status",
