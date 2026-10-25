@@ -7,6 +7,18 @@ meter's installation preference initializes the dashboard language.
 
 The single SI Grid Monitor sidebar panel shows the **active meter** in a selector at the top. With multiple entries, always verify the displayed name before interpreting measurements. Each meter owns its settings and archive.
 
+Overview also includes **Data Publishing & Storage**. Select one hour, 24 hours
+or seven days to inspect calculation cycles, Home Assistant publication rate,
+suppressed updates, critical events, top publishing entities and annual budget
+estimates. These bounded runtime counters reset on restart and do not scan
+Recorder or InfluxDB. See [Data publishing and storage](data-publishing-and-storage.md).
+
+On phones, Contracts uses separate status cards plus compact historical-evidence
+and audit cards; desktop retains its detailed tables. Full source IDs and raw
+schedule JSON are placed in expandable technical details. Tariff Calendar keeps
+an intentional same-date scroll, aligns selection after a date change and shows
+UTC offsets where repeated local hours need disambiguation.
+
 ## Overview
 
 The opening card covers the fixed quarter (e.g. 22:30–22:45) with a countdown.

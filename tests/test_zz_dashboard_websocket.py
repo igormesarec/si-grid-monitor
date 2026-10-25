@@ -55,6 +55,7 @@ def _install_dashboard_import_stubs() -> None:
     voluptuous = types.ModuleType("voluptuous")
     voluptuous.Required = lambda key, **_kwargs: key  # type: ignore[attr-defined]
     voluptuous.Optional = lambda key, **_kwargs: key  # type: ignore[attr-defined]
+    voluptuous.In = lambda values: values  # type: ignore[attr-defined]
     sys.modules.update(
         {
             "homeassistant.components": components,
@@ -229,6 +230,41 @@ def test_entries_command_exposes_each_meter_installation_language() -> None:
         {"entry_id": "entry-a", "title": "Meter A", "preferred_language": "sl"},
         {"entry_id": "entry-b", "title": "Meter B", "preferred_language": "en"},
     ]
+
+
+def test_publishing_command_aggregates_selected_meter_without_recorder_scan() -> None:
+    metrics = {
+        "calculation_cycles_per_minute": 60.0,
+        "publications_per_minute": 1.5,
+        "publications_in_window": 90,
+        "suppressed_unchanged": 1000,
+        "suppressed_policy": 200,
+        "suppressed_attribute_only": 25,
+        "critical_publications": 2,
+        "estimated_total_bytes_per_year": 320_000_000,
+    }
+    runtimes = {
+        "entry-a": SimpleNamespace(
+            entry=SimpleNamespace(title="Meter A"),
+            publishing=SimpleNamespace(diagnostics=lambda _now, _window: dict(metrics)),
+        ),
+        "entry-b": SimpleNamespace(
+            entry=SimpleNamespace(title="Meter B"),
+            publishing=SimpleNamespace(diagnostics=lambda _now, _window: dict(metrics)),
+        ),
+    }
+    hass = SimpleNamespace(data={DOMAIN: {dashboard.DATA_RUNTIMES: runtimes}})
+    connection = _Connection()
+    dashboard.ws_publishing(
+        hass,
+        connection,
+        {"id": 2, "entry_id": "entry-b", "window_seconds": 86400},
+    )
+
+    assert connection.result["meter_count"] == 1
+    assert connection.result["meters"][0]["title"] == "Meter B"
+    assert connection.result["totals"]["publications_in_window"] == 90
+    assert connection.result["totals"]["budget_utilization_pct"] == 32.0
 
 
 def test_history_commands_use_real_sqlite_rows_and_preserve_archive(tmp_path: Path) -> None:

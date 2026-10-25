@@ -39,6 +39,12 @@ from .const import (
     CONF_POSITIVE_MEANS_IMPORT,
     CONF_POWER_ENTITY,
     CONF_PREFERRED_LANGUAGE,
+    CONF_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS,
+    CONF_PUBLISHING_ENERGY_DEADBAND_KWH,
+    CONF_PUBLISHING_FAST_ENTITIES,
+    CONF_PUBLISHING_POWER_DEADBAND_KW,
+    CONF_PUBLISHING_PROFILE,
+    CONF_PUBLISHING_ROUTINE_INTERVAL_SECONDS,
     CONF_RETENTION,
     CONF_SAFETY_MARGIN_KW,
     CONF_SIMULATION_ENABLED,
@@ -49,12 +55,20 @@ from .const import (
     CONF_TARGET_KW,
     CONF_TARGET_MODE,
     DEFAULT_PREFERRED_LANGUAGE,
+    DEFAULT_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS,
+    DEFAULT_PUBLISHING_ENERGY_DEADBAND_KWH,
+    DEFAULT_PUBLISHING_POWER_DEADBAND_KW,
+    DEFAULT_PUBLISHING_PROFILE,
+    DEFAULT_PUBLISHING_ROUTINE_INTERVAL_SECONDS,
     DEFAULT_RETENTION,
     DEFAULT_SAFETY_MARGIN_KW,
     DEFAULT_SMOOTHING_SECONDS,
     DEFAULT_SUSTAINED_HORIZON_MINUTES,
     DEFAULT_TARGET_KW,
     DOMAIN,
+    PUBLISHING_FAST_ENTITY_OPTIONS,
+    PUBLISHING_INTERVAL_PRESETS,
+    PUBLISHING_PROFILES,
     SMOOTHING_PRESETS,
     SOURCE_IMPORT_ONLY,
     SOURCE_SEPARATE_POWER,
@@ -71,6 +85,7 @@ from .contracted_power import (
     ContractedPowerSchedule,
     contracted_power_schedule_from_json,
 )
+from .publishing import STORAGE_BUDGET_BYTES_PER_YEAR, projected_profile_bytes_per_year
 from .source_identity import find_duplicate_source_entry, source_unique_id
 
 SOURCE_MODES = SUPPORTED_SOURCE_MODES
@@ -659,6 +674,7 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
         self._pending_event: dict[str, Any] | None = None
         self._pending_original_schedule_json: str | None = None
         self._pending_original_revision: str | None = None
+        self._pending_publishing: dict[str, Any] | None = None
 
     @property
     def _current(self) -> dict[str, Any]:
@@ -798,12 +814,169 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         mode = str(self._current.get(CONF_SOURCE_MODE, SOURCE_SIGNED_POWER))
-        options = ["assignments", "add_assignment", "archive_removal"]
+        options = [
+            "data_publishing",
+            "restore_publishing_defaults",
+            "assignments",
+            "add_assignment",
+            "archive_removal",
+        ]
         if mode in SOURCE_MODES:
             options.insert(0, "settings")
         else:
             options.insert(0, "legacy_mode_d")
         return self.async_show_menu(step_id="init", menu_options=options)
+
+    async def async_step_data_publishing(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Configure HA publication independently from one-second calculation."""
+
+        current = self._current
+        if user_input is not None:
+            self._pending_publishing = {
+                CONF_PUBLISHING_PROFILE: str(user_input[CONF_PUBLISHING_PROFILE]),
+                CONF_PUBLISHING_ROUTINE_INTERVAL_SECONDS: int(
+                    user_input[CONF_PUBLISHING_ROUTINE_INTERVAL_SECONDS]
+                ),
+                CONF_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS: int(
+                    user_input[CONF_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS]
+                ),
+                CONF_PUBLISHING_POWER_DEADBAND_KW: float(
+                    user_input[CONF_PUBLISHING_POWER_DEADBAND_KW]
+                ),
+                CONF_PUBLISHING_ENERGY_DEADBAND_KWH: float(
+                    user_input[CONF_PUBLISHING_ENERGY_DEADBAND_KWH]
+                ),
+                CONF_PUBLISHING_FAST_ENTITIES: list(
+                    user_input.get(CONF_PUBLISHING_FAST_ENTITIES, [])
+                ),
+            }
+            return await self.async_step_publishing_preview()
+        return self.async_show_form(
+            step_id="data_publishing",
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_PUBLISHING_PROFILE,
+                        default=str(
+                            current.get(CONF_PUBLISHING_PROFILE, DEFAULT_PUBLISHING_PROFILE)
+                        ),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=list(PUBLISHING_PROFILES),
+                            translation_key="publishing_profile",
+                        )
+                    ),
+                    vol.Required(
+                        CONF_PUBLISHING_ROUTINE_INTERVAL_SECONDS,
+                        default=str(
+                            current.get(
+                                CONF_PUBLISHING_ROUTINE_INTERVAL_SECONDS,
+                                DEFAULT_PUBLISHING_ROUTINE_INTERVAL_SECONDS,
+                            )
+                        ),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[str(value) for value in PUBLISHING_INTERVAL_PRESETS]
+                        )
+                    ),
+                    vol.Required(
+                        CONF_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS,
+                        default=str(
+                            current.get(
+                                CONF_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS,
+                                DEFAULT_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS,
+                            )
+                        ),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=[str(value) for value in PUBLISHING_INTERVAL_PRESETS]
+                        )
+                    ),
+                    vol.Required(
+                        CONF_PUBLISHING_POWER_DEADBAND_KW,
+                        default=float(
+                            current.get(
+                                CONF_PUBLISHING_POWER_DEADBAND_KW,
+                                DEFAULT_PUBLISHING_POWER_DEADBAND_KW,
+                            )
+                        ),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.0, max=10.0, step=0.001, unit_of_measurement="kW"
+                        )
+                    ),
+                    vol.Required(
+                        CONF_PUBLISHING_ENERGY_DEADBAND_KWH,
+                        default=float(
+                            current.get(
+                                CONF_PUBLISHING_ENERGY_DEADBAND_KWH,
+                                DEFAULT_PUBLISHING_ENERGY_DEADBAND_KWH,
+                            )
+                        ),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.0, max=10.0, step=0.001, unit_of_measurement="kWh"
+                        )
+                    ),
+                    vol.Optional(
+                        CONF_PUBLISHING_FAST_ENTITIES,
+                        default=list(current.get(CONF_PUBLISHING_FAST_ENTITIES, [])),
+                    ): selector.SelectSelector(
+                        selector.SelectSelectorConfig(
+                            options=list(PUBLISHING_FAST_ENTITY_OPTIONS), multiple=True
+                        )
+                    ),
+                }
+            ),
+        )
+
+    async def async_step_publishing_preview(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Show an explicit planning estimate before saving publication settings."""
+
+        if self._pending_publishing is None:
+            return await self.async_step_data_publishing()
+        estimate = projected_profile_bytes_per_year(
+            profile=str(self._pending_publishing[CONF_PUBLISHING_PROFILE]), meter_count=2
+        )
+        if user_input is not None and bool(user_input.get("confirm")):
+            pending = self._pending_publishing
+            self._pending_publishing = None
+            return self._save(pending)
+        return self.async_show_form(
+            step_id="publishing_preview",
+            data_schema=vol.Schema(
+                {vol.Required("confirm", default=False): selector.BooleanSelector()}
+            ),
+            description_placeholders={
+                "profile": str(self._pending_publishing[CONF_PUBLISHING_PROFILE]),
+                "annual_mb": f"{estimate / 1_000_000:.1f}",
+                "budget_pct": f"{estimate / STORAGE_BUDGET_BYTES_PER_YEAR * 100:.1f}",
+            },
+        )
+
+    async def async_step_restore_publishing_defaults(
+        self, user_input: dict[str, Any] | None = None
+    ) -> FlowResult:
+        """Restore the storage-safe profile without touching calculations or archives."""
+
+        return self._save(
+            {
+                CONF_PUBLISHING_PROFILE: DEFAULT_PUBLISHING_PROFILE,
+                CONF_PUBLISHING_ROUTINE_INTERVAL_SECONDS: (
+                    DEFAULT_PUBLISHING_ROUTINE_INTERVAL_SECONDS
+                ),
+                CONF_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS: (
+                    DEFAULT_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS
+                ),
+                CONF_PUBLISHING_POWER_DEADBAND_KW: DEFAULT_PUBLISHING_POWER_DEADBAND_KW,
+                CONF_PUBLISHING_ENERGY_DEADBAND_KWH: DEFAULT_PUBLISHING_ENERGY_DEADBAND_KWH,
+                CONF_PUBLISHING_FAST_ENTITIES: [],
+            }
+        )
 
     async def async_step_legacy_mode_d(
         self, user_input: dict[str, Any] | None = None

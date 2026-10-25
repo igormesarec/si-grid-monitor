@@ -361,7 +361,7 @@ test("every dashboard tab renders the active friendly name and selector", () => 
   panel._entryId = "meter-b";
   panel._gate.switchEntry("meter-b");
   panel._historyGate.switchEntry("meter-b");
-  for (const tab of ["overview", "today", "period", "blocks", "exceedances", "history", "calendar"]) {
+  for (const tab of ["overview", "today", "period", "blocks", "exceedances", "history", "contracts", "calendar"]) {
     panel._tab = tab;
     panel._render();
     assert.match(panel.shadowRoot.innerHTML, /data-active-meter-name>House main meter/);
@@ -399,7 +399,7 @@ test("all dashboard requests remain entry-namespaced after a meter switch", asyn
   assert.ok(requests.length >= 9);
   assert.deepEqual(new Set(requests.map(request => request.entryId)), new Set(["meter-b"]));
   assert.deepEqual(new Set(requests.map(request => request.type)), new Set([
-    "current", "transitions", "day", "period", "blocks", "exceedances",
+    "current", "transitions", "publishing", "day", "period", "blocks", "exceedances",
     "history", "calendar", "tariff_status",
   ]));
 });
@@ -1059,7 +1059,51 @@ test("historical calendar cells never replace unknown recorded targets with curr
       utc_offset_seconds: 3600, fold: 0}],
   };
   const html = panel._calendarView();
-  assert.match(html, /As recorded: — kW/);
-  assert.match(html, /Current configuration: 4\.200 kW/);
-  assert.doesNotMatch(html, /As recorded: 4\.200 kW/);
+  assert.match(html, /Not archived/);
+  assert.doesNotMatch(html, /<small>4\.200 kW<\/small>/);
+  assert.match(html, /Current configuration target/);
+  assert.doesNotMatch(html, /As recorded[^<]*4\.200 kW/);
+});
+
+test("publishing diagnostics render bounded estimates without adding a ninth tab", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._language = "en";
+  panel._publishingWindowSeconds = 3600;
+  panel._publishing = {
+    meter_count: 2,
+    meters: [{title: "Main Grid", profile: "storage_optimized",
+      top_entities: [{entity_key: "current_power", count: 4}]}],
+    totals: {calculation_cycles_per_minute: 120, publications_per_minute: 1.5,
+      suppressed_unchanged: 1000, suppressed_policy: 400, critical_publications: 2,
+      estimated_total_bytes_per_year: 651000000, budget_utilization_pct: 65.1},
+  };
+  const html = panel._publishingView();
+  assert.match(html, /Data Publishing &amp; Storage/);
+  assert.match(html, /651\.0/);
+  assert.match(html, /current_power/);
+  assert.equal((panel._render.toString().match(/"contracts", "calendar"/g) || []).length, 1);
+});
+
+test("Contracts provides mobile cards while retaining desktop evidence tables", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._language = "en";
+  panel._contracts = {
+    today: "2026-10-25", meter_name: "Main Grid", contract_status: "active",
+    current_schedule: [], timeline: [], health: {}, audit_pagination: {page: 1, pages: 1, total: 1},
+    historical_configuration: [], is_admin: false,
+    archived_target_evidence: [{first_start_utc: START_A, last_start_utc: START_B,
+      tariff_block: 2, contractual_target_kw: 3.9, target_provenance: "fixture",
+      contractual_status: "confirmed", quarter_count: 2}],
+    audit_events: [{event_utc: START_B, event_type: "created", effective_from: "2026-01-01",
+      effective_to: "2026-12-31", provenance: "fixture", origin: "user_action",
+      old_schedule_json: "[]", new_schedule_json: "[]", configuration_revision: "abc"}],
+  };
+  const html = panel._contractsView();
+  assert.match(html, /contract-desktop/);
+  assert.match(html, /contract-mobile-list/);
+  assert.match(html, /contract-mobile-card/);
+  const css = panel._contractStyles();
+  assert.match(css, /max-width:700px/);
+  assert.match(css, /grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(css, /max-width:340px/);
 });

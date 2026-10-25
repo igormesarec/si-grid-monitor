@@ -16,6 +16,22 @@ All notable changes to SI Grid Monitor will be documented here.
   contracts, source epochs, entry identities and measurements are untouched.
 - Integrated full V1.0.2 Contracts, historical evidence, audit pagination,
   Repairs and calendar semantics into both English and Slovenian interfaces.
+- Added a centralized publishing controller that preserves one-second internal
+  calculations while suppressing unchanged, below-deadband and premature HA
+  state publications. Every sensor and binary sensor has an explicit policy.
+- Added Storage Optimized (default), Automation Priority and Custom per-meter
+  publishing profiles, including a non-destructive Restore Defaults action.
+- Added authenticated Data Publishing & Storage diagnostics to Overview with
+  bounded hour/day/week counters, per-meter/all-meter estimates and top publishers.
+- Reduced changing public attributes and marked retained high-frequency
+  diagnostic attributes unrecorded, protecting both Recorder and InfluxDB by
+  preventing the underlying HA state events rather than relying on exclusions.
+- Added a deterministic two-meter disk-allocation benchmark: 86,400 one-second
+  cycles per meter and a representative seven-day SQLite allocation project
+  approximately 650.9 MB/year combined (251.8 MB Recorder-like storage,
+  399.1 MB conservative Influx estimate), below the 1 GB engineering budget.
+- Reworked Contracts evidence/audit content into mobile cards while retaining
+  desktop tables, and corrected calendar scroll alignment and repeated-hour offsets.
 
 ## [1.0.2] - release candidate
 

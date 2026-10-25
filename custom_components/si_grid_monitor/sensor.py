@@ -23,6 +23,7 @@ from .const import (
     DOMAIN,
 )
 from .engine import EngineSnapshot
+from .publishing import PublicationState, PublishingClass
 from .runtime import GridMonitorRuntime
 
 
@@ -435,6 +436,72 @@ SENSORS: tuple[SIGridSensorDescription, ...] = (
     ),
 )
 
+# Every public entity has an explicit policy.  This mapping is intentionally
+# exhaustive and regression-tested so a newly added entity cannot accidentally
+# inherit calculation-rate publication.
+SENSOR_PUBLISHING_POLICIES: dict[str, PublishingClass] = {
+    "source_mode": PublishingClass.CONFIGURATION,
+    "current_power": PublishingClass.MONITORING,
+    "import_power": PublishingClass.MONITORING,
+    "export_power": PublishingClass.MONITORING,
+    "net_power_15m_rolling": PublishingClass.MONITORING,
+    "import_power_15m_rolling": PublishingClass.MONITORING,
+    "smoothed_signed_power": PublishingClass.MONITORING,
+    "smoothed_import_power": PublishingClass.MONITORING,
+    "current_interval_import_average": PublishingClass.MONITORING,
+    "current_interval_signed_average": PublishingClass.MONITORING,
+    "last_completed_15m_import_demand": PublishingClass.CONFIGURATION,
+    "last_completed_15m_signed_average": PublishingClass.CONFIGURATION,
+    "quarter_import_kwh_so_far": PublishingClass.MONITORING,
+    "quarter_export_kwh_so_far": PublishingClass.MONITORING,
+    "target_kw": PublishingClass.CONFIGURATION,
+    "current_tariff_block": PublishingClass.CONFIGURATION,
+    "current_tariff_season": PublishingClass.CONFIGURATION,
+    "current_tariff_day_type": PublishingClass.CONFIGURATION,
+    "current_block_contracted_power": PublishingClass.CONFIGURATION,
+    "next_tariff_block": PublishingClass.CONFIGURATION,
+    "time_to_next_tariff_block": PublishingClass.DIAGNOSTIC,
+    "next_block_contracted_power": PublishingClass.CONFIGURATION,
+    "tariff_calendar_year": PublishingClass.CONFIGURATION,
+    "tariff_rule_status": PublishingClass.CONFIGURATION,
+    "contracted_power_b1": PublishingClass.CONFIGURATION,
+    "contracted_power_b2": PublishingClass.CONFIGURATION,
+    "contracted_power_b3": PublishingClass.CONFIGURATION,
+    "contracted_power_b4": PublishingClass.CONFIGURATION,
+    "contracted_power_b5": PublishingClass.CONFIGURATION,
+    "operational_target_kw": PublishingClass.CONFIGURATION,
+    "quarter_budget_remaining_kwh": PublishingClass.MONITORING,
+    "allowed_import_until_end_kw": PublishingClass.ACTIONABLE,
+    "forecast_instant_kw": PublishingClass.ACTIONABLE,
+    "forecast_smoothed_kw": PublishingClass.ACTIONABLE,
+    "forecast_utilization_pct": PublishingClass.ACTIONABLE,
+    "forecast_instant_utilization_pct": PublishingClass.ACTIONABLE,
+    "current_utilization_pct": PublishingClass.ACTIONABLE,
+    "can_add_power": PublishingClass.ACTIONABLE,
+    "must_reduce_power": PublishingClass.ACTIONABLE,
+    "sustained_can_add_power": PublishingClass.ACTIONABLE,
+    "sustained_must_reduce_power": PublishingClass.ACTIONABLE,
+    "sustained_forecast_quality": PublishingClass.CRITICAL,
+    "interval_elapsed_seconds": PublishingClass.DIAGNOSTIC,
+    "interval_remaining_seconds": PublishingClass.DIAGNOSTIC,
+    "data_quality": PublishingClass.CRITICAL,
+}
+
+_DYNAMIC_UNRECORDED_ATTRIBUTES = frozenset(
+    {
+        "coverage_seconds",
+        "gap_seconds",
+        "rolling_coverage_seconds",
+        "rolling_gap_seconds",
+        "source_measurement_age_seconds",
+        "valid_measurement_coverage_seconds",
+        "smoothing_coverage_seconds",
+        "smoothing_gap_seconds",
+        "limiting_quarter_start",
+        "limiting_quarter_end",
+    }
+)
+
 TARIFF_ONLY_SENSOR_KEYS = {
     "current_tariff_block",
     "current_tariff_season",
@@ -496,6 +563,7 @@ class SIGridSensor(SensorEntity):
     """Representation of one calculation output."""
 
     _attr_has_entity_name = True
+    _unrecorded_attributes = _DYNAMIC_UNRECORDED_ATTRIBUTES
 
     def __init__(
         self,
@@ -579,14 +647,23 @@ class SIGridSensor(SensorEntity):
             {
                 "source_mode": self.runtime.source_mode,
                 "source_entities": self.runtime.source_entities,
-                "source_available": self.runtime.source_available,
-                "source_status_reason": self.runtime.source_status_reason,
-                "source_measurement_timestamp_utc": (self.runtime.source_measurement_timestamp_utc),
                 "instantaneous_power_known": self.runtime.instantaneous_power_known,
                 "export_known": self.runtime.export_known,
             }
         )
-        if snapshot is not None:
+        if self.entity_description.key in {"current_power", "import_power", "export_power"}:
+            attributes.update(
+                {
+                    "source_available": self.runtime.source_available,
+                    "source_status_reason": self.runtime.source_status_reason,
+                }
+            )
+        if snapshot is not None and self.entity_description.key in {
+            "current_interval_import_average",
+            "current_interval_signed_average",
+            "quarter_import_kwh_so_far",
+            "quarter_export_kwh_so_far",
+        }:
             attributes.update(
                 {
                     "quality": snapshot.quality.value,
@@ -596,9 +673,6 @@ class SIGridSensor(SensorEntity):
                         snapshot.input_stale
                         if self.runtime.instantaneous_power_known
                         else not self.runtime.source_available
-                    ),
-                    "simulation_enabled": bool(
-                        self.runtime.settings.get("simulation_enabled", False)
                     ),
                 }
             )
@@ -680,6 +754,9 @@ class SIGridSensor(SensorEntity):
         ):
             attributes.update(
                 {
+                    "simulation_enabled": bool(
+                        self.runtime.settings.get("simulation_enabled", False)
+                    ),
                     "contractual_available": self.runtime.current_contractual_available,
                     "contractual_confirmed": self.runtime.current_contractual_confirmed,
                     "contractual_status_reason": self.runtime.contractual_status_reason,
@@ -716,7 +793,22 @@ class SIGridSensor(SensorEntity):
         """Subscribe to runtime updates."""
 
         await super().async_added_to_hass()
-        self.async_on_remove(self.runtime.add_listener(self._handle_update))
+        self.async_on_remove(
+            self.runtime.add_publishing_listener(
+                self.entity_description.key,
+                SENSOR_PUBLISHING_POLICIES[self.entity_description.key],
+                self._publication_state,
+                self._handle_update,
+            )
+        )
+
+    @callback
+    def _publication_state(self) -> PublicationState:
+        return PublicationState(
+            value=self.native_value,
+            available=self.available,
+            attributes=self.extra_state_attributes,
+        )
 
     @callback
     def _handle_update(self) -> None:

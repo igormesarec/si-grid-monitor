@@ -19,6 +19,8 @@ engine.py / sustained.py
       +--> tariff rules + date-bound contracted assignments
       |
       +--> HA sensor entities (sensor.py)
+      |       publishing.py (per-entity policy, change detection,
+      |       deadbands and bounded diagnostics)
       |
       +--> authenticated dashboard websocket
       |       dashboard.js / dashboard-model.mjs / i18n
@@ -37,6 +39,7 @@ engine.py / sustained.py
 | `engine.py` | Fixed quarters, time-weighted input, quality, checkpoints and import energy |
 | `sustained.py` | Conservative forward evaluation of constant extra load over intersecting quarters |
 | `sensor.py` | Home Assistant entity exposure and availability rules |
+| `publishing.py` | Separates one-second calculation from HA publication, owns explicit entity policies and bounded event diagnostics |
 | `archive.py`, `history.py` | SQLite storage, migration, quality, provenance and paginated HISTORY |
 | `frontend/dashboard.js`, `dashboard-model.mjs` | Eight-tab interface, charts, measured-vs-unknown semantics and bilingual reporting |
 
@@ -52,6 +55,23 @@ Inspect exact file names when extending functionality; this overview intentional
 6. A canonical live source cannot be claimed by two entries during setup or reconfiguration.
 7. Legacy counter-derived rows are preserved but never promoted to active V1.0 evidence.
 8. Simulated and provisional thresholds never create confirmed contractual exceedance statistics.
+9. Publishing policy can reduce HA state-event frequency but cannot change the
+   engine snapshot, quarter archive, tariff result or contract audit.
+
+## Publication boundary
+
+`runtime.py` still calculates once per second. After each calculation the one
+central controller reads registered entity states. Availability and genuine
+critical value transitions publish immediately; configuration states publish
+only on change; analytical/actionable states use their configured interval and
+deadband. Stable attributes cannot create heartbeat events. Entity platforms
+register callbacks with this controller and release them on unload; there is no
+timer per entity.
+
+Frequently changing coverage, gap, source-age and forecast-timing diagnostics
+are kept out of unrelated public attribute payloads or marked with Home
+Assistant's `_unrecorded_attributes`. Event suppression remains the primary
+protection because InfluxDB also consumes HA state changes.
 
 ## Restart and checkpoints
 

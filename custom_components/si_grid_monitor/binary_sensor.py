@@ -14,6 +14,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
 from .engine import EngineSnapshot
+from .publishing import PublicationState, PublishingClass
 from .runtime import GridMonitorRuntime
 
 
@@ -44,6 +45,12 @@ BINARY_SENSORS = (
     ),
 )
 
+BINARY_SENSOR_PUBLISHING_POLICIES: dict[str, PublishingClass] = {
+    "projected_exceedance": PublishingClass.CRITICAL,
+    "unrecoverable_interval": PublishingClass.CRITICAL,
+    "input_stale": PublishingClass.CRITICAL,
+}
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -62,6 +69,7 @@ class SIGridBinarySensor(BinarySensorEntity):
     """Representation of one boolean calculation output."""
 
     _attr_has_entity_name = True
+    _unrecorded_attributes = frozenset({"source_status_reason"})
 
     def __init__(
         self,
@@ -129,7 +137,22 @@ class SIGridBinarySensor(BinarySensorEntity):
         """Subscribe to runtime updates."""
 
         await super().async_added_to_hass()
-        self.async_on_remove(self.runtime.add_listener(self._handle_update))
+        self.async_on_remove(
+            self.runtime.add_publishing_listener(
+                self.entity_description.key,
+                BINARY_SENSOR_PUBLISHING_POLICIES[self.entity_description.key],
+                self._publication_state,
+                self._handle_update,
+            )
+        )
+
+    @callback
+    def _publication_state(self) -> PublicationState:
+        return PublicationState(
+            value=self.is_on,
+            available=self.available,
+            attributes=self.extra_state_attributes,
+        )
 
     @callback
     def _handle_update(self) -> None:

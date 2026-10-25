@@ -116,6 +116,47 @@ async function contractsFixture(page, {width, dark = false}) {
   }, dark);
 }
 
+async function calendarFixture(page, {width, dark = false}) {
+  await page.setViewportSize({width, height: 900});
+  await page.goto(origin);
+  await page.evaluate(async darkMode => {
+    await import("/custom_components/si_grid_monitor/frontend/dashboard.js");
+    document.documentElement.style.cssText = `font-size:18px;--primary-text-color:${darkMode ? "#eee" : "#222"};--secondary-text-color:${darkMode ? "#ccc" : "#555"};--card-background-color:${darkMode ? "#222" : "#fff"};--primary-background-color:${darkMode ? "#111" : "#fafafa"}`;
+    const labels = ["00:00+02:00", "01:00+02:00", "02:00+02:00", "02:00+01:00",
+      ...Array.from({length: 21}, (_, index) => `${String(index + 3).padStart(2, "0")}:00+01:00`)];
+    const hours = labels.map((label, index) => ({
+      start_utc: new Date(Date.UTC(2026, 9, 24, 22 + index)).toISOString(),
+      local_datetime: `2026-10-25T${label}`,
+      block: index < 8 ? 3 : 4,
+      as_recorded_target_kw: null,
+      current_configuration_target_kw: 4.2,
+      historical_configuration_target_kw: null,
+      as_recorded_source: "unavailable",
+      as_recorded_reason: "missing_archive_record",
+      rule_status: "official",
+      rule_version: "si-2026",
+      season: "lower",
+      day_type: "nonworking",
+      holiday_name: null,
+      utc_offset_seconds: index <= 2 ? 7200 : 3600,
+      fold: index === 3 ? 1 : 0,
+    }));
+    const panel = document.createElement("si-grid-monitor-panel");
+    panel._loaded = true;
+    panel._hass = {language: "en"};
+    panel._entries = [{entry_id: "meter", title: "Main Grid"}];
+    panel._entryId = "meter";
+    panel._tab = "calendar";
+    panel._selectedDate = "2026-10-25";
+    panel._calendar = {date: "2026-10-25", day_classification: "nonworking",
+      season: "lower", holiday_name: null, hours};
+    panel._selectedHourUtc = hours[3].start_utc;
+    panel._calendarAlignSelection = true;
+    document.body.append(panel);
+    window.testPanel = panel;
+  }, dark);
+}
+
 for (const width of [320, 360, 390, 430, 768, 1280]) {
   for (const dark of [false, true]) {
     test(`rendered HISTORY geometry at ${width}px, ${dark ? "dark" : "light"}`, async () => {
@@ -259,6 +300,9 @@ for (const width of [320, 360, 390, 430, 768, 1280]) {
       const layout = await page.evaluate(() => {
         const root = window.testPanel.shadowRoot;
         const periods = [...root.querySelectorAll(".contract-period")];
+        const desktop = root.querySelector(".contract-desktop");
+        const mobile = root.querySelector(".contract-mobile-list");
+        const metrics = root.querySelector(".contracts-status .metrics");
         return {
           pageWidth: document.documentElement.scrollWidth,
           viewport: innerWidth,
@@ -268,6 +312,9 @@ for (const width of [320, 360, 390, 430, 768, 1280]) {
           clipped: periods.some(node => node.scrollWidth > node.clientWidth + 1),
           gap: root.querySelector(".contract-gap")?.textContent,
           tabsScrollable: root.querySelector("nav").scrollWidth >= root.querySelector("nav").clientWidth,
+          desktopVisible: desktop?.getBoundingClientRect().height > 0,
+          mobileVisible: mobile?.getBoundingClientRect().height > 0,
+          metricColumns: getComputedStyle(metrics).gridTemplateColumns.split(" ").length,
         };
       });
       assert.ok(layout.pageWidth <= layout.viewport, JSON.stringify(layout));
@@ -277,6 +324,15 @@ for (const width of [320, 360, 390, 430, 768, 1280]) {
       assert.equal(layout.clipped, false);
       assert.match(layout.gap, /Not configured/);
       assert.equal(layout.tabsScrollable, true);
+      if (width <= 700) {
+        assert.equal(layout.desktopVisible, false);
+        assert.equal(layout.mobileVisible, true);
+        assert.ok(layout.metricColumns <= (width <= 340 ? 1 : 2));
+      } else {
+        assert.equal(layout.desktopVisible, true);
+        assert.equal(layout.mobileVisible, false);
+        assert.ok(layout.metricColumns >= 2);
+      }
     } finally { await page.close(); }
   });
 }
@@ -295,6 +351,45 @@ for (const width of [320, 768, 1280]) {
       await page.locator("si-grid-monitor-panel select[data-entry]").selectOption("garage");
       assert.equal(await page.locator("si-grid-monitor-panel nav button").first().textContent(), "PREGLED");
       assert.equal(await page.evaluate(() => localStorage.getItem("si_grid_monitor.dashboard_language.v1")), "sl");
+    } finally { await page.close(); }
+  });
+}
+
+for (const width of [320, 1280]) {
+  test(`Tariff Calendar preserves the repeated DST hour and scroll at ${width}px`, async () => {
+    const page = await browser.newPage();
+    try {
+      await calendarFixture(page, {width, dark: width === 320});
+      const initial = await page.evaluate(() => {
+        const root = window.testPanel.shadowRoot;
+        const timeline = root.querySelector(".timeline");
+        const hours = [...timeline.querySelectorAll("[data-hour]")];
+        const repeated = hours.filter(node => node.querySelector("b")?.textContent === "02:00");
+        const selected = timeline.querySelector(".selected");
+        return {count: hours.length, repeated: repeated.map(node => node.textContent),
+          selected: selected?.dataset.hour, scroll: timeline.scrollLeft,
+          pageWidth: document.documentElement.scrollWidth, viewport: innerWidth};
+      });
+      assert.equal(initial.count, 25);
+      assert.equal(initial.repeated.length, 2);
+      assert.match(initial.repeated[0], /UTC\+2/);
+      assert.match(initial.repeated[1], /UTC\+1/);
+      assert.ok(initial.selected);
+      assert.ok(initial.pageWidth <= initial.viewport);
+      const preserved = await page.evaluate(() => {
+        const panel = window.testPanel;
+        const timeline = panel.shadowRoot.querySelector(".timeline");
+        timeline.scrollLeft = 240;
+        timeline.dispatchEvent(new Event("scroll"));
+        panel._render();
+        const rerendered = panel.shadowRoot.querySelector(".timeline");
+        return {scroll: rerendered.scrollLeft,
+          selected: rerendered.querySelector(".selected")?.dataset.hour,
+          detail: panel.shadowRoot.querySelector("[data-calendar-details]")?.textContent};
+      });
+      assert.ok(preserved.scroll >= 200);
+      assert.equal(preserved.selected, initial.selected);
+      assert.match(preserved.detail, /02:00/);
     } finally { await page.close(); }
   });
 }

@@ -9,6 +9,7 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from functools import partial
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT
@@ -49,6 +50,12 @@ from .const import (
     CONF_PENDING_CONTRACT_AUDIT,
     CONF_POSITIVE_MEANS_IMPORT,
     CONF_POWER_ENTITY,
+    CONF_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS,
+    CONF_PUBLISHING_ENERGY_DEADBAND_KWH,
+    CONF_PUBLISHING_FAST_ENTITIES,
+    CONF_PUBLISHING_POWER_DEADBAND_KW,
+    CONF_PUBLISHING_PROFILE,
+    CONF_PUBLISHING_ROUTINE_INTERVAL_SECONDS,
     CONF_RETENTION,
     CONF_SAFETY_MARGIN_KW,
     CONF_SIMULATION_ENABLED,
@@ -62,6 +69,11 @@ from .const import (
     CONF_TARGET_B4_KW,
     CONF_TARGET_B5_KW,
     CONF_TARGET_KW,
+    DEFAULT_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS,
+    DEFAULT_PUBLISHING_ENERGY_DEADBAND_KWH,
+    DEFAULT_PUBLISHING_POWER_DEADBAND_KW,
+    DEFAULT_PUBLISHING_PROFILE,
+    DEFAULT_PUBLISHING_ROUTINE_INTERVAL_SECONDS,
     DEFAULT_RETENTION,
     DEFAULT_SAFETY_MARGIN_KW,
     DEFAULT_SMOOTHING_SECONDS,
@@ -90,6 +102,7 @@ from .engine import (
     PowerSample,
     quarter_bounds,
 )
+from .publishing import PublicationState, PublishingClass, PublishingController, PublishingSettings
 from .reconstruction import audit_summary, plan_reconstruction
 from .sustained import SustainedForecast, calculate_sustained_forecast
 from .tariffs import SlovenianTariffCalendar, TariffClassification
@@ -174,6 +187,7 @@ class GridMonitorRuntime:
         self.sustained_status_reason: str | None = None
         self.archived_last_completed: ArchivedQuarterSnapshot | None = None
         self._listeners: set[Callable[[], None]] = set()
+        self.publishing = PublishingController(PublishingSettings.from_mapping(configured))
         self._unsubscribers: list[Callable[[], None]] = []
         self.namespace = entry.entry_id
         self.archive = QuarterArchive(
@@ -228,7 +242,7 @@ class GridMonitorRuntime:
         )
 
     @property
-    def settings(self) -> dict[str, float | int | bool | str]:
+    def settings(self) -> dict[str, Any]:
         """Return effective editable settings."""
 
         data = {**self.entry.data, **self.entry.options}
@@ -257,6 +271,34 @@ class GridMonitorRuntime:
                     DEFAULT_SUSTAINED_HORIZON_MINUTES,
                 )
             ),
+            CONF_PUBLISHING_PROFILE: str(
+                data.get(CONF_PUBLISHING_PROFILE, DEFAULT_PUBLISHING_PROFILE)
+            ),
+            CONF_PUBLISHING_ROUTINE_INTERVAL_SECONDS: int(
+                data.get(
+                    CONF_PUBLISHING_ROUTINE_INTERVAL_SECONDS,
+                    DEFAULT_PUBLISHING_ROUTINE_INTERVAL_SECONDS,
+                )
+            ),
+            CONF_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS: int(
+                data.get(
+                    CONF_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS,
+                    DEFAULT_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS,
+                )
+            ),
+            CONF_PUBLISHING_POWER_DEADBAND_KW: float(
+                data.get(
+                    CONF_PUBLISHING_POWER_DEADBAND_KW,
+                    DEFAULT_PUBLISHING_POWER_DEADBAND_KW,
+                )
+            ),
+            CONF_PUBLISHING_ENERGY_DEADBAND_KWH: float(
+                data.get(
+                    CONF_PUBLISHING_ENERGY_DEADBAND_KWH,
+                    DEFAULT_PUBLISHING_ENERGY_DEADBAND_KWH,
+                )
+            ),
+            CONF_PUBLISHING_FAST_ENTITIES: data.get(CONF_PUBLISHING_FAST_ENTITIES, []),
         }
 
     @property
@@ -855,6 +897,9 @@ class GridMonitorRuntime:
                 _LOGGER.exception("Failed to remove SI Grid Monitor runtime listener")
         self._unsubscribers.clear()
         self._listeners.clear()
+        publishing = getattr(self, "publishing", None)
+        if publishing is not None:
+            publishing.clear()
         try:
             await self._archive_tasks.cancel_and_wait(self._backfill_task)
         except Exception as err:
@@ -905,6 +950,18 @@ class GridMonitorRuntime:
             self._listeners.discard(listener)
 
         return remove
+
+    @callback
+    def add_publishing_listener(
+        self,
+        entity_key: str,
+        publishing_class: PublishingClass,
+        state_reader: Callable[[], PublicationState],
+        listener: Callable[[], None],
+    ) -> Callable[[], None]:
+        """Register an entity with the centralized publication controller."""
+
+        return self.publishing.register(entity_key, publishing_class, state_reader, listener)
 
     @callback
     def _async_state_changed(self, event: Event) -> None:
@@ -1012,6 +1069,7 @@ class GridMonitorRuntime:
             else None
         )
         if self.engine.bounds is None:
+            self.publishing.process(now_utc)
             for listener in tuple(self._listeners):
                 listener()
             return
@@ -1093,6 +1151,7 @@ class GridMonitorRuntime:
                     _LOGGER.info("Sustained forecast unavailable: %s", err)
         self._drain_completed()
         self._checkpoint_if_due(now)
+        self.publishing.process(now_utc)
         for listener in tuple(self._listeners):
             listener()
 

@@ -191,6 +191,8 @@
         "title": "Nastavitve SI Grid Monitor",
         "menu_options": {
           "settings": "Nastavitve meritev in izračuna",
+          "data_publishing": "Objavljanje podatkov",
+          "restore_publishing_defaults": "Obnovi priporočene nastavitve objavljanja",
           "legacy_mode_d": "Informacije o nadgradnji podedovanega načina D",
           "assignments": "Upravljanje dodelitev dogovorjene moči",
           "add_assignment": "Dodaj dodelitev dogovorjene moči",
@@ -234,6 +236,36 @@
           "simulation_enabled": "Uporabi začasni primerjalni prag, ne da bi spremenili distributerjeve dodelitve B1–B5. Simulirani rezultati niso potrjena pogodbena statistika.",
           "simulation_target_kw": "Začasni prag v kW velja samo med simulacijo. Ne prepiše časovno omejenih dodelitev ali arhivske provenience."
         }
+      },
+      "data_publishing": {
+        "title": "Objavljanje podatkov",
+        "description": "Nadzira objavljanje stanj v Home Assistantu brez spreminjanja sekundnih izračunov, arhiva zaključenih četrtin ali identitet entitet. Privzeto je priporočen profil Optimizirano shranjevanje.",
+        "data": {
+          "publishing_profile": "Profil objavljanja",
+          "publishing_routine_interval_seconds": "Interval običajnega objavljanja",
+          "publishing_actionable_interval_seconds": "Interval uporabnih objav",
+          "publishing_power_deadband_kw": "Mrtvo območje moči",
+          "publishing_energy_deadband_kwh": "Mrtvo območje energije",
+          "publishing_fast_entities": "Hitre entitete za avtomatizacije"
+        },
+        "data_description": {
+          "publishing_profile": "Optimizirano shranjevanje cilja na inženirski proračun 1 GB/leto za dva merilnika. Prednost avtomatizacij lahko ta proračun preseže.",
+          "publishing_routine_interval_seconds": "Največja pogostost spremenjenih nadzornih in diagnostičnih stanj. Enaka stanja se nikoli ne zapisujejo kot utrip.",
+          "publishing_actionable_interval_seconds": "Običajna pogostost uporabnih vrednosti. Prehodi čez nič ter kritični prehodi ostanejo takojšnji.",
+          "publishing_power_deadband_kw": "Manjše spremembe kW pod to vrednostjo se združijo.",
+          "publishing_energy_deadband_kwh": "Manjše spremembe kWh pod to vrednostjo se združijo.",
+          "publishing_fast_entities": "Izbrane entitete objavijo vsako pomembno spremembo. To poveča izhod Recorderja in InfluxDB."
+        }
+      },
+      "publishing_preview": {
+        "title": "Pregled vpliva objavljanja",
+        "description": "Profil: {profile}\nOcenjeni izhod dveh merilnikov: {annual_mb} MB/leto ({budget_pct} % proračuna 1 GB). To je načrtovalna ocena in ne zajamčena fizična zasedenost zbirke.",
+        "data": {"confirm": "Uporabi nastavitve objavljanja"},
+        "data_description": {"confirm": "Potrdite po pregledu načrtovalne ocene za dva merilnika in razmerja med avtomatizacijami ter shranjevanjem."}
+      },
+      "restore_publishing_defaults": {
+        "title": "Obnovi priporočene nastavitve objavljanja",
+        "description": "Obnovi profil Optimizirano shranjevanje. Izračuni, pogodbeni urniki, arhivi in identitete entitet se ne spremenijo."
       },
       "archive_removal": {
         "title": "Ravnanje z arhivom ob odstranitvi merilnika",
@@ -376,6 +408,13 @@
     }
   },
   "selector": {
+    "publishing_profile": {
+      "options": {
+        "storage_optimized": "Optimizirano shranjevanje (priporočeno)",
+        "automation_priority": "Prednost avtomatizacij",
+        "custom": "Po meri"
+      }
+    },
     "preferred_language": {
       "options": {
         "en": "English",

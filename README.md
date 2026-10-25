@@ -30,6 +30,9 @@ load controller.
 - Multiple independent meter entries behind one shared sidebar panel.
 - Three-decimal kW/kWh presentation without reducing stored precision.
 - English and Slovenian configuration and dashboard terminology.
+- Centralized, per-meter entity publishing that keeps one-second calculations
+  while coalescing routine Home Assistant state events. The default Storage
+  Optimized profile needs no SI Grid Monitor Recorder/InfluxDB YAML exclusions.
 
 Exported energy is recorded separately where the selected source measures it.
 It never offsets imported energy when calculating contractual quarter demand.
@@ -73,6 +76,10 @@ their original quality and provenance.
 - **[History and archive safety](docs/history-and-archive.md)**,
   **[data quality](docs/data-quality.md)** and
   **[troubleshooting](docs/troubleshooting.md)**.
+- **[Data publishing and storage](docs/data-publishing-and-storage.md)** — profiles,
+  automation trade-offs, diagnostics and the measured two-meter budget.
+- **[Manual legacy-data cleanup](docs/manual-storage-cleanup.md)** — backup-first
+  guidance for data created by older releases; V1.0.3 never deletes it automatically.
 - **[Slovenščina: hiter začetek](docs/sl/zacetek.md)** and
   **[slovenski vodnik](docs/sl/vodnik.md)**.
 

@@ -21,6 +21,52 @@ Automated tests cover flow order, migration, Options preservation, WebSocket
 metadata and browser-state behavior. Companion App rendering and native dialog
 presentation still require real Home Assistant validation.
 
+## V1.0.3 publishing and storage acceptance
+
+1. Before upgrading, record Recorder and InfluxDB sizes plus state-change counts
+   for both meters. Keep current temporary exclusions until validation completes.
+2. Upgrade without removing entries. Confirm entity IDs, unique IDs, archive row
+   counts, schema 7, contracts, audits and source epochs remain unchanged.
+3. With **Storage Optimized**, run both meters for at least 24 hours through
+   import, zero, export, quarter/tariff transitions, source stale/recovery and a
+   safe simulated warning. Confirm internal quarter energy remains accurate while
+   stable entities do not produce one-second Home Assistant history.
+4. In Overview → **Data Publishing & Storage**, compare hour/day/week scopes for
+   each meter and both combined. Confirm cycles continue near 60/minute, routine
+   publications are much lower, critical transitions appear within one internal
+   calculation cycle, and estimates are labelled estimates.
+5. Switch to Automation Priority for one test meter. Verify the warning and
+   increased event rate, then use Restore Recommended Defaults. Confirm no new
+   contract audit/configuration epoch, no entity recreation and no archive change.
+6. Configure a harmless numeric-state automation against a selected Custom fast
+   entity. Verify its documented cadence. Confirm arbitrary thresholds on other
+   coalesced values are not described as one-second fresh.
+7. Inspect Recorder attributes and InfluxDB writes. Coverage/source-age timing
+   details must not recreate a one-second stream. No SI Grid Monitor-specific
+   exclusions should be required after independent validation.
+8. Measure physical growth for the real 60-day Recorder and unlimited-retention
+   InfluxDB installation. CI's benchmark projects about 650.9 MB/year for two
+   meters, but real database engines, compression and indexes require this check.
+9. Only after success, remove temporary exclusions deliberately. Use the
+   backup-first manual guide for old data; confirm V1.0.3 itself performs no
+   purge, VACUUM, retention change or InfluxDB deletion.
+
+## V1.0.3 mobile Contracts and calendar acceptance
+
+1. At 320/360/390/430/768/1280 px, English/Slovenian and light/dark themes,
+   verify separate contract status cards, readable timeline periods and no
+   joined label/value text or whole-page overflow.
+2. On phones confirm archived target evidence and audit events use readable
+   cards. Expand technical details; full IDs/JSON must not force page overflow.
+   On desktop confirm full tables and pagination remain available.
+3. Select Sunday 25 October 2026. Confirm 25 hour tiles and two distinct 02:00
+   entries with UTC+2/UTC+1. Select the second occurrence, scroll deliberately
+   and refresh: the same-date position/selection remains. Change date: the
+   timeline realigns to the selected/default hour.
+4. Verify the spring DST day contains 23 hours/92 quarters and no fabricated
+   archived target. `Not archived`, historical inference and current
+   configuration must remain distinct.
+
 ## V1.0.1 native OptionsFlow hotfix
 
 1. Configure two independent A/B/C meters with different friendly names and

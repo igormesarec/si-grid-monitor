@@ -138,6 +138,7 @@ async def async_setup_dashboard(hass: HomeAssistant) -> None:
             ws_tariff_status,
             ws_transitions,
             ws_archive_status,
+            ws_publishing,
         ):
             websocket_api.async_register_command(hass, handler)
         domain_data[DATA_COMMANDS_READY] = True
@@ -178,6 +179,70 @@ def async_unregister_panel(hass: HomeAssistant) -> None:
 @callback
 def ws_entries(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
     connection.send_result(msg["id"], {"entries": _entry_list(hass), "version": VERSION})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/publishing",
+        vol.Optional("entry_id"): str,
+        vol.Optional("window_seconds", default=3600): vol.In((3600, 86400, 604800)),
+    }
+)
+@callback
+def ws_publishing(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
+    """Return bounded in-memory publication diagnostics without scanning Recorder."""
+
+    runtimes = hass.data.get(DOMAIN, {}).get(DATA_RUNTIMES, {})
+    selected = msg.get("entry_id")
+    if selected is not None:
+        runtime = runtimes.get(selected)
+        selected_runtimes = [(selected, runtime)] if runtime is not None else []
+    else:
+        selected_runtimes = list(runtimes.items())
+    now_utc = datetime.now(UTC)
+    meters: list[dict[str, Any]] = []
+    for entry_id, runtime in selected_runtimes:
+        publishing = getattr(runtime, "publishing", None)
+        if publishing is None:
+            continue
+        metrics = publishing.diagnostics(now_utc, int(msg["window_seconds"]))
+        meters.append(
+            {
+                "entry_id": entry_id,
+                "title": runtime.entry.title,
+                **metrics,
+            }
+        )
+    totals = {
+        "calculation_cycles_per_minute": sum(
+            item["calculation_cycles_per_minute"] for item in meters
+        ),
+        "publications_per_minute": sum(item["publications_per_minute"] for item in meters),
+        "publications_in_window": sum(item["publications_in_window"] for item in meters),
+        "suppressed_unchanged": sum(item["suppressed_unchanged"] for item in meters),
+        "suppressed_policy": sum(item["suppressed_policy"] for item in meters),
+        "suppressed_attribute_only": sum(item["suppressed_attribute_only"] for item in meters),
+        "critical_publications": sum(item["critical_publications"] for item in meters),
+        "estimated_total_bytes_per_year": sum(
+            item["estimated_total_bytes_per_year"] for item in meters
+        ),
+    }
+    totals["budget_bytes_per_year"] = 1_000_000_000
+    totals["budget_utilization_pct"] = (
+        totals["estimated_total_bytes_per_year"] / totals["budget_bytes_per_year"] * 100
+    )
+    connection.send_result(
+        msg["id"],
+        {
+            "window_seconds": int(msg["window_seconds"]),
+            "meter_count": len(meters),
+            "meters": meters,
+            "totals": totals,
+            "estimate_notice": (
+                "Estimated outbound contribution; not actual Recorder or InfluxDB disk allocation"
+            ),
+        },
+    )
 
 
 _ENTRY_SCHEMA = {vol.Optional("entry_id"): str}

@@ -36,6 +36,30 @@ A meter's configuration is **independent of other SI Grid Monitor meters**. Repl
 | Temporary simulation | **Off** | Enables what-if threshold calculations; simulated results do not become confirmed contractual statistics |
 | Simulation threshold | A chosen kW value | Inactive while simulation is off; does not overwrite dated distributor assignments |
 
+## Data Publishing / Objavljanje podatkov
+
+The calculation engine always continues its one-second work. These settings
+control only when an entity publishes a new Home Assistant state event.
+
+- **Storage Optimized (default):** immediate critical and availability
+  transitions, change-only configuration states, and coalesced routine values.
+  This is the benchmarked profile and normally needs no integration-specific
+  Recorder or InfluxDB exclusion.
+- **Automation Priority:** shorter publication intervals for users whose
+  third-party automations need fresher published values. More events can exceed
+  the documented storage budget.
+- **Custom:** configure routine/actionable intervals, kW/kWh deadbands and an
+  explicit list of fast entity keys. Review the predicted two-meter storage
+  impact before confirming.
+
+**Restore recommended defaults** changes publishing policy only. It does not
+recreate entities, change calculations, create a contract epoch or audit event,
+or modify archive rows. Existing entity IDs remain stable. Numeric-state
+automations evaluate the last *published* state, not every internal calculation;
+critical SI Grid Monitor state transitions remain immediate.
+
+See [Data publishing and storage](data-publishing-and-storage.md).
+
 A screen may still display a simulation threshold field even when simulation is off; that stored number is **not active** unless enabled.
 
 ### Smoothing versus sustained horizon

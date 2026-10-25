@@ -59,6 +59,13 @@ V1.0.2 contract management is the current merged application. V1.0.3 localizatio
 remains a draft release candidate until it passes real Home Assistant acceptance.
 Use a copied/test Home Assistant instance until the release candidate is accepted.
 
+V1.0.3 also defaults to **Storage Optimized** entity publishing. No SI Grid
+Monitor-specific Recorder or InfluxDB YAML exclusions are required for a normal
+new installation. If an older installation already uses temporary exclusions,
+leave them in place until the optimized event rate is validated; then follow the
+[manual cleanup and exclusion-removal guide](manual-storage-cleanup.md). Updating
+does not purge existing historical database rows.
+
 ### Backup first
 
 1. Create a full Home Assistant backup.

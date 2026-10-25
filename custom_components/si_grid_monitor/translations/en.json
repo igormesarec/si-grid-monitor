@@ -191,6 +191,8 @@
         "title": "SI Grid Monitor settings",
         "menu_options": {
           "settings": "Calculation and meter settings",
+          "data_publishing": "Data Publishing / Objavljanje podatkov",
+          "restore_publishing_defaults": "Restore recommended publishing defaults",
           "legacy_mode_d": "Legacy Mode D upgrade information",
           "assignments": "Manage contracted-power assignments",
           "add_assignment": "Add contracted-power assignment",
@@ -234,6 +236,36 @@
           "simulation_enabled": "Use a temporary comparison threshold without changing the distributor-assigned B1–B5 schedule. Simulated results never count as confirmed contractual statistics.",
           "simulation_target_kw": "Temporary kW threshold used only while simulation is enabled. It does not overwrite dated contracted-power assignments or archived provenance."
         }
+      },
+      "data_publishing": {
+        "title": "Data Publishing",
+        "description": "Controls Home Assistant state publication without changing one-second calculations, completed-quarter archive data or entity identities. Storage Optimized is the recommended default.",
+        "data": {
+          "publishing_profile": "Publishing profile",
+          "publishing_routine_interval_seconds": "Routine publication interval",
+          "publishing_actionable_interval_seconds": "Actionable publication interval",
+          "publishing_power_deadband_kw": "Power deadband",
+          "publishing_energy_deadband_kwh": "Energy deadband",
+          "publishing_fast_entities": "Fast automation entities"
+        },
+        "data_description": {
+          "publishing_profile": "Storage Optimized targets the two-meter 1 GB/year engineering budget. Automation Priority publishes selected values faster and may exceed it. Custom uses the controls below.",
+          "publishing_routine_interval_seconds": "Maximum cadence for changed monitoring and diagnostic states. Identical states are never written as a heartbeat.",
+          "publishing_actionable_interval_seconds": "Normal cadence for changed CAN ADD, MUST REDUCE and forecast values. Zero crossings and critical transitions remain immediate.",
+          "publishing_power_deadband_kw": "Minor kW changes below this value are coalesced until another meaningful change occurs.",
+          "publishing_energy_deadband_kwh": "Minor kWh changes below this value are coalesced until another meaningful change occurs.",
+          "publishing_fast_entities": "Selected entities publish every meaningful value change. Faster third-party automation evaluation increases Recorder and InfluxDB output."
+        }
+      },
+      "publishing_preview": {
+        "title": "Review publishing impact",
+        "description": "Profile: {profile}\nEstimated two-meter output: {annual_mb} MB/year ({budget_pct}% of the 1 GB engineering budget). This is a planning estimate, not guaranteed physical database allocation.",
+        "data": {"confirm": "Apply publishing settings"},
+        "data_description": {"confirm": "Confirm after reviewing the two-meter planning estimate and automation/storage trade-off."}
+      },
+      "restore_publishing_defaults": {
+        "title": "Restore recommended publishing defaults",
+        "description": "Restores Storage Optimized publication controls. Calculations, contract schedules, archives and entity identities are unchanged."
       },
       "archive_removal": {
         "title": "Archive behavior when this meter is removed",
@@ -376,6 +408,13 @@
     }
   },
   "selector": {
+    "publishing_profile": {
+      "options": {
+        "storage_optimized": "Storage Optimized (recommended)",
+        "automation_priority": "Automation Priority",
+        "custom": "Custom"
+      }
+    },
     "preferred_language": {
       "options": {
         "en": "English",

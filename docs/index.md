@@ -56,6 +56,9 @@ Permanent per-meter SQLite archive and measurement-quality audit
 
 **Manage and troubleshoot:** [History and archives](history-and-archive.md) · [Multiple meters](multiple-meters.md) · [Troubleshooting](troubleshooting.md) · [FAQ](faq.md) · [Glossary](glossary.md)
 
+**Storage:** [Data publishing and storage](data-publishing-and-storage.md) ·
+[Manual legacy-data cleanup](manual-storage-cleanup.md)
+
 **Technical:** [Architecture](developer-architecture.md) · [Testing](testing-and-validation.md) · [Limitations and roadmap](limitations-and-roadmap.md)
 
 **Slovenščina:** [Hiter začetek](sl/zacetek.md) · [Uporaba in razlaga](sl/vodnik.md)

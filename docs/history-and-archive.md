@@ -55,6 +55,16 @@ reports but requires disk monitoring and independent backups. "Forever" does
 not mean immune to filesystem failure, deliberate deletion or lost HA backups.
 
 See [Multiple meters](multiple-meters.md), [Dashboard guide](dashboard-guide.md), [Testing](testing-and-validation.md).
+
+## Home Assistant history versus the SI Grid Monitor archive
+
+The compact schema-7 quarter archive is not the source of the previously
+observed Recorder/InfluxDB growth. Older releases could publish many entity and
+attribute updates per second. V1.0.3 separates calculation from publication;
+archive retention therefore stays independent from Home Assistant Recorder
+retention. The integration does not purge old Recorder/InfluxDB data or edit
+their configuration. See [Data publishing](data-publishing-and-storage.md) and
+the [manual cleanup guide](manual-storage-cleanup.md).
 # Contract audit and immutable quarter evidence
 
 Schema 7 adds an append-only, per-meter contract-edit audit. It does not alter

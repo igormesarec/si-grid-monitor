@@ -36,9 +36,12 @@ from custom_components.si_grid_monitor.const import (
     CONF_EXPORT_POWER_ENTITY,
     CONF_IMPORT_POWER_ENTITY,
     CONF_METER_NAME,
+    CONF_PENDING_CONTRACT_AUDIT,
     CONF_POSITIVE_MEANS_IMPORT,
     CONF_POWER_ENTITY,
     CONF_PREFERRED_LANGUAGE,
+    CONF_PUBLISHING_PROFILE,
+    CONF_PUBLISHING_ROUTINE_INTERVAL_SECONDS,
     CONF_SAFETY_MARGIN_KW,
     CONF_SIMULATION_ENABLED,
     CONF_SIMULATION_TARGET_KW,
@@ -1310,6 +1313,8 @@ def test_native_options_menu_remains_available_with_dashboard_panel() -> None:
     assert result["step_id"] == "init"
     assert result["menu_options"] == [
         "settings",
+        "data_publishing",
+        "restore_publishing_defaults",
         "assignments",
         "add_assignment",
         "archive_removal",
@@ -1552,6 +1557,40 @@ def test_v103_options_language_update_preserves_meter_and_archive_configuration(
     assert result["data"][CONF_PREFERRED_LANGUAGE] == "sl"
     assert result["data"][CONF_CONTRACTED_POWER_PERIODS] == schedule.to_json()
     assert result["data"]["archive_marker"] == "preserve"
+
+
+def test_v103_publishing_update_preserves_contract_and_audit_configuration() -> None:
+    """Publication cadence is not a measurement or contract configuration epoch."""
+
+    _ensure_config_flow_stubs()
+    from custom_components.si_grid_monitor.config_flow import SIGridMonitorOptionsFlow
+
+    schedule = ContractedPowerSchedule(
+        (
+            ContractedPowerPeriod(
+                date(2026, 1, 1),
+                date(2026, 12, 31),
+                (3.5, 3.9, 4.1, 4.2, 4.2),
+                "distributor_record",
+            ),
+        )
+    )
+    entry = _options_flow_entry(schedule)
+    entry.options[CONF_PENDING_CONTRACT_AUDIT] = {"event_id": "preserve"}
+    flow = SIGridMonitorOptionsFlow()
+    flow.config_entry = entry
+    flow.async_create_entry = lambda **kwargs: kwargs  # type: ignore[method-assign]
+
+    result = flow._save(
+        {
+            CONF_PUBLISHING_PROFILE: "automation_priority",
+            CONF_PUBLISHING_ROUTINE_INTERVAL_SECONDS: 60,
+        }
+    )
+
+    assert result["data"][CONF_CONTRACTED_POWER_PERIODS] == schedule.to_json()
+    assert result["data"][CONF_PENDING_CONTRACT_AUDIT] == {"event_id": "preserve"}
+    assert result["data"][CONF_PUBLISHING_PROFILE] == "automation_priority"
 
 
 def test_migrated_mode_a_keeps_the_v09_configuration_epoch_identity(tmp_path: Path) -> None:
