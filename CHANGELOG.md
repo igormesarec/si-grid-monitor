@@ -26,10 +26,13 @@ All notable changes to SI Grid Monitor will be documented here.
 - Reduced changing public attributes and marked retained high-frequency
   diagnostic attributes unrecorded, protecting both Recorder and InfluxDB by
   preventing the underlying HA state events rather than relying on exclusions.
-- Added a deterministic two-meter disk-allocation benchmark: 86,400 one-second
-  cycles per meter and a representative seven-day SQLite allocation project
-  approximately 650.9 MB/year combined (251.8 MB Recorder-like storage,
-  399.1 MB conservative Influx estimate), below the 1 GB engineering budget.
+- Added a deterministic two-meter full-day real-entity benchmark using actual
+  native values, availability and attributes. Recorder-like allocation plus an
+  explicitly unverified InfluxDB allowance and archive allowance project about
+  510.5 MB/year; physical InfluxDB 1.x storage remains a manual acceptance item.
+- Removed a per-second tariff wall-clock attribute, limited zero-crossing bypass
+  to CAN ADD/MUST REDUCE signals with hysteresis, and added prompt/rearmed
+  large-change handling without changing the one-second calculation engine.
 - Reworked Contracts evidence/audit content into mobile cards while retaining
   desktop tables, and corrected calendar scroll alignment and repeated-hour offsets.
 

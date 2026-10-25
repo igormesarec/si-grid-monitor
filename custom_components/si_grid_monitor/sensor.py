@@ -728,7 +728,11 @@ class SIGridSensor(SensorEntity):
                         "rule_status": tariff.rule_status.value,
                         "source_reference": tariff.source_url,
                         "holiday_name": tariff.holiday_name,
-                        "local_datetime": tariff.local_datetime,
+                        # Do not expose the classification wall clock. Runtime
+                        # classification runs every second and that timestamp
+                        # would turn otherwise stable configuration entities
+                        # into one-second Recorder streams. Offset and fold are
+                        # material at DST boundaries and remain published.
                         "utc_offset_seconds": tariff.utc_offset_seconds,
                         "fold": tariff.fold,
                     }

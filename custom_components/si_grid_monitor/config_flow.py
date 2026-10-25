@@ -39,6 +39,8 @@ from .const import (
     CONF_POSITIVE_MEANS_IMPORT,
     CONF_POWER_ENTITY,
     CONF_PREFERRED_LANGUAGE,
+    CONF_PUBLISHING_ACTIONABLE_DELTA_KW,
+    CONF_PUBLISHING_ACTIONABLE_HYSTERESIS_KW,
     CONF_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS,
     CONF_PUBLISHING_ENERGY_DEADBAND_KWH,
     CONF_PUBLISHING_FAST_ENTITIES,
@@ -55,6 +57,8 @@ from .const import (
     CONF_TARGET_KW,
     CONF_TARGET_MODE,
     DEFAULT_PREFERRED_LANGUAGE,
+    DEFAULT_PUBLISHING_ACTIONABLE_DELTA_KW,
+    DEFAULT_PUBLISHING_ACTIONABLE_HYSTERESIS_KW,
     DEFAULT_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS,
     DEFAULT_PUBLISHING_ENERGY_DEADBAND_KWH,
     DEFAULT_PUBLISHING_POWER_DEADBAND_KW,
@@ -848,6 +852,12 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
                 CONF_PUBLISHING_ENERGY_DEADBAND_KWH: float(
                     user_input[CONF_PUBLISHING_ENERGY_DEADBAND_KWH]
                 ),
+                CONF_PUBLISHING_ACTIONABLE_DELTA_KW: float(
+                    user_input[CONF_PUBLISHING_ACTIONABLE_DELTA_KW]
+                ),
+                CONF_PUBLISHING_ACTIONABLE_HYSTERESIS_KW: float(
+                    user_input[CONF_PUBLISHING_ACTIONABLE_HYSTERESIS_KW]
+                ),
                 CONF_PUBLISHING_FAST_ENTITIES: list(
                     user_input.get(CONF_PUBLISHING_FAST_ENTITIES, [])
                 ),
@@ -920,6 +930,32 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
                             min=0.0, max=10.0, step=0.001, unit_of_measurement="kWh"
                         )
                     ),
+                    vol.Required(
+                        CONF_PUBLISHING_ACTIONABLE_DELTA_KW,
+                        default=float(
+                            current.get(
+                                CONF_PUBLISHING_ACTIONABLE_DELTA_KW,
+                                DEFAULT_PUBLISHING_ACTIONABLE_DELTA_KW,
+                            )
+                        ),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.0, max=10.0, step=0.001, unit_of_measurement="kW"
+                        )
+                    ),
+                    vol.Required(
+                        CONF_PUBLISHING_ACTIONABLE_HYSTERESIS_KW,
+                        default=float(
+                            current.get(
+                                CONF_PUBLISHING_ACTIONABLE_HYSTERESIS_KW,
+                                DEFAULT_PUBLISHING_ACTIONABLE_HYSTERESIS_KW,
+                            )
+                        ),
+                    ): selector.NumberSelector(
+                        selector.NumberSelectorConfig(
+                            min=0.0, max=1.0, step=0.001, unit_of_measurement="kW"
+                        )
+                    ),
                     vol.Optional(
                         CONF_PUBLISHING_FAST_ENTITIES,
                         default=list(current.get(CONF_PUBLISHING_FAST_ENTITIES, [])),
@@ -974,6 +1010,10 @@ class SIGridMonitorOptionsFlow(config_entries.OptionsFlow):
                 ),
                 CONF_PUBLISHING_POWER_DEADBAND_KW: DEFAULT_PUBLISHING_POWER_DEADBAND_KW,
                 CONF_PUBLISHING_ENERGY_DEADBAND_KWH: DEFAULT_PUBLISHING_ENERGY_DEADBAND_KWH,
+                CONF_PUBLISHING_ACTIONABLE_DELTA_KW: DEFAULT_PUBLISHING_ACTIONABLE_DELTA_KW,
+                CONF_PUBLISHING_ACTIONABLE_HYSTERESIS_KW: (
+                    DEFAULT_PUBLISHING_ACTIONABLE_HYSTERESIS_KW
+                ),
                 CONF_PUBLISHING_FAST_ENTITIES: [],
             }
         )

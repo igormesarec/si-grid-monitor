@@ -1073,15 +1073,43 @@ test("publishing diagnostics render bounded estimates without adding a ninth tab
     meter_count: 2,
     meters: [{title: "Main Grid", profile: "storage_optimized",
       top_entities: [{entity_key: "current_power", count: 4}]}],
-    totals: {calculation_cycles_per_minute: 120, publications_per_minute: 1.5,
+    totals: {internal_timer_ticks_per_minute: 120, publishing_evaluations_per_minute: 124,
+      publications_per_minute: 1.5,
       suppressed_unchanged: 1000, suppressed_policy: 400, critical_publications: 2,
-      estimated_total_bytes_per_year: 651000000, budget_utilization_pct: 65.1},
+      estimated_total_bytes_per_year: 510500000, budget_utilization_pct: 51.05,
+      estimate_status: "ready", event_history_truncated: false,
+      influxdb_physical_storage_verified: false},
   };
   const html = panel._publishingView();
   assert.match(html, /Data Publishing &amp; Storage/);
-  assert.match(html, /651\.0/);
+  assert.match(html, /510\.5/);
+  assert.match(html, /InfluxDB 1\.x physical storage remains unverified/);
   assert.match(html, /current_power/);
   assert.equal((panel._render.toString().match(/"contracts", "calendar"/g) || []).length, 1);
+});
+
+test("publishing diagnostics distinguish warmup, truncation, and unverified InfluxDB", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._language = "en";
+  panel._publishing = {
+    meter_count: 1,
+    meters: [{title: "Main Grid", profile: "storage_optimized", top_entities: []}],
+    totals: {
+      internal_timer_ticks_per_minute: 60,
+      publishing_evaluations_per_minute: 63,
+      publications_per_minute: 0.5,
+      estimated_total_bytes_per_year: null,
+      budget_utilization_pct: null,
+      estimate_status: "warming_up",
+      event_history_truncated: true,
+      influxdb_physical_storage_verified: false,
+    },
+  };
+  const html = panel._publishingView();
+  assert.match(html, /Annual estimates require at least one hour/);
+  assert.match(html, /event history was truncated/);
+  assert.match(html, /InfluxDB 1\.x physical storage remains unverified/);
+  assert.doesNotMatch(html, /0\.0 MB\/year/);
 });
 
 test("Contracts provides mobile cards while retaining desktop evidence tables", () => {

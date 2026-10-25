@@ -32,9 +32,11 @@ presentation still require real Home Assistant validation.
    safe simulated warning. Confirm internal quarter energy remains accurate while
    stable entities do not produce one-second Home Assistant history.
 4. In Overview → **Data Publishing & Storage**, compare hour/day/week scopes for
-   each meter and both combined. Confirm cycles continue near 60/minute, routine
-   publications are much lower, critical transitions appear within one internal
-   calculation cycle, and estimates are labelled estimates.
+   each meter and both combined. Confirm timer ticks remain near 60/minute,
+   publishing evaluations can be higher when source reports arrive, routine
+   publications are much lower, and critical transitions are prompt. During the
+   first hour the annual estimate must say it is warming up; a truncated event
+   window must be visibly flagged.
 5. Switch to Automation Priority for one test meter. Verify the warning and
    increased event rate, then use Restore Recommended Defaults. Confirm no new
    contract audit/configuration epoch, no entity recreation and no archive change.
@@ -45,8 +47,11 @@ presentation still require real Home Assistant validation.
    details must not recreate a one-second stream. No SI Grid Monitor-specific
    exclusions should be required after independent validation.
 8. Measure physical growth for the real 60-day Recorder and unlimited-retention
-   InfluxDB installation. CI's benchmark projects about 650.9 MB/year for two
-   meters, but real database engines, compression and indexes require this check.
+   InfluxDB installation. CI's real-entity workload projects about 510.5 MB/year
+   for two meters, but its InfluxDB component is an unverified allowance—not a
+   physical measurement. Follow the non-destructive commands in
+   `docs/data-publishing-and-storage.md`; record event counts, filesystem growth,
+   series cardinality and unrelated writers.
 9. Only after success, remove temporary exclusions deliberately. Use the
    backup-first manual guide for old data; confirm V1.0.3 itself performs no
    purge, VACUUM, retention change or InfluxDB deletion.

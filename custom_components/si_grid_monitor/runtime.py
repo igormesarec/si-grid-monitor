@@ -50,6 +50,8 @@ from .const import (
     CONF_PENDING_CONTRACT_AUDIT,
     CONF_POSITIVE_MEANS_IMPORT,
     CONF_POWER_ENTITY,
+    CONF_PUBLISHING_ACTIONABLE_DELTA_KW,
+    CONF_PUBLISHING_ACTIONABLE_HYSTERESIS_KW,
     CONF_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS,
     CONF_PUBLISHING_ENERGY_DEADBAND_KWH,
     CONF_PUBLISHING_FAST_ENTITIES,
@@ -69,6 +71,8 @@ from .const import (
     CONF_TARGET_B4_KW,
     CONF_TARGET_B5_KW,
     CONF_TARGET_KW,
+    DEFAULT_PUBLISHING_ACTIONABLE_DELTA_KW,
+    DEFAULT_PUBLISHING_ACTIONABLE_HYSTERESIS_KW,
     DEFAULT_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS,
     DEFAULT_PUBLISHING_ENERGY_DEADBAND_KWH,
     DEFAULT_PUBLISHING_POWER_DEADBAND_KW,
@@ -296,6 +300,18 @@ class GridMonitorRuntime:
                 data.get(
                     CONF_PUBLISHING_ENERGY_DEADBAND_KWH,
                     DEFAULT_PUBLISHING_ENERGY_DEADBAND_KWH,
+                )
+            ),
+            CONF_PUBLISHING_ACTIONABLE_DELTA_KW: float(
+                data.get(
+                    CONF_PUBLISHING_ACTIONABLE_DELTA_KW,
+                    DEFAULT_PUBLISHING_ACTIONABLE_DELTA_KW,
+                )
+            ),
+            CONF_PUBLISHING_ACTIONABLE_HYSTERESIS_KW: float(
+                data.get(
+                    CONF_PUBLISHING_ACTIONABLE_HYSTERESIS_KW,
+                    DEFAULT_PUBLISHING_ACTIONABLE_HYSTERESIS_KW,
                 )
             ),
             CONF_PUBLISHING_FAST_ENTITIES: data.get(CONF_PUBLISHING_FAST_ENTITIES, []),
@@ -969,6 +985,7 @@ class GridMonitorRuntime:
 
     @callback
     def _async_tick(self, now) -> None:
+        self.publishing.record_internal_timer_tick()
         self._refresh(now)
 
     @callback

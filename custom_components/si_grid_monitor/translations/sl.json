@@ -246,6 +246,8 @@
           "publishing_actionable_interval_seconds": "Interval uporabnih objav",
           "publishing_power_deadband_kw": "Mrtvo območje moči",
           "publishing_energy_deadband_kwh": "Mrtvo območje energije",
+          "publishing_actionable_delta_kw": "Nujna sprememba uporabne vrednosti",
+          "publishing_actionable_hysteresis_kw": "Histereza ničle uporabne vrednosti",
           "publishing_fast_entities": "Hitre entitete za avtomatizacije"
         },
         "data_description": {
@@ -254,6 +256,8 @@
           "publishing_actionable_interval_seconds": "Običajna pogostost uporabnih vrednosti. Prehodi čez nič ter kritični prehodi ostanejo takojšnji.",
           "publishing_power_deadband_kw": "Manjše spremembe kW pod to vrednostjo se združijo.",
           "publishing_energy_deadband_kwh": "Manjše spremembe kWh pod to vrednostjo se združijo.",
+          "publishing_actionable_delta_kw": "Sprememba CAN ADD ali MUST REDUCE s tolikšno ali večjo razliko v kW se objavi pri naslednjem vrednotenju. Ponovne nujne objave se omogočijo po petih minutah.",
+          "publishing_actionable_hysteresis_kw": "CAN ADD in MUST REDUCE se takoj vključita šele nad tem pragom v kW; vrnitev na nič ostane takojšnja.",
           "publishing_fast_entities": "Izbrane entitete objavijo vsako pomembno spremembo. To poveča izhod Recorderja in InfluxDB."
         }
       },

@@ -246,6 +246,8 @@
           "publishing_actionable_interval_seconds": "Actionable publication interval",
           "publishing_power_deadband_kw": "Power deadband",
           "publishing_energy_deadband_kwh": "Energy deadband",
+          "publishing_actionable_delta_kw": "Urgent actionable change",
+          "publishing_actionable_hysteresis_kw": "Actionable zero hysteresis",
           "publishing_fast_entities": "Fast automation entities"
         },
         "data_description": {
@@ -254,6 +256,8 @@
           "publishing_actionable_interval_seconds": "Normal cadence for changed CAN ADD, MUST REDUCE and forecast values. Zero crossings and critical transitions remain immediate.",
           "publishing_power_deadband_kw": "Minor kW changes below this value are coalesced until another meaningful change occurs.",
           "publishing_energy_deadband_kwh": "Minor kWh changes below this value are coalesced until another meaningful change occurs.",
+          "publishing_actionable_delta_kw": "A CAN ADD or MUST REDUCE change at or above this kW difference is published on the next evaluation. Repeated urgent publications are rearmed after five minutes.",
+          "publishing_actionable_hysteresis_kw": "CAN ADD and MUST REDUCE activate immediately only after rising above this kW threshold; clearing to zero remains immediate.",
           "publishing_fast_entities": "Selected entities publish every meaningful value change. Faster third-party automation evaluation increases Recorder and InfluxDB output."
         }
       },

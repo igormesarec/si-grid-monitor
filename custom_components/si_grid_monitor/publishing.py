@@ -16,12 +16,16 @@ from enum import StrEnum
 from typing import Any
 
 from .const import (
+    CONF_PUBLISHING_ACTIONABLE_DELTA_KW,
+    CONF_PUBLISHING_ACTIONABLE_HYSTERESIS_KW,
     CONF_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS,
     CONF_PUBLISHING_ENERGY_DEADBAND_KWH,
     CONF_PUBLISHING_FAST_ENTITIES,
     CONF_PUBLISHING_POWER_DEADBAND_KW,
     CONF_PUBLISHING_PROFILE,
     CONF_PUBLISHING_ROUTINE_INTERVAL_SECONDS,
+    DEFAULT_PUBLISHING_ACTIONABLE_DELTA_KW,
+    DEFAULT_PUBLISHING_ACTIONABLE_HYSTERESIS_KW,
     DEFAULT_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS,
     DEFAULT_PUBLISHING_ENERGY_DEADBAND_KWH,
     DEFAULT_PUBLISHING_POWER_DEADBAND_KW,
@@ -33,6 +37,16 @@ from .const import (
 
 STORAGE_BUDGET_BYTES_PER_YEAR = 1_000_000_000
 SECONDS_PER_YEAR = 365 * 24 * 60 * 60
+MIN_ESTIMATE_OBSERVATION_SECONDS = 3600
+URGENT_ACTIONABLE_REARM_SECONDS = 300
+ACTIONABLE_ZERO_TRANSITION_KEYS = frozenset(
+    {
+        "can_add_power",
+        "must_reduce_power",
+        "sustained_can_add_power",
+        "sustained_must_reduce_power",
+    }
+)
 
 
 class PublishingClass(StrEnum):
@@ -63,6 +77,8 @@ class PublishingSettings:
     actionable_interval_seconds: int
     power_deadband_kw: float
     energy_deadband_kwh: float
+    actionable_delta_kw: float
+    actionable_hysteresis_kw: float
     fast_entities: frozenset[str]
 
     @classmethod
@@ -113,6 +129,24 @@ class PublishingSettings:
             actionable_interval_seconds=max(1, actionable),
             power_deadband_kw=max(0.0, power_deadband),
             energy_deadband_kwh=max(0.0, energy_deadband),
+            actionable_delta_kw=max(
+                0.0,
+                float(
+                    data.get(
+                        CONF_PUBLISHING_ACTIONABLE_DELTA_KW,
+                        DEFAULT_PUBLISHING_ACTIONABLE_DELTA_KW,
+                    )
+                ),
+            ),
+            actionable_hysteresis_kw=max(
+                0.0,
+                float(
+                    data.get(
+                        CONF_PUBLISHING_ACTIONABLE_HYSTERESIS_KW,
+                        DEFAULT_PUBLISHING_ACTIONABLE_HYSTERESIS_KW,
+                    )
+                ),
+            ),
             fast_entities=fast,
         )
 
@@ -127,6 +161,7 @@ class _Registration:
     last_fingerprint: str | None = None
     last_attributes_fingerprint: str | None = None
     last_published_utc: datetime | None = None
+    last_urgent_utc: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -144,8 +179,10 @@ class PublishingController:
         self.settings = settings
         self._registrations: dict[str, _Registration] = {}
         self._events: deque[_PublicationEvent] = deque(maxlen=50_000)
+        self._event_history_truncated = False
         self.started_utc = datetime.now(UTC)
-        self.calculation_cycles = 0
+        self.publishing_evaluations = 0
+        self.internal_timer_ticks = 0
         self.publications = 0
         self.suppressed_unchanged = 0
         self.suppressed_policy = 0
@@ -176,10 +213,10 @@ class PublishingController:
         self._registrations.clear()
 
     def process(self, now_utc: datetime) -> None:
-        """Evaluate all policies after one internal calculation cycle."""
+        """Evaluate policies after a timer tick or source-triggered refresh."""
 
         now_utc = now_utc.astimezone(UTC)
-        self.calculation_cycles += 1
+        self.publishing_evaluations += 1
         for registration in tuple(self._registrations.values()):
             state = registration.reader()
             fingerprint, attributes_fingerprint, payload_bytes = _fingerprint(state)
@@ -193,12 +230,21 @@ class PublishingController:
             registration.last_fingerprint = fingerprint
             registration.last_attributes_fingerprint = attributes_fingerprint
             registration.last_published_utc = now_utc
+            if critical and registration.publishing_class == PublishingClass.ACTIONABLE:
+                registration.last_urgent_utc = now_utc
             self.publications += 1
             self.critical_publications += int(critical)
+            if self._events.maxlen is not None and len(self._events) == self._events.maxlen:
+                self._event_history_truncated = True
             self._events.append(
                 _PublicationEvent(now_utc, registration.key, payload_bytes, critical)
             )
         self._discard_old_events(now_utc)
+
+    def record_internal_timer_tick(self) -> None:
+        """Record the actual one-second runtime timer independently of evaluations."""
+
+        self.internal_timer_ticks += 1
 
     def _should_publish(
         self,
@@ -228,9 +274,24 @@ class PublishingController:
             return True, False
         if registration.key in self.settings.fast_entities and changed_value:
             return True, False
-        if _zero_transition(previous.value, state.value):
-            return True, registration.publishing_class == PublishingClass.ACTIONABLE
         elapsed = (now_utc - registration.last_published_utc).total_seconds()
+        if registration.key in ACTIONABLE_ZERO_TRANSITION_KEYS and _actionable_zero_transition(
+            previous.value,
+            state.value,
+            self.settings.actionable_hysteresis_kw,
+        ):
+            return True, True
+        if (
+            registration.key in ACTIONABLE_ZERO_TRANSITION_KEYS
+            and changed_value
+            and (
+                registration.last_urgent_utc is None
+                or (now_utc - registration.last_urgent_utc).total_seconds()
+                >= URGENT_ACTIONABLE_REARM_SECONDS
+            )
+            and _numeric_delta(previous.value, state.value) >= self.settings.actionable_delta_kw
+        ):
+            return True, True
         interval = self._interval_for(registration.publishing_class)
         if elapsed < interval:
             self.suppressed_policy += 1
@@ -277,7 +338,8 @@ class PublishingController:
         )
         payload = sum(event.payload_bytes for event in events)
         event_count = len(events)
-        annual_factor = SECONDS_PER_YEAR / observed_seconds
+        estimate_ready = observed_seconds >= MIN_ESTIMATE_OBSERVATION_SECONDS
+        annual_factor = SECONDS_PER_YEAR / observed_seconds if estimate_ready else 0.0
         # Recorder estimate includes a conservative row/index allowance; the
         # Influx estimate represents state/field/series protocol overhead. The
         # dashboard labels both as estimates rather than physical allocation.
@@ -285,13 +347,19 @@ class PublishingController:
         recorder_bytes = annual_payload + event_count * 240 * annual_factor
         influx_bytes = event_count * 140 * annual_factor
         archive_bytes = 40_000_000  # dense schema-7 quarter/audit allowance per meter/year
-        annual_total = int(recorder_bytes + influx_bytes + archive_bytes)
+        annual_total = (
+            int(recorder_bytes + influx_bytes + archive_bytes) if estimate_ready else None
+        )
         top = Counter(event.key for event in events).most_common(10)
         return {
             "profile": self.settings.profile,
             "window_seconds": window_seconds,
-            "calculation_cycles": self.calculation_cycles,
-            "calculation_cycles_per_minute": self.calculation_cycles
+            "publishing_evaluations": self.publishing_evaluations,
+            "publishing_evaluations_per_minute": self.publishing_evaluations
+            / max(1.0, (now_utc - self.started_utc).total_seconds())
+            * 60,
+            "internal_timer_ticks": self.internal_timer_ticks,
+            "internal_timer_ticks_per_minute": self.internal_timer_ticks
             / max(1.0, (now_utc - self.started_utc).total_seconds())
             * 60,
             "publications": self.publications,
@@ -303,14 +371,22 @@ class PublishingController:
             "critical_publications": self.critical_publications,
             "payload_bytes_in_window": payload,
             "top_entities": [{"entity_key": key, "count": count} for key, count in top],
-            "estimated_recorder_bytes_per_year": int(recorder_bytes),
-            "estimated_influxdb_bytes_per_year": int(influx_bytes),
+            "estimated_recorder_bytes_per_year": int(recorder_bytes) if estimate_ready else None,
+            "estimated_influxdb_bytes_per_year": int(influx_bytes) if estimate_ready else None,
             "estimated_archive_bytes_per_year": archive_bytes,
             "estimated_total_bytes_per_year": annual_total,
             "budget_bytes_per_year": STORAGE_BUDGET_BYTES_PER_YEAR,
-            "budget_utilization_pct": annual_total / STORAGE_BUDGET_BYTES_PER_YEAR * 100,
+            "budget_utilization_pct": (
+                annual_total / STORAGE_BUDGET_BYTES_PER_YEAR * 100
+                if annual_total is not None
+                else None
+            ),
+            "estimate_status": "ready" if estimate_ready else "warming_up",
+            "event_history_truncated": self._event_history_truncated,
+            "influxdb_physical_storage_verified": False,
             "estimate_method": (
-                "observed entity payload plus conservative Recorder/InfluxDB overhead"
+                "observed entity payload plus Recorder-like SQLite allocation; "
+                "InfluxDB is an unverified planning allowance"
             ),
             "policy_active_since_utc": self.started_utc.isoformat(),
         }
@@ -335,10 +411,18 @@ def _fingerprint(state: PublicationState) -> tuple[str, str, int]:
     return payload, _attributes_fingerprint(state.attributes), len(payload.encode("utf-8"))
 
 
-def _zero_transition(previous: Any, current: Any) -> bool:
+def _actionable_zero_transition(previous: Any, current: Any, hysteresis_kw: float) -> bool:
     if not isinstance(previous, (int, float)) or not isinstance(current, (int, float)):
         return False
-    return (previous <= 0 < current) or (previous > 0 >= current)
+    return (previous <= hysteresis_kw and current > hysteresis_kw) or (
+        previous > hysteresis_kw and current <= 0
+    )
+
+
+def _numeric_delta(previous: Any, current: Any) -> float:
+    if not isinstance(previous, (int, float)) or not isinstance(current, (int, float)):
+        return 0.0
+    return abs(float(current) - float(previous))
 
 
 def _meaningful_delta(

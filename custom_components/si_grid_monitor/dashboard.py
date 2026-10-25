@@ -214,8 +214,11 @@ def ws_publishing(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> 
             }
         )
     totals = {
-        "calculation_cycles_per_minute": sum(
-            item["calculation_cycles_per_minute"] for item in meters
+        "publishing_evaluations_per_minute": sum(
+            item["publishing_evaluations_per_minute"] for item in meters
+        ),
+        "internal_timer_ticks_per_minute": sum(
+            item["internal_timer_ticks_per_minute"] for item in meters
         ),
         "publications_per_minute": sum(item["publications_per_minute"] for item in meters),
         "publications_in_window": sum(item["publications_in_window"] for item in meters),
@@ -223,13 +226,24 @@ def ws_publishing(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> 
         "suppressed_policy": sum(item["suppressed_policy"] for item in meters),
         "suppressed_attribute_only": sum(item["suppressed_attribute_only"] for item in meters),
         "critical_publications": sum(item["critical_publications"] for item in meters),
-        "estimated_total_bytes_per_year": sum(
-            item["estimated_total_bytes_per_year"] for item in meters
+        "estimated_total_bytes_per_year": (
+            sum(item["estimated_total_bytes_per_year"] for item in meters)
+            if meters and all(item["estimated_total_bytes_per_year"] is not None for item in meters)
+            else None
         ),
+        "estimate_status": (
+            "ready"
+            if meters and all(item["estimate_status"] == "ready" for item in meters)
+            else "warming_up"
+        ),
+        "event_history_truncated": any(item["event_history_truncated"] for item in meters),
+        "influxdb_physical_storage_verified": False,
     }
     totals["budget_bytes_per_year"] = 1_000_000_000
     totals["budget_utilization_pct"] = (
         totals["estimated_total_bytes_per_year"] / totals["budget_bytes_per_year"] * 100
+        if totals["estimated_total_bytes_per_year"] is not None
+        else None
     )
     connection.send_result(
         msg["id"],
@@ -239,7 +253,8 @@ def ws_publishing(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> 
             "meters": meters,
             "totals": totals,
             "estimate_notice": (
-                "Estimated outbound contribution; not actual Recorder or InfluxDB disk allocation"
+                "Recorder-like estimate after at least one hour; InfluxDB physical storage is "
+                "unverified until measured on an isolated InfluxDB 1.x instance"
             ),
         },
     )

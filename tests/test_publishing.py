@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections import deque
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -59,7 +60,7 @@ def test_one_second_calculation_does_not_publish_identical_state() -> None:
     for second in range(3600):
         controller.process(start + timedelta(seconds=second))
 
-    assert controller.calculation_cycles == 3600
+    assert controller.publishing_evaluations == 3600
     assert len(writes) == 1
     assert controller.suppressed_unchanged == 3599
 
@@ -127,6 +128,106 @@ def test_actionable_zero_crossing_is_immediate() -> None:
     mutable["value"] = 0.0
     controller.process(start + timedelta(seconds=2))
     assert writes == [0.0, 0.5, 0.0]
+
+
+def test_monitoring_power_near_zero_cannot_bypass_interval() -> None:
+    controller = PublishingController(_settings())
+    mutable = {"value": -0.01}
+    writes: list[float] = []
+    controller.register(
+        "current_power",
+        PublishingClass.MONITORING,
+        lambda: PublicationState(mutable["value"], True, {}),
+        lambda: writes.append(mutable["value"]),
+    )
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    controller.process(start)
+    for second in range(1, 300):
+        mutable["value"] = 0.01 if second % 2 else -0.01
+        controller.process(start + timedelta(seconds=second))
+    assert writes == [-0.01]
+
+
+def test_actionable_hysteresis_and_large_change_latency() -> None:
+    controller = PublishingController(_settings())
+    mutable = {"value": 0.0}
+    writes: list[tuple[int, float]] = []
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    now = start
+    controller.register(
+        "can_add_power",
+        PublishingClass.ACTIONABLE,
+        lambda: PublicationState(mutable["value"], True, {}),
+        lambda: writes.append((int((now - start).total_seconds()), mutable["value"])),
+    )
+    controller.process(start)
+    for second, value in ((1, 0.01), (2, 0.04), (3, 0.051)):
+        now = start + timedelta(seconds=second)
+        mutable["value"] = value
+        controller.process(now)
+    assert writes == [(0, 0.0), (3, 0.051)]
+
+    mutable["value"] = 2.5
+    now = start + timedelta(seconds=4)
+    controller.process(now)
+    assert writes[-1] == (3, 0.051)
+
+    urgent = PublishingController(_settings())
+    urgent_value = {"value": 0.1}
+    urgent_writes: list[float] = []
+    urgent.register(
+        "can_add_power",
+        PublishingClass.ACTIONABLE,
+        lambda: PublicationState(urgent_value["value"], True, {}),
+        lambda: urgent_writes.append(urgent_value["value"]),
+    )
+    urgent.process(start)
+    urgent_value["value"] = 2.5
+    urgent.process(start + timedelta(seconds=1))
+    assert urgent_writes == [0.1, 2.5]
+
+
+def test_diagnostics_warmup_and_timer_tick_accounting() -> None:
+    controller = PublishingController(_settings())
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    controller.started_utc = start
+    controller.register(
+        "current_power",
+        PublishingClass.MONITORING,
+        lambda: PublicationState(1.0, True, {}),
+        lambda: None,
+    )
+    for second in range(60):
+        controller.record_internal_timer_tick()
+        controller.process(start + timedelta(seconds=second))
+        controller.process(start + timedelta(seconds=second, milliseconds=500))
+    warmup = controller.diagnostics(start + timedelta(minutes=1))
+    assert warmup["internal_timer_ticks"] == 60
+    assert warmup["publishing_evaluations"] == 120
+    assert warmup["estimate_status"] == "warming_up"
+    assert warmup["estimated_total_bytes_per_year"] is None
+    assert warmup["influxdb_physical_storage_verified"] is False
+
+
+def test_bounded_event_history_reports_truncation() -> None:
+    controller = PublishingController(_settings())
+    controller._events = deque(maxlen=2)
+    mutable = {"value": False}
+    controller.register(
+        "projected_exceedance",
+        PublishingClass.CRITICAL,
+        lambda: PublicationState(mutable["value"], True, {}),
+        lambda: None,
+    )
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    controller.started_utc = start
+    for second in range(4):
+        mutable["value"] = bool(second % 2)
+        controller.process(start + timedelta(seconds=second))
+    metrics = controller.diagnostics(start + timedelta(hours=1))
+    assert metrics["event_history_truncated"] is True
+    assert metrics["publications"] == 4
+    assert metrics["publications_in_window"] == 2
 
 
 def test_profiles_and_default_two_meter_plan_are_bounded() -> None:

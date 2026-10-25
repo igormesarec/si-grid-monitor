@@ -234,7 +234,8 @@ def test_entries_command_exposes_each_meter_installation_language() -> None:
 
 def test_publishing_command_aggregates_selected_meter_without_recorder_scan() -> None:
     metrics = {
-        "calculation_cycles_per_minute": 60.0,
+        "publishing_evaluations_per_minute": 62.0,
+        "internal_timer_ticks_per_minute": 60.0,
         "publications_per_minute": 1.5,
         "publications_in_window": 90,
         "suppressed_unchanged": 1000,
@@ -242,6 +243,8 @@ def test_publishing_command_aggregates_selected_meter_without_recorder_scan() ->
         "suppressed_attribute_only": 25,
         "critical_publications": 2,
         "estimated_total_bytes_per_year": 320_000_000,
+        "estimate_status": "ready",
+        "event_history_truncated": False,
     }
     runtimes = {
         "entry-a": SimpleNamespace(
@@ -265,6 +268,9 @@ def test_publishing_command_aggregates_selected_meter_without_recorder_scan() ->
     assert connection.result["meters"][0]["title"] == "Meter B"
     assert connection.result["totals"]["publications_in_window"] == 90
     assert connection.result["totals"]["budget_utilization_pct"] == 32.0
+    assert connection.result["totals"]["publishing_evaluations_per_minute"] == 62.0
+    assert connection.result["totals"]["internal_timer_ticks_per_minute"] == 60.0
+    assert connection.result["totals"]["influxdb_physical_storage_verified"] is False
 
 
 def test_history_commands_use_real_sqlite_rows_and_preserve_archive(tmp_path: Path) -> None:
