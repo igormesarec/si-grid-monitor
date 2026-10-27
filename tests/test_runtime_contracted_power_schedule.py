@@ -286,6 +286,28 @@ def test_mode_b_timestamp_skew_is_unavailable_without_pairing_stale_channel(tmp_
     assert len(runtime.engine.buffer.samples) == 0
     assert len(refreshed) == 1
 
+    recovered_export = types.SimpleNamespace(
+        state="0",
+        attributes={"unit_of_measurement": "W"},
+        last_reported=now + timedelta(seconds=1),
+        last_updated=now + timedelta(seconds=1),
+    )
+    recovered_import = types.SimpleNamespace(
+        state="800",
+        attributes={"unit_of_measurement": "W"},
+        last_reported=now + timedelta(seconds=1),
+        last_updated=now + timedelta(seconds=1),
+    )
+    runtime._ingest_power_states(  # type: ignore[arg-type]
+        recovered_import, recovered_export
+    )
+    assert runtime.source_available is True
+    assert runtime.source_status_reason is None
+    assert runtime.engine.last_sample is not None
+    assert runtime.engine.last_sample.import_kw == pytest.approx(0.8)
+    assert runtime.engine.last_sample.export_kw == pytest.approx(0.0)
+    assert len(refreshed) == 2
+
 
 def test_dashboard_masks_untrusted_live_advice_but_keeps_accumulated_energy(tmp_path) -> None:
     runtime, _schedule = _runtime(tmp_path)
@@ -309,6 +331,62 @@ def test_dashboard_masks_untrusted_live_advice_but_keeps_accumulated_energy(tmp_
     assert unavailable["projection"]["must_reduce_kw"] is None  # type: ignore[index]
     assert unavailable["projection"]["projected_exceedance"] is None  # type: ignore[index]
     assert unavailable["sustained"]["quality"] == "unavailable"  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    "source_overrides",
+    (
+        {},
+        {
+            CONF_SOURCE_MODE: SOURCE_SEPARATE_POWER,
+            CONF_IMPORT_POWER_ENTITY: "sensor.import",
+            CONF_EXPORT_POWER_ENTITY: "sensor.export",
+        },
+        {
+            CONF_SOURCE_MODE: SOURCE_IMPORT_ONLY,
+            CONF_IMPORT_POWER_ENTITY: "sensor.import",
+        },
+    ),
+    ids=("mode-a", "mode-b", "mode-c"),
+)
+def test_silent_source_loss_becomes_stale_at_engine_boundary_and_recovers(
+    tmp_path, source_overrides
+) -> None:
+    runtime, _schedule = _runtime(tmp_path, **source_overrides)
+    start = _local_utc(2026, 10, 18, 12, 0)
+    runtime.engine = FixedQuarterEngine(stale_after_seconds=60, source_id=runtime.engine.source_id)
+    runtime.engine.ingest(PowerSample(start, 1.0, import_kw=1.0, export_kw=0.0, export_known=True))
+    runtime._checkpoint_if_due = lambda _now: None  # type: ignore[method-assign]
+    runtime.source_available = True
+    runtime.source_status_reason = None
+
+    for seconds, expected_stale in ((59, False), (60, False), (61, True)):
+        runtime._refresh(start + timedelta(seconds=seconds))
+        current = runtime.dashboard_current()
+        assert current["power"]["input_stale"] is expected_stale  # type: ignore[index]
+        if expected_stale:
+            assert current["projection"]["projected_exceedance"] is None  # type: ignore[index]
+
+    assert runtime.snapshot is not None
+    assert runtime.snapshot.quarter_import_kwh == pytest.approx(1.0 / 60)
+    assert runtime.snapshot.coverage_seconds == pytest.approx(60)
+    assert runtime.snapshot.gap_seconds == pytest.approx(1)
+
+    runtime.engine.ingest(
+        PowerSample(
+            start + timedelta(seconds=62),
+            1.0,
+            import_kw=1.0,
+            export_kw=0.0,
+            export_known=True,
+        )
+    )
+    runtime._refresh(start + timedelta(seconds=62))
+    recovered = runtime.dashboard_current()
+    assert recovered["power"]["input_stale"] is False  # type: ignore[index]
+    assert recovered["power"]["signed_kw"] == pytest.approx(1.0)  # type: ignore[index]
+    assert runtime.snapshot.gap_seconds == pytest.approx(2)
+    assert runtime.snapshot.quality == DataQuality.INCOMPLETE
 
 
 def test_dashboard_finds_real_fixture_b4_to_b3_lower_target(tmp_path) -> None:

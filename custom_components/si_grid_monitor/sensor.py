@@ -441,9 +441,9 @@ SENSORS: tuple[SIGridSensorDescription, ...] = (
 # inherit calculation-rate publication.
 SENSOR_PUBLISHING_POLICIES: dict[str, PublishingClass] = {
     "source_mode": PublishingClass.CONFIGURATION,
-    "current_power": PublishingClass.MONITORING,
-    "import_power": PublishingClass.MONITORING,
-    "export_power": PublishingClass.MONITORING,
+    "current_power": PublishingClass.CURRENT_MEASUREMENT,
+    "import_power": PublishingClass.CURRENT_MEASUREMENT,
+    "export_power": PublishingClass.CURRENT_MEASUREMENT,
     "net_power_15m_rolling": PublishingClass.MONITORING,
     "import_power_15m_rolling": PublishingClass.MONITORING,
     "smoothed_signed_power": PublishingClass.MONITORING,
@@ -452,7 +452,7 @@ SENSOR_PUBLISHING_POLICIES: dict[str, PublishingClass] = {
     "current_interval_signed_average": PublishingClass.MONITORING,
     "last_completed_15m_import_demand": PublishingClass.CONFIGURATION,
     "last_completed_15m_signed_average": PublishingClass.CONFIGURATION,
-    "quarter_import_kwh_so_far": PublishingClass.MONITORING,
+    "quarter_import_kwh_so_far": PublishingClass.QUARTER_ACCUMULATION,
     "quarter_export_kwh_so_far": PublishingClass.MONITORING,
     "target_kw": PublishingClass.CONFIGURATION,
     "current_tariff_block": PublishingClass.CONFIGURATION,
@@ -499,6 +499,9 @@ _DYNAMIC_UNRECORDED_ATTRIBUTES = frozenset(
         "smoothing_gap_seconds",
         "limiting_quarter_start",
         "limiting_quarter_end",
+        "quarter_elapsed_seconds",
+        "quarter_start_utc",
+        "quarter_end_utc",
     }
 )
 
@@ -673,6 +676,7 @@ class SIGridSensor(SensorEntity):
             "current_interval_signed_average",
             "quarter_import_kwh_so_far",
             "quarter_export_kwh_so_far",
+            "quarter_budget_remaining_kwh",
         }:
             attributes.update(
                 {
@@ -684,6 +688,9 @@ class SIGridSensor(SensorEntity):
                         if self.runtime.instantaneous_power_known
                         else not self.runtime.source_available
                     ),
+                    "quarter_start_utc": snapshot.bounds.start_utc.isoformat(),
+                    "quarter_end_utc": snapshot.bounds.end_utc.isoformat(),
+                    "quarter_elapsed_seconds": round(snapshot.elapsed_seconds, 3),
                 }
             )
         if snapshot is not None and self.entity_description.key.endswith("15m_rolling"):

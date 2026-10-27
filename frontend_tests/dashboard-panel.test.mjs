@@ -86,7 +86,7 @@ function panelForToday(quarters = [quarter(START_A)]) {
   return panel;
 }
 
-test("installation language initializes dashboard and meter switching does not reset it", () => {
+test("dashboard follows the selected meter preference when there is no explicit override", () => {
   globalThis.localStorage = memoryStorage();
   const panel = new SIGridMonitorPanel();
   panel._reconcileEntries([
@@ -95,7 +95,10 @@ test("installation language initializes dashboard and meter switching does not r
   ]);
   assert.equal(panel._language, "sl");
   panel._activateEntry("meter-b");
-  assert.equal(panel._language, "sl", "meter changes must not change dashboard language");
+  assert.equal(panel._language, "en");
+  panel._entries[1].preferred_language = "sl";
+  panel._activateEntry("meter-b", {remember: false});
+  assert.equal(panel._language, "sl", "a refreshed meter preference must take effect");
 });
 
 test("explicit EN/SL dashboard override persists across panel instances and reloads", () => {
@@ -1081,6 +1084,9 @@ test("publishing diagnostics render bounded estimates without adding a ninth tab
     totals: {internal_timer_ticks_per_minute: 120, publishing_evaluations_per_minute: 124,
       publications_per_minute: 1.5,
       suppressed_unchanged: 1000, suppressed_policy: 400, critical_publications: 2,
+      processing_failures: 3, effective_current_measurement_interval_seconds: 900,
+      effective_quarter_accumulation_interval_seconds: 180,
+      last_successful_publication_utc: "2026-10-25T12:00:00+00:00",
       estimated_total_bytes_per_year: 510500000, budget_utilization_pct: 51.05,
       estimate_status: "ready", event_history_truncated: false,
       influxdb_physical_storage_verified: false},
@@ -1090,6 +1096,8 @@ test("publishing diagnostics render bounded estimates without adding a ninth tab
   assert.match(html, /510\.5/);
   assert.match(html, /InfluxDB 1\.x physical storage remains unverified/);
   assert.match(html, /current_power/);
+  assert.match(html, /Isolated processing failures/);
+  assert.match(html, /Quarter-energy max interval/);
   assert.equal((panel._render.toString().match(/"contracts", "calendar"/g) || []).length, 1);
 });
 

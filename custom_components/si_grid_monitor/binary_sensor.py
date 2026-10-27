@@ -101,9 +101,8 @@ class SIGridBinarySensor(BinarySensorEntity):
             "projected_exceedance",
             "unrecoverable_interval",
         }:
-            if (
-                self.entity_description.key == "projected_exceedance"
-                and not self.runtime.source_available
+            if self.entity_description.key == "projected_exceedance" and (
+                not self.runtime.source_available or snapshot.input_stale
             ):
                 return False
             return self.runtime.current_contractual_available

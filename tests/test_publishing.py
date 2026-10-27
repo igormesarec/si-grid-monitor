@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from collections import deque
 from datetime import UTC, datetime, timedelta
@@ -127,6 +128,9 @@ def test_actionable_zero_crossing_is_immediate() -> None:
     controller.process(start + timedelta(seconds=1))
     mutable["value"] = 0.0
     controller.process(start + timedelta(seconds=2))
+    assert writes == [0.0, 0.5]
+    for second in range(3, 33):
+        controller.process(start + timedelta(seconds=second))
     assert writes == [0.0, 0.5, 0.0]
 
 
@@ -165,12 +169,16 @@ def test_actionable_hysteresis_and_direction_aware_adverse_changes() -> None:
         now = start + timedelta(seconds=second)
         mutable["value"] = value
         controller.process(now)
-    assert writes == [(0, 0.0), (3, 0.051)]
+    assert writes == [(0, 0.0)]
+    for second in range(4, 34):
+        now = start + timedelta(seconds=second)
+        controller.process(now)
+    assert writes == [(0, 0.0), (33, 0.051)]
 
     mutable["value"] = 2.5
-    now = start + timedelta(seconds=4)
+    now = start + timedelta(seconds=34)
     controller.process(now)
-    assert writes[-1] == (3, 0.051)
+    assert writes[-1] == (33, 0.051)
 
     urgent = PublishingController(_settings())
     urgent_value = {"value": 0.2}
@@ -224,6 +232,73 @@ def test_actionable_hysteresis_and_direction_aware_adverse_changes() -> None:
     headroom_value["value"] = 2.2
     headroom.process(start + timedelta(seconds=3))
     assert headroom_writes == [3.0, 2.4, 2.2]
+
+
+def test_actionable_threshold_chatter_is_bounded_for_two_meters_and_all_keys() -> None:
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    results: dict[tuple[int, str], list[tuple[int, float]]] = {}
+    controllers: list[PublishingController] = []
+    values: dict[tuple[int, str], float] = {}
+    keys = (
+        "can_add_power",
+        "must_reduce_power",
+        "sustained_can_add_power",
+        "sustained_must_reduce_power",
+    )
+    now = start
+    for meter in range(2):
+        controller = PublishingController(_settings())
+        controllers.append(controller)
+        for key in keys:
+            identity = (meter, key)
+            values[identity] = 0.0
+            results[identity] = []
+            controller.register(
+                key,
+                PublishingClass.ACTIONABLE,
+                lambda identity=identity: PublicationState(values[identity], True, {}),
+                lambda identity=identity: results[identity].append(
+                    (int((now - start).total_seconds()), values[identity])
+                ),
+            )
+
+    for second in range(3600):
+        now = start + timedelta(seconds=second)
+        for meter in range(2):
+            for key in keys:
+                values[(meter, key)] = 0.0 if second % 2 == 0 else 0.051
+            controllers[meter].process(now)
+
+    for meter in range(2):
+        for key in ("must_reduce_power", "sustained_must_reduce_power"):
+            assert results[(meter, key)] == [(0, 0.0), (1, 0.051)]
+        for key in ("can_add_power", "sustained_can_add_power"):
+            assert results[(meter, key)] == [(0, 0.0)]
+
+
+def test_second_danger_interrupts_pending_safe_clear_immediately() -> None:
+    controller = PublishingController(_settings())
+    mutable = {"value": 0.0}
+    writes: list[tuple[int, float]] = []
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    now = start
+    controller.register(
+        "must_reduce_power",
+        PublishingClass.ACTIONABLE,
+        lambda: PublicationState(mutable["value"], True, {}),
+        lambda: writes.append((int((now - start).total_seconds()), mutable["value"])),
+    )
+    controller.process(now)
+    mutable["value"] = 1.0
+    now = start + timedelta(seconds=1)
+    controller.process(now)
+    mutable["value"] = 0.0
+    now = start + timedelta(seconds=2)
+    controller.process(now)
+    mutable["value"] = 1.6
+    now = start + timedelta(seconds=10)
+    controller.process(now)
+    assert writes == [(0, 0.0), (1, 1.0), (10, 1.6)]
 
 
 def test_projected_exceedance_asserts_immediately_and_safe_clear_is_debounced() -> None:
@@ -280,6 +355,173 @@ def test_callback_failure_does_not_block_other_entities(caplog) -> None:
     controller.process(datetime(2026, 1, 1, tzinfo=UTC))
     assert successful == ["published"]
     assert "callback failed" in caplog.text
+
+
+def test_entire_entity_pipeline_is_isolated_rate_limited_and_recovers(caplog) -> None:
+    controller = PublishingController(PublishingSettings.from_mapping({}))
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    failures = {"reader": True, "serialization": True, "callback": True}
+    healthy: list[str] = []
+    recovered: list[str] = []
+
+    class _BrokenValue:
+        def __str__(self) -> str:
+            raise RuntimeError("serialization failed")
+
+    def broken_reader() -> PublicationState:
+        if failures["reader"]:
+            raise RuntimeError("reader failed")
+        return PublicationState("reader recovered", True, {})
+
+    def callback() -> None:
+        if failures["callback"]:
+            raise RuntimeError("callback failed")
+        recovered.append("callback")
+
+    controller.register(
+        "reader_broken", PublishingClass.CURRENT_MEASUREMENT, broken_reader, lambda: None
+    )
+    controller.register(
+        "serialization_broken",
+        PublishingClass.CURRENT_MEASUREMENT,
+        lambda: PublicationState(
+            "serialization recovered",
+            True,
+            {"bad": _BrokenValue()} if failures["serialization"] else {},
+        ),
+        lambda: recovered.append("serialization"),
+    )
+    controller.register(
+        "callback_broken",
+        PublishingClass.CURRENT_MEASUREMENT,
+        lambda: PublicationState("callback recovered", True, {}),
+        callback,
+    )
+    controller.register(
+        "healthy",
+        PublishingClass.CONFIGURATION,
+        lambda: PublicationState("healthy", True, {}),
+        lambda: healthy.append("published"),
+    )
+
+    caplog.set_level(logging.ERROR)
+    for second in range(3):
+        controller.process(start + timedelta(seconds=second))
+    assert healthy == ["published"]
+    assert controller.processing_failures == 9
+    assert caplog.text.count("reader_broken") == 1
+    assert caplog.text.count("serialization_broken") == 1
+    assert caplog.text.count("callback_broken") == 1
+
+    failures.update(reader=False, serialization=False, callback=False)
+    controller.process(start + timedelta(seconds=3))
+    assert set(recovered) == {"serialization", "callback"}
+    assert controller.publications == 4
+    diagnostics = controller.diagnostics(start + timedelta(hours=1))
+    assert diagnostics["processing_failures"] == 9
+    assert (
+        diagnostics["last_successful_publication_utc"] == (start + timedelta(seconds=3)).isoformat()
+    )
+
+
+def test_diagnostic_bookkeeping_failure_is_isolated_without_duplicate_callback(caplog) -> None:
+    class _FailOnceDeque(deque):
+        failed = False
+
+        def append(self, value: object) -> None:
+            if not self.failed:
+                self.failed = True
+                raise RuntimeError("event bookkeeping failed")
+            super().append(value)
+
+    controller = PublishingController(PublishingSettings.from_mapping({}))
+    controller._events = _FailOnceDeque(maxlen=50_000)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    writes: list[str] = []
+    controller.register(
+        "bookkeeping_broken",
+        PublishingClass.CONFIGURATION,
+        lambda: PublicationState("stable", True, {}),
+        lambda: writes.append("broken callback completed"),
+    )
+    controller.register(
+        "healthy",
+        PublishingClass.CONFIGURATION,
+        lambda: PublicationState("healthy", True, {}),
+        lambda: writes.append("healthy callback completed"),
+    )
+
+    caplog.set_level(logging.ERROR)
+    controller.process(start)
+    controller.process(start + timedelta(seconds=1))
+
+    assert writes == ["broken callback completed", "healthy callback completed"]
+    assert controller.processing_failures == 1
+    assert caplog.text.count("bookkeeping_broken") == 1
+    assert controller.publications == 2
+
+
+def test_failed_actionable_hazard_callback_retries_on_next_evaluation() -> None:
+    controller = PublishingController(_settings())
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    mutable = {"value": 0.0, "fail": False}
+    writes: list[float] = []
+
+    def callback() -> None:
+        if mutable["fail"]:
+            mutable["fail"] = False
+            raise RuntimeError("temporary HA state write failure")
+        writes.append(mutable["value"])
+
+    controller.register(
+        "must_reduce_power",
+        PublishingClass.ACTIONABLE,
+        lambda: PublicationState(mutable["value"], True, {}),
+        callback,
+    )
+    controller.process(start)
+    mutable.update(value=1.0, fail=True)
+    controller.process(start + timedelta(seconds=1))
+    controller.process(start + timedelta(seconds=2))
+
+    assert writes == [0.0, 1.0]
+    assert controller.processing_failures == 1
+
+
+def test_storage_profile_has_bounded_current_and_quarter_freshness() -> None:
+    storage = PublishingController(PublishingSettings.from_mapping({}))
+    automation = PublishingController(
+        PublishingSettings.from_mapping({CONF_PUBLISHING_PROFILE: PUBLISHING_PROFILE_AUTOMATION})
+    )
+    custom = PublishingController(_settings())
+    assert storage._interval_for(PublishingClass.CURRENT_MEASUREMENT) == 900
+    assert storage._interval_for(PublishingClass.QUARTER_ACCUMULATION) == 180
+    assert automation._interval_for(PublishingClass.CURRENT_MEASUREMENT) == 60
+    assert automation._interval_for(PublishingClass.QUARTER_ACCUMULATION) == 60
+    assert custom._interval_for(PublishingClass.CURRENT_MEASUREMENT) == 900
+
+
+def test_quarter_accumulation_resets_immediately_at_canonical_boundary() -> None:
+    controller = PublishingController(PublishingSettings.from_mapping({}))
+    start = datetime(2026, 1, 1, 0, 14, 59, tzinfo=UTC)
+    mutable = {
+        "value": 0.749,
+        "quarter": "2026-01-01T00:00:00+00:00",
+    }
+    writes: list[tuple[float, str]] = []
+    controller.register(
+        "quarter_import_kwh_so_far",
+        PublishingClass.QUARTER_ACCUMULATION,
+        lambda: PublicationState(mutable["value"], True, {"quarter_start_utc": mutable["quarter"]}),
+        lambda: writes.append((mutable["value"], mutable["quarter"])),
+    )
+    controller.process(start)
+    mutable.update(value=0.0, quarter="2026-01-01T00:15:00+00:00")
+    controller.process(start + timedelta(seconds=1))
+    assert writes == [
+        (0.749, "2026-01-01T00:00:00+00:00"),
+        (0.0, "2026-01-01T00:15:00+00:00"),
+    ]
 
 
 def test_diagnostics_warmup_and_timer_tick_accounting() -> None:

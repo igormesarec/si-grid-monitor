@@ -20,6 +20,8 @@ import pytest
 from custom_components.si_grid_monitor.engine import (
     DataQuality,
     EngineSnapshot,
+    FixedQuarterEngine,
+    PowerSample,
     Projection,
     WindowAverage,
     quarter_bounds,
@@ -281,6 +283,53 @@ def test_explicit_source_unavailability_immediately_hides_advice(sensor_module) 
     assert stale.is_on is False
 
 
+def test_natural_staleness_hides_projected_exceedance_without_false_clear(
+    sensor_module,
+) -> None:
+    runtime = _Runtime()
+    start = datetime(2026, 10, 25, 12, 0, tzinfo=UTC)
+    projected = _binary_entity("projected_exceedance", runtime, sensor_module)
+    stale = _binary_entity("input_stale", runtime, sensor_module)
+    projected_writes: list[tuple[int, bool, bool | None]] = []
+    stale_writes: list[tuple[int, bool, bool | None]] = []
+    now = start
+    projected_controller = PublishingController(PublishingSettings.from_mapping({}))
+    stale_controller = PublishingController(PublishingSettings.from_mapping({}))
+    projected_controller.register(
+        "projected_exceedance",
+        PublishingClass.CRITICAL,
+        projected._publication_state,
+        lambda: projected_writes.append(
+            (int((now - start).total_seconds()), projected.available, projected.is_on)
+        ),
+    )
+    stale_controller.register(
+        "input_stale",
+        PublishingClass.CRITICAL,
+        stale._publication_state,
+        lambda: stale_writes.append(
+            (int((now - start).total_seconds()), stale.available, stale.is_on)
+        ),
+    )
+
+    for second, is_stale in ((0, False), (59, False), (60, False), (61, True)):
+        now = start + timedelta(seconds=second)
+        _prepare_live_runtime(runtime, now, 5.0, stale=is_stale)
+        runtime.source_available = True  # HA retains the last state silently.
+        projected_controller.process(now)
+        stale_controller.process(now)
+
+    assert projected_writes == [(0, True, True), (61, False, True)]
+    assert stale_writes == [(0, True, False), (61, True, True)]
+
+    now = start + timedelta(seconds=62)
+    _prepare_live_runtime(runtime, now, 2.0, stale=False)
+    projected_controller.process(now)
+    stale_controller.process(now)
+    assert projected_writes[-1] == (62, True, False)
+    assert stale_writes[-1] == (62, True, False)
+
+
 def _live_snapshot(now: datetime, signed_kw: float, *, stale: bool) -> EngineSnapshot:
     bounds = quarter_bounds(now)
     elapsed = max(1.0, (now - bounds.start_utc).total_seconds())
@@ -376,6 +425,56 @@ def _prepare_live_runtime(runtime: _Runtime, now: datetime, signed_kw: float, st
         assumption="persistence",
         reason=None,
     )
+
+
+def test_constant_load_current_energy_is_fresh_and_completed_energy_is_exact(
+    sensor_module,
+) -> None:
+    """A public current-quarter value stays bounded while archive truth stays exact."""
+
+    runtime = _Runtime()
+    engine = FixedQuarterEngine(stale_after_seconds=60, source_id="mode=signed_power")
+    entity = _entity("quarter_import_kwh_so_far", runtime, sensor_module)
+    controller = PublishingController(PublishingSettings.from_mapping({}))
+    start = datetime(2026, 4, 2, 10, 0, tzinfo=UTC)
+    now = start
+    writes: list[tuple[datetime, float, str]] = []
+    controller.register(
+        "quarter_import_kwh_so_far",
+        PublishingClass.QUARTER_ACCUMULATION,
+        entity._publication_state,
+        lambda: writes.append(
+            (
+                now,
+                float(entity.native_value),
+                entity.extra_state_attributes["quarter_start_utc"],
+            )
+        ),
+    )
+
+    for second in range(901):
+        now = start + timedelta(seconds=second)
+        engine.ingest(PowerSample(now, 3.0))
+        runtime.snapshot = engine.snapshot(now=now, target_kw=4.2)
+        runtime.current_tariff = SlovenianTariffCalendar().classify(now)
+        controller.process(now)
+
+    for minute in (1, 5, 10, 14):
+        checkpoint = start + timedelta(minutes=minute)
+        published_at, public_value, _quarter_id = max(
+            item for item in writes if item[0] <= checkpoint and item[2] == start.isoformat()
+        )
+        assert (checkpoint - published_at).total_seconds() <= 180
+        assert public_value == pytest.approx(
+            3.0 * (published_at - start).total_seconds() / 3600,
+            abs=1e-9,
+        )
+
+    assert engine.completed[-1].import_kwh == pytest.approx(0.750, abs=1e-9)
+    boundary_write = writes[-1]
+    assert boundary_write[0] == start + timedelta(minutes=15)
+    assert boundary_write[2] == (start + timedelta(minutes=15)).isoformat()
+    assert boundary_write[1] == pytest.approx(0.0, abs=1e-9)
 
 
 @pytest.mark.parametrize(
@@ -592,5 +691,10 @@ def test_real_two_meter_full_day_storage_projection(
 
     assert 0 < count_for("sustained_can_add_power") < expected_seconds
     assert 0 < count_for("sustained_must_reduce_power") < expected_seconds
+    # Current-quarter accumulation is intentionally fresher than the general
+    # 15-minute monitoring cadence. It remains bounded and resets immediately
+    # at every canonical quarter boundary.
     assert count_for("current_interval_import_average") == expected_quarters * 2
-    assert count_for("quarter_import_kwh_so_far") == expected_quarters * 2
+    assert (
+        expected_quarters * 2 < count_for("quarter_import_kwh_so_far") <= (expected_quarters * 12)
+    )

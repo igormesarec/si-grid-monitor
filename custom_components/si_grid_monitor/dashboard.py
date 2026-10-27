@@ -226,6 +226,31 @@ def ws_publishing(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> 
         "suppressed_policy": sum(item["suppressed_policy"] for item in meters),
         "suppressed_attribute_only": sum(item["suppressed_attribute_only"] for item in meters),
         "critical_publications": sum(item["critical_publications"] for item in meters),
+        "processing_failures": sum(item.get("processing_failures", 0) for item in meters),
+        "effective_current_measurement_interval_seconds": (
+            meters[0].get("effective_current_measurement_interval_seconds")
+            if meters
+            and len({item.get("effective_current_measurement_interval_seconds") for item in meters})
+            == 1
+            else None
+        ),
+        "effective_quarter_accumulation_interval_seconds": (
+            meters[0].get("effective_quarter_accumulation_interval_seconds")
+            if meters
+            and len(
+                {item.get("effective_quarter_accumulation_interval_seconds") for item in meters}
+            )
+            == 1
+            else None
+        ),
+        "last_successful_publication_utc": max(
+            (
+                item["last_successful_publication_utc"]
+                for item in meters
+                if item.get("last_successful_publication_utc") is not None
+            ),
+            default=None,
+        ),
         "estimated_total_bytes_per_year": (
             sum(item["estimated_total_bytes_per_year"] for item in meters)
             if meters and all(item["estimated_total_bytes_per_year"] is not None for item in meters)

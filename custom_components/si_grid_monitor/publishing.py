@@ -34,6 +34,7 @@ from .const import (
     DEFAULT_PUBLISHING_ROUTINE_INTERVAL_SECONDS,
     PUBLISHING_PROFILE_AUTOMATION,
     PUBLISHING_PROFILE_CUSTOM,
+    PUBLISHING_PROFILE_STORAGE_OPTIMIZED,
 )
 
 STORAGE_BUDGET_BYTES_PER_YEAR = 1_000_000_000
@@ -41,6 +42,9 @@ SECONDS_PER_YEAR = 365 * 24 * 60 * 60
 SECONDS_PER_DAY = 24 * 60 * 60
 MIN_ESTIMATE_OBSERVATION_SECONDS = 3600
 CRITICAL_SAFE_CLEAR_DEBOUNCE_SECONDS = 30
+ACTIONABLE_SAFE_DEBOUNCE_SECONDS = 30
+CURRENT_MEASUREMENT_MAX_AGE_SECONDS = 180
+PROCESSING_ERROR_LOG_INTERVAL_SECONDS = 300
 ACTIONABLE_ZERO_TRANSITION_KEYS = frozenset(
     {
         "can_add_power",
@@ -60,6 +64,8 @@ class PublishingClass(StrEnum):
 
     CRITICAL = "critical"
     ACTIONABLE = "actionable"
+    CURRENT_MEASUREMENT = "current_measurement"
+    QUARTER_ACCUMULATION = "quarter_accumulation"
     MONITORING = "monitoring"
     CONFIGURATION = "configuration"
     DIAGNOSTIC = "diagnostic"
@@ -169,6 +175,7 @@ class _Registration:
     last_published_utc: datetime | None = None
     last_observed_state: PublicationState | None = None
     pending_safe_clear_utc: datetime | None = None
+    last_error_logged_utc: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,6 +202,8 @@ class PublishingController:
         self.suppressed_policy = 0
         self.suppressed_attribute_only = 0
         self.critical_publications = 0
+        self.processing_failures = 0
+        self.last_successful_publication_utc: datetime | None = None
 
     def register(
         self,
@@ -225,33 +234,49 @@ class PublishingController:
         now_utc = now_utc.astimezone(UTC)
         self.publishing_evaluations += 1
         for registration in tuple(self._registrations.values()):
-            state = registration.reader()
-            fingerprint, attributes_fingerprint, payload_bytes = _fingerprint(state)
-            should_publish, critical = self._should_publish(
-                registration, state, fingerprint, now_utc
-            )
-            registration.last_observed_state = state
-            if not should_publish:
-                continue
             try:
+                state = registration.reader()
+                fingerprint, attributes_fingerprint, payload_bytes = _fingerprint(state)
+                should_publish, critical = self._should_publish(
+                    registration, state, fingerprint, now_utc
+                )
+                if not should_publish:
+                    registration.last_observed_state = state
+                    continue
                 registration.callback()
+                # The HA callback succeeded, so advance its durable publication
+                # cursor before optional diagnostic event bookkeeping. If that
+                # bookkeeping fails, the entity must not duplicate the already
+                # emitted HA state on the next one-second evaluation.
+                registration.last_state = state
+                registration.last_observed_state = state
+                registration.last_fingerprint = fingerprint
+                registration.last_attributes_fingerprint = attributes_fingerprint
+                registration.last_published_utc = now_utc
+                self.publications += 1
+                self.last_successful_publication_utc = now_utc
+                self.critical_publications += int(critical)
+                event = _PublicationEvent(now_utc, registration.key, payload_bytes, critical)
+                if self._events.maxlen is not None and len(self._events) == self._events.maxlen:
+                    self._event_history_truncated = True
+                self._events.append(event)
             except Exception:
-                # One broken entity must not prevent later registrations from
-                # publishing.  Keep the previous durable publication state so
-                # this entity can be retried on the next evaluation.
-                _LOGGER.exception("Failed to publish SI Grid Monitor entity %s", registration.key)
+                # Reader, serialization, policy, callback and bookkeeping
+                # failures are all isolated. Reader/callback failures retain the
+                # previous cursor for retry; a post-callback diagnostic failure
+                # retains the advanced cursor to avoid a duplicate HA state.
+                self.processing_failures += 1
+                if (
+                    registration.last_error_logged_utc is None
+                    or (now_utc - registration.last_error_logged_utc).total_seconds()
+                    >= PROCESSING_ERROR_LOG_INTERVAL_SECONDS
+                ):
+                    registration.last_error_logged_utc = now_utc
+                    _LOGGER.exception(
+                        "Failed to evaluate or publish SI Grid Monitor entity %s",
+                        registration.key,
+                    )
                 continue
-            registration.last_state = state
-            registration.last_fingerprint = fingerprint
-            registration.last_attributes_fingerprint = attributes_fingerprint
-            registration.last_published_utc = now_utc
-            self.publications += 1
-            self.critical_publications += int(critical)
-            if self._events.maxlen is not None and len(self._events) == self._events.maxlen:
-                self._event_history_truncated = True
-            self._events.append(
-                _PublicationEvent(now_utc, registration.key, payload_bytes, critical)
-            )
         self._discard_old_events(now_utc)
 
     def record_internal_timer_tick(self) -> None:
@@ -272,6 +297,26 @@ class PublishingController:
         if state.available != previous.available:
             registration.pending_safe_clear_utc = None
             return True, True
+        if (
+            registration.publishing_class == PublishingClass.QUARTER_ACCUMULATION
+            and state.attributes.get("quarter_start_utc")
+            != previous.attributes.get("quarter_start_utc")
+        ):
+            # A current-quarter entity must reset to the new canonical quarter
+            # immediately; the completed result remains in the archive and the
+            # dedicated last-completed entities.
+            return True, False
+        if registration.publishing_class == PublishingClass.QUARTER_ACCUMULATION:
+            previous_elapsed = previous.attributes.get("quarter_elapsed_seconds")
+            current_elapsed = state.attributes.get("quarter_elapsed_seconds")
+            if (
+                isinstance(previous_elapsed, (int, float))
+                and isinstance(current_elapsed, (int, float))
+                and previous_elapsed < 60 <= current_elapsed
+            ):
+                # Avoid leaving the initial near-zero state visible through the
+                # first general freshness interval of a newly started quarter.
+                return True, False
         if registration.key == "projected_exceedance":
             if bool(state.value):
                 # Hazard assertion (and reassertion after a false observation)
@@ -289,6 +334,30 @@ class PublishingController:
                     return False, False
                 registration.pending_safe_clear_utc = None
                 return True, True
+        if registration.key in ACTIONABLE_ZERO_TRANSITION_KEYS:
+            transition = _actionable_zero_transition(
+                registration.key,
+                previous.value,
+                state.value,
+                self.settings.actionable_hysteresis_kw,
+            )
+            if transition == "adverse":
+                registration.pending_safe_clear_utc = None
+                return True, True
+            if transition == "improvement":
+                if registration.pending_safe_clear_utc is None:
+                    registration.pending_safe_clear_utc = now_utc
+                if (
+                    now_utc - registration.pending_safe_clear_utc
+                ).total_seconds() < ACTIONABLE_SAFE_DEBOUNCE_SECONDS:
+                    self.suppressed_policy += 1
+                    return False, False
+                registration.pending_safe_clear_utc = None
+                return True, False
+            if registration.pending_safe_clear_utc is not None:
+                # The observed value left the continuously safe side before
+                # debounce completion. Retain the conservative public value.
+                registration.pending_safe_clear_utc = None
         if fingerprint == registration.last_fingerprint:
             self.suppressed_unchanged += 1
             return False, False
@@ -306,12 +375,6 @@ class PublishingController:
         if registration.key in self.settings.fast_entities and changed_value:
             return True, False
         elapsed = (now_utc - registration.last_published_utc).total_seconds()
-        if registration.key in ACTIONABLE_ZERO_TRANSITION_KEYS and _actionable_zero_transition(
-            previous.value,
-            state.value,
-            self.settings.actionable_hysteresis_kw,
-        ):
-            return True, True
         observed_previous = registration.last_observed_state or previous
         if changed_value and (
             _actionable_change_is_adverse(
@@ -354,6 +417,13 @@ class PublishingController:
     def _interval_for(self, publishing_class: PublishingClass) -> int:
         if publishing_class == PublishingClass.ACTIONABLE:
             return self.settings.actionable_interval_seconds
+        if publishing_class == PublishingClass.QUARTER_ACCUMULATION:
+            if self.settings.profile == PUBLISHING_PROFILE_STORAGE_OPTIMIZED:
+                return min(
+                    CURRENT_MEASUREMENT_MAX_AGE_SECONDS,
+                    self.settings.routine_interval_seconds,
+                )
+            return self.settings.routine_interval_seconds
         if publishing_class == PublishingClass.DIAGNOSTIC:
             return max(300, self.settings.routine_interval_seconds)
         return self.settings.routine_interval_seconds
@@ -408,6 +478,20 @@ class PublishingController:
             "suppressed_policy": self.suppressed_policy,
             "suppressed_attribute_only": self.suppressed_attribute_only,
             "critical_publications": self.critical_publications,
+            "processing_failures": self.processing_failures,
+            "last_successful_publication_utc": (
+                self.last_successful_publication_utc.isoformat()
+                if self.last_successful_publication_utc is not None
+                else None
+            ),
+            "effective_current_measurement_interval_seconds": self._interval_for(
+                PublishingClass.CURRENT_MEASUREMENT
+            ),
+            "effective_quarter_accumulation_interval_seconds": self._interval_for(
+                PublishingClass.QUARTER_ACCUMULATION
+            ),
+            "effective_actionable_interval_seconds": self._interval_for(PublishingClass.ACTIONABLE),
+            "effective_monitoring_interval_seconds": self._interval_for(PublishingClass.MONITORING),
             "payload_bytes_in_window": payload,
             "top_entities": [{"entity_key": key, "count": count} for key, count in top],
             "estimated_recorder_bytes_per_year": int(recorder_bytes) if estimate_ready else None,
@@ -456,12 +540,24 @@ def _fingerprint(state: PublicationState) -> tuple[str, str, int]:
     return payload, _attributes_fingerprint(state.attributes), len(payload.encode("utf-8"))
 
 
-def _actionable_zero_transition(previous: Any, current: Any, hysteresis_kw: float) -> bool:
+def _actionable_zero_transition(
+    key: str, previous: Any, current: Any, hysteresis_kw: float
+) -> str | None:
     if not isinstance(previous, (int, float)) or not isinstance(current, (int, float)):
-        return False
-    return (previous <= hysteresis_kw and current > hysteresis_kw) or (
-        previous > hysteresis_kw and current <= 0
-    )
+        return None
+    activated = previous <= hysteresis_kw and current > hysteresis_kw
+    cleared = previous > hysteresis_kw and current <= 0
+    if key in ACTIONABLE_INCREASE_IS_ADVERSE:
+        if activated:
+            return "adverse"
+        if cleared:
+            return "improvement"
+    if key in ACTIONABLE_DECREASE_IS_ADVERSE:
+        if cleared:
+            return "adverse"
+        if activated:
+            return "improvement"
+    return None
 
 
 def _actionable_change_is_adverse(

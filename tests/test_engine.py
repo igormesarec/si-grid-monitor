@@ -1,6 +1,7 @@
 """Rolling and fixed-quarter engine tests."""
 
 from datetime import UTC, date, datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -12,6 +13,8 @@ from custom_components.si_grid_monitor.engine import (
     quarter_bounds,
     quarter_starts_for_local_day,
 )
+
+LJUBLJANA = ZoneInfo("Europe/Ljubljana")
 
 
 def utc(hour: int, minute: int, second: int = 0) -> datetime:
@@ -118,6 +121,33 @@ def test_ljubljana_quarter_boundaries_and_dst_day_lengths() -> None:
     ]
     assert len(repeated_two_oclock) == 2
     assert repeated_two_oclock[0].utcoffset() != repeated_two_oclock[1].utcoffset()
+
+
+def test_long_silent_outage_across_autumn_fold_never_fabricates_zero_measurements() -> None:
+    autumn = quarter_starts_for_local_day(date(2026, 10, 25))
+    repeated = [
+        start
+        for start in autumn
+        if start.astimezone(LJUBLJANA).hour == 2 and start.astimezone(LJUBLJANA).minute == 0
+    ]
+    assert len(repeated) == 2
+    start = repeated[0]
+    engine = FixedQuarterEngine(stale_after_seconds=60, source_id="sensor.grid")
+    engine.ingest(PowerSample(start, 3.0))
+
+    engine.advance(start + timedelta(seconds=4_000))
+
+    assert len(engine.completed) == 4
+    assert engine.completed[0].import_kwh == pytest.approx(3.0 * 60 / 3600)
+    assert engine.completed[0].coverage_seconds == pytest.approx(60)
+    assert engine.completed[0].gap_seconds == pytest.approx(840)
+    assert all(item.quality == DataQuality.INCOMPLETE for item in engine.completed)
+    assert all(item.import_kwh == 0 for item in engine.completed[1:])
+    assert all(item.coverage_seconds == 0 for item in engine.completed[1:])
+    assert all(item.gap_seconds == 900 for item in engine.completed[1:])
+    assert engine.bounds is not None
+    assert engine.bounds.start_utc == repeated[1]
+    assert engine.bounds.start_local.fold == 1
 
 
 def test_import_only_billing_acceptance_never_nets_export() -> None:

@@ -42,9 +42,10 @@ The calculation engine always continues its one-second work. These settings
 control only when an entity publishes a new Home Assistant state event.
 
 - **Storage Optimized (default):** immediate critical and availability
-  transitions, change-only configuration states, and coalesced routine values.
-  This is the benchmarked profile and normally needs no integration-specific
-  Recorder or InfluxDB exclusion.
+  transitions, change-only configuration states, coalesced routine values, and
+  a bounded current-quarter imported-energy view (first minute, at most 180
+  seconds thereafter, immediate quarter reset). This is the benchmarked profile
+  and normally needs no integration-specific Recorder or InfluxDB exclusion.
 - **Automation Priority:** shorter publication intervals for users whose
   third-party automations need fresher published values. More events can exceed
   the documented storage budget.
@@ -57,6 +58,12 @@ recreate entities, change calculations, create a contract epoch or audit event,
 or modify archive rows. Existing entity IDs remain stable. Numeric-state
 automations evaluate the last *published* state, not every internal calculation;
 critical SI Grid Monitor state transitions remain immediate.
+
+MUST REDUCE activation/increases and CAN ADD headroom loss are safety-worsening
+and publish promptly. A clear or headroom recovery is safety-improving and must
+remain stable for 30 seconds before it becomes public. Natural source staleness
+makes live forecasts/advice unavailable; it is never represented as a safe
+zero.
 
 See [Data publishing and storage](data-publishing-and-storage.md).
 

@@ -31,6 +31,10 @@ presentation still require real Home Assistant validation.
    import, zero, export, quarter/tariff transitions, source stale/recovery and a
    safe simulated warning. Confirm internal quarter energy remains accurate while
    stable entities do not produce one-second Home Assistant history.
+   At 3.000 kW constant import, verify current-quarter imported energy is about
+   0.050, 0.250, 0.500 and 0.700 kWh at minutes 1, 5, 10 and 14 (allowing the
+   documented maximum public age), the completed archive is exactly 0.750 kWh,
+   and the live entity resets to the next canonical quarter immediately.
 4. In Overview → **Data Publishing & Storage**, compare hour/day/week scopes for
    selected-meter detail and the all-meter combined total. Confirm timer ticks remain near 60/minute,
    publishing evaluations can be higher when source reports arrive, routine
@@ -48,7 +52,7 @@ presentation still require real Home Assistant validation.
    exclusions should be required after independent validation.
 8. Measure physical growth for the real 60-day Recorder and unlimited-retention
    InfluxDB installation. CI's three civil-day real-entity workloads project
-   about 625–652 MB/year for two meters, but their InfluxDB component is an unverified allowance—not a
+   about 740–755 MB/year for two meters, but their InfluxDB component is an unverified allowance—not a
    physical measurement. Follow the non-destructive commands in
    `docs/data-publishing-and-storage.md`; record event counts, filesystem growth,
    series cardinality and unrelated writers.
@@ -58,11 +62,20 @@ presentation still require real Home Assistant validation.
 10. Hold projected demand around its target for 3,600 seconds. Confirm unsafe
     activation appears on the next evaluation, false does not chatter, and 30
     continuously safe seconds clear it. Repeat source outage and recovery.
+    Also stop source reports while the last HA state remains available: at 60
+    seconds it remains within the evidence window; just after 60 seconds,
+    projected exceedance and live advice must become unavailable and
+    `input_stale` must be on. A fresh report must recover availability without
+    filling the unknown interval with zero.
 11. Drive MUST REDUCE through 0.200 → 1.000 → 2.500 kW and verify every
     materially worse step is prompt. Drive CAN ADD downward by the configured
     material delta and verify the headroom loss is prompt; safe improvements may
     remain coalesced. These are billing-energy-budget signals, not electrical
     protection authorization.
+12. Alternate all four actionable values between 0 and just above hysteresis
+    once per second for one hour on both meters. Confirm MUST REDUCE activation
+    and CAN ADD loss remain prompt, safety-improving clears/gains require 30
+    stable seconds, and Recorder does not receive a 3,600-event-per-hour stream.
 
 ## V1.0.3 mobile Contracts and calendar acceptance
 

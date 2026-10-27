@@ -20,10 +20,20 @@ V1.0.3 gives every sensor and binary sensor an explicit class:
   `projected_exceedance` requires 30 continuously safe seconds before its
   public false clear, preventing threshold chatter without changing the engine.
 - **Actionable:** CAN ADD, MUST REDUCE and related values. CAN ADD/MUST REDUCE
-  activation and clearing use a configurable zero hysteresis. A configurable
+  activation/headroom loss use a configurable zero hysteresis. A configurable
   threshold publishes every materially worse MUST REDUCE increase or CAN ADD
-  decrease on the next evaluation. Safe improvements can be coalesced; there is
-  no five-minute veto on worsening risk.
+  decrease on the next evaluation. Safety-improving clears and headroom gains
+  require 30 seconds of continuous evidence. This asymmetric delay is
+  conservative: it cannot authorize more load from a transient improvement,
+  while there is no five-minute veto on worsening risk.
+- **Current measurement:** signed/import/export source power. Storage Optimized
+  uses the routine 900-second maximum interval; Automation Priority uses 60
+  seconds. Availability changes are always immediate. The dashboard continues
+  to use the internal current value, not a Recorder-paced mirror.
+- **Quarter accumulation:** current-quarter imported energy. It publishes a
+  meaningful first-minute value, then stays within a 180-second public-age
+  bound under Storage Optimized, and resets immediately at the canonical
+  quarter boundary. Exact completed results remain in the schema-7 archive.
 - **Monitoring:** analytical power, energy and forecast values at meaningful
   changes or coarser intervals.
 - **Configuration:** tariff, contract and source values only when changed.
@@ -40,7 +50,9 @@ rounding or `_unrecorded_attributes` alone would not.
 **Storage Optimized** is the default and the only profile covered by the 1 GB
 two-meter engineering benchmark. Critical/availability transitions remain
 immediate. Routine states are coalesced and stable configuration states have no
-heartbeat.
+heartbeat. The 180-second exception applies only to current-quarter imported
+energy; redundant derived mirrors retain the routine cadence to keep the
+two-meter storage plan bounded.
 
 **Automation Priority** shortens normal publication intervals. Use it only when
 an external automation needs fresher numeric state events; it can exceed the
@@ -55,6 +67,30 @@ internal results. A third-party Home Assistant numeric-state automation sees the
 last published entity value. SI Grid Monitor publishes its own critical status
 transitions promptly, but cannot promise immediate evaluation of an arbitrary
 third-party threshold unless its relevant value is configured for that cadence.
+The current-quarter imported-energy entity is a bounded live view, not the
+immutable completed-quarter record.
+
+## Complete entity policy matrix
+
+Every public entity is assigned explicitly and the mapping is checked by an
+exhaustive regression test. “Immediate” below means the next controller
+evaluation (normally the next one-second runtime tick), not a claim about Home
+Assistant scheduler latency.
+
+| Class | Entities | Storage Optimized behavior |
+|---|---|---|
+| Critical | `projected_exceedance`, `unrecoverable_interval`, `input_stale`, `sustained_forecast_quality`, `data_quality` | Danger/availability/quality transitions immediate; projected-exceedance safe clear after 30 continuously safe seconds |
+| Actionable | `allowed_import_until_end_kw`, `forecast_instant_kw`, `forecast_smoothed_kw`, `forecast_utilization_pct`, `forecast_instant_utilization_pct`, `current_utilization_pct`, `can_add_power`, `must_reduce_power`, `sustained_can_add_power`, `sustained_must_reduce_power` | Worsening advice immediate when material; safety improvements debounced/coalesced; otherwise 900 seconds |
+| Current measurement | `current_power`, `import_power`, `export_power` | Meaningful change at 900 seconds; availability immediate |
+| Quarter accumulation | `quarter_import_kwh_so_far` | First-minute update, then at most 180 seconds old, immediate quarter reset |
+| Monitoring | `net_power_15m_rolling`, `import_power_15m_rolling`, `smoothed_signed_power`, `smoothed_import_power`, `current_interval_import_average`, `current_interval_signed_average`, `quarter_export_kwh_so_far`, `quarter_budget_remaining_kwh` | Meaningful change/attribute update at 900 seconds |
+| Configuration/event | `source_mode`, both last-completed demand values, `target_kw`, current/next tariff and season/day metadata, all B1–B5 targets, `operational_target_kw` | Change only; no heartbeat |
+| Diagnostic/countdown | `time_to_next_tariff_block`, `interval_elapsed_seconds`, `interval_remaining_seconds` | At least 900 seconds under the default |
+
+Automation Priority changes normal/current/quarter cadence to 60 seconds and
+actionable cadence to 15 seconds. Custom uses the configured intervals and
+optional fast-entity list. Critical transitions and availability are not
+delayed by profile selection.
 
 ## Dashboard diagnostics
 
@@ -69,6 +105,13 @@ hour, and the panel warns if its 50,000-event history truncated the selected
 window. When the bounded event buffer truncates, annual values become unknown
 instead of annualizing incomplete evidence. Diagnostics do not scan Recorder or
 create HA diagnostic entities.
+
+Diagnostics also expose processing-failure count, last successful publication
+time and the effective interval for current, quarter, actionable and monitoring
+classes. Reader, state serialization, policy, callback and diagnostic
+bookkeeping work is isolated per entity. Repeated failures are logged at most
+once per entity per five minutes, while healthy entities continue and recovered
+entities retry without duplicating an already emitted state.
 
 The projected sizes distinguish Recorder-like, InfluxDB and internal archive
 components. They are engineering estimates, not measured sizes of the user's
@@ -90,12 +133,12 @@ Measured development results:
 
 | Day | Recorder-like | Unverified Influx allowance | Archive allowance | Combined planning result |
 |---|---:|---:|---:|---:|
-| Spring DST (23 h) | 329.2 MB | 232.6 MB | 80.0 MB | **641.8 MB/year** |
-| Normal (24 h) | 312.5 MB | 232.6 MB | 80.0 MB | **625.0 MB/year** |
-| Autumn DST (25 h) | 337.3 MB | 234.1 MB | 80.0 MB | **651.4 MB/year** |
+| Spring DST (23 h) | 388.5 MB | 283.0 MB | 80.0 MB | **751.5 MB/year** |
+| Normal (24 h) | 376.8 MB | 282.9 MB | 80.0 MB | **739.6 MB/year** |
+| Autumn DST (25 h) | 390.4 MB | 284.4 MB | 80.0 MB | **754.8 MB/year** |
 
-The SQLite part uses allocated pages in the synthetic databases: 864,256 bytes
-and 4,363 rows, 856,064 bytes and 4,551 rows, and 962,560 bytes and 4,773 rows.
+The SQLite part uses allocated pages in the synthetic databases: 1,019,904 bytes
+and 5,308 rows, 1,032,192 bytes and 5,536 rows, and 1,114,112 bytes and 5,798 rows.
 This is closer to Recorder than the earlier simplified table, but it remains a
 test model rather than a physical Home Assistant Recorder measurement.
 
@@ -104,7 +147,21 @@ test model rather than a physical Home Assistant Recorder measurement.
 | Sustained CAN ADD | 87,600 | 108 |
 | Sustained MUST REDUCE | 87,600 | 108 |
 | Current interval import average | 87,600 | 96 |
-| Current-quarter imported energy | 87,600 | 96 |
+| Current-quarter imported energy | 87,600 | 576 |
+
+The focused 3,600-second, 1 Hz actionable stress test runs all four advice
+entities on two meters while alternating between `0.000` and `0.051 kW`:
+
+| Entity | Events per meter/hour | First adverse latency | Stable improvement latency |
+|---|---:|---:|---:|
+| MUST REDUCE | 2 (initial + hazard) | 1 second | 30 seconds |
+| Sustained MUST REDUCE | 2 (initial + hazard) | 1 second | 30 seconds |
+| CAN ADD | 1 (initial conservative zero) | next evaluation for headroom loss | 30 seconds |
+| Sustained CAN ADD | 1 (initial conservative zero) | next evaluation for headroom loss | 30 seconds |
+
+The event counts are actual callback counts from the deterministic test, not a
+claim about physical database bytes. A separate regression proves a second
+danger during a pending safe clear publishes immediately.
 
 The uncontrolled column is the evaluation ceiling, not a physical measurement
 of an older release. The optimized column is asserted from emitted rows in the

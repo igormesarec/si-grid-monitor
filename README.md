@@ -33,6 +33,10 @@ load controller.
 - Centralized, per-meter entity publishing that keeps one-second calculations
   while coalescing routine Home Assistant state events. The default Storage
   Optimized profile needs no SI Grid Monitor Recorder/InfluxDB YAML exclusions.
+- Fail-closed stale-source behavior and asymmetric advice publication: danger
+  and lost headroom are prompt; optimistic clears/recovery require stable
+  evidence. Current-quarter imported energy stays bounded without turning the
+  rest of the integration back into a high-frequency Recorder stream.
 
 Exported energy is recorded separately where the selected source measures it.
 It never offsets imported energy when calculating contractual quarter demand.

@@ -242,6 +242,10 @@ def test_publishing_command_aggregates_selected_meter_without_recorder_scan() ->
         "suppressed_policy": 200,
         "suppressed_attribute_only": 25,
         "critical_publications": 2,
+        "processing_failures": 1,
+        "effective_current_measurement_interval_seconds": 900,
+        "effective_quarter_accumulation_interval_seconds": 180,
+        "last_successful_publication_utc": "2026-10-25T12:00:00+00:00",
         "estimated_total_bytes_per_year": 320_000_000,
         "estimate_status": "ready",
         "event_history_truncated": False,
@@ -271,6 +275,8 @@ def test_publishing_command_aggregates_selected_meter_without_recorder_scan() ->
     assert connection.result["totals"]["publishing_evaluations_per_minute"] == 62.0
     assert connection.result["totals"]["internal_timer_ticks_per_minute"] == 60.0
     assert connection.result["totals"]["influxdb_physical_storage_verified"] is False
+    assert connection.result["totals"]["processing_failures"] == 1
+    assert connection.result["totals"]["effective_quarter_accumulation_interval_seconds"] == 180
 
 
 def test_history_commands_use_real_sqlite_rows_and_preserve_archive(tmp_path: Path) -> None:
