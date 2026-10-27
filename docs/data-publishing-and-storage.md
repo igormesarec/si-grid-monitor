@@ -22,18 +22,25 @@ V1.0.3 gives every sensor and binary sensor an explicit class:
 - **Actionable:** CAN ADD, MUST REDUCE and related values. CAN ADD/MUST REDUCE
   activation/headroom loss use a configurable zero hysteresis. A configurable
   threshold publishes every materially worse MUST REDUCE increase or CAN ADD
-  decrease on the next evaluation. Safety-improving clears and headroom gains
-  require 30 seconds of continuous evidence. This asymmetric delay is
+  decrease on the next evaluation. Safety-improving clears and headroom gains,
+  including nonzero improvements such as MUST REDUCE `3.000 → 2.000 kW`,
+  require 30 seconds of continuous evidence. A nonzero improvement then still
+  follows the configured actionable cadence; this avoids turning slow recovery
+  into a 30-second heartbeat. This asymmetric delay is
   conservative: it cannot authorize more load from a transient improvement,
   while there is no five-minute veto on worsening risk.
 - **Current measurement:** signed/import/export source power. Storage Optimized
   uses the routine 900-second maximum interval; Automation Priority uses 60
-  seconds. Availability changes are always immediate. The dashboard continues
+  seconds. Loss of availability or natural staleness is always immediate;
+  recovery requires 30 seconds of continuously fresh evidence. The dashboard continues
   to use the internal current value, not a Recorder-paced mirror.
 - **Quarter accumulation:** current-quarter imported energy. It publishes a
   meaningful first-minute value, then stays within a 180-second public-age
   bound under Storage Optimized, and resets immediately at the canonical
   quarter boundary. Exact completed results remain in the schema-7 archive.
+  This within-quarter value resets and therefore deliberately has no Home
+  Assistant lifetime-total state class. It is not a utility meter or a source
+  for long-term accumulated-energy statistics.
 - **Monitoring:** analytical power, energy and forecast values at meaningful
   changes or coarser intervals.
 - **Configuration:** tariff, contract and source values only when changed.
@@ -80,10 +87,10 @@ Assistant scheduler latency.
 | Class | Entities | Storage Optimized behavior |
 |---|---|---|
 | Critical | `projected_exceedance`, `unrecoverable_interval`, `input_stale`, `sustained_forecast_quality`, `data_quality` | Danger/availability/quality transitions immediate; projected-exceedance safe clear after 30 continuously safe seconds |
-| Actionable | `allowed_import_until_end_kw`, `forecast_instant_kw`, `forecast_smoothed_kw`, `forecast_utilization_pct`, `forecast_instant_utilization_pct`, `current_utilization_pct`, `can_add_power`, `must_reduce_power`, `sustained_can_add_power`, `sustained_must_reduce_power` | Worsening advice immediate when material; safety improvements debounced/coalesced; otherwise 900 seconds |
+| Actionable | `quarter_budget_remaining_kwh`, `allowed_import_until_end_kw`, `forecast_instant_kw`, `forecast_smoothed_kw`, `forecast_utilization_pct`, `forecast_instant_utilization_pct`, `current_utilization_pct`, `can_add_power`, `must_reduce_power`, `sustained_can_add_power`, `sustained_must_reduce_power` | Stale/unknown input makes these unavailable immediately; worsening advice is immediate when material; safety improvements need 30 seconds and remain cadence-coalesced; otherwise 900 seconds |
 | Current measurement | `current_power`, `import_power`, `export_power` | Meaningful change at 900 seconds; availability immediate |
 | Quarter accumulation | `quarter_import_kwh_so_far` | First-minute update, then at most 180 seconds old, immediate quarter reset |
-| Monitoring | `net_power_15m_rolling`, `import_power_15m_rolling`, `smoothed_signed_power`, `smoothed_import_power`, `current_interval_import_average`, `current_interval_signed_average`, `quarter_export_kwh_so_far`, `quarter_budget_remaining_kwh` | Meaningful change/attribute update at 900 seconds |
+| Monitoring | `net_power_15m_rolling`, `import_power_15m_rolling`, `smoothed_signed_power`, `smoothed_import_power`, `current_interval_import_average`, `current_interval_signed_average`, `quarter_export_kwh_so_far` | Meaningful change/attribute update at 900 seconds; observed values keep their quality rather than becoming fabricated zero during a gap |
 | Configuration/event | `source_mode`, both last-completed demand values, `target_kw`, current/next tariff and season/day metadata, all B1–B5 targets, `operational_target_kw` | Change only; no heartbeat |
 | Diagnostic/countdown | `time_to_next_tariff_block`, `interval_elapsed_seconds`, `interval_remaining_seconds` | At least 900 seconds under the default |
 
@@ -107,11 +114,16 @@ instead of annualizing incomplete evidence. Diagnostics do not scan Recorder or
 create HA diagnostic entities.
 
 Diagnostics also expose processing-failure count, last successful publication
-time and the effective interval for current, quarter, actionable and monitoring
+time, currently faulted entity keys and the effective interval for current, quarter, actionable and monitoring
 classes. Reader, state serialization, policy, callback and diagnostic
 bookkeeping work is isolated per entity. Repeated failures are logged at most
-once per entity per five minutes, while healthy entities continue and recovered
-entities retry without duplicating an already emitted state.
+once per entity per five minutes. A failed authoritative entity reader triggers
+a bounded attempt to publish that entity unavailable, while healthy entities
+continue. Failed fallback writes retry no more often than every 30 seconds and
+recovered entities require stable evidence without duplicating an already
+emitted state. If Home Assistant's state-write path itself remains broken, the
+integration cannot make any fallback state durable; logs and diagnostics expose
+that residual failure for operator action.
 
 The projected sizes distinguish Recorder-like, InfluxDB and internal archive
 components. They are engineering estimates, not measured sizes of the user's
@@ -133,12 +145,12 @@ Measured development results:
 
 | Day | Recorder-like | Unverified Influx allowance | Archive allowance | Combined planning result |
 |---|---:|---:|---:|---:|
-| Spring DST (23 h) | 388.5 MB | 283.0 MB | 80.0 MB | **751.5 MB/year** |
-| Normal (24 h) | 376.8 MB | 282.9 MB | 80.0 MB | **739.6 MB/year** |
-| Autumn DST (25 h) | 390.4 MB | 284.4 MB | 80.0 MB | **754.8 MB/year** |
+| Spring DST (23 h) | 408.7 MB | 297.1 MB | 80.0 MB | **785.8 MB/year** |
+| Normal (24 h) | 397.7 MB | 296.4 MB | 80.0 MB | **774.1 MB/year** |
+| Autumn DST (25 h) | 411.9 MB | 297.3 MB | 80.0 MB | **789.2 MB/year** |
 
-The SQLite part uses allocated pages in the synthetic databases: 1,019,904 bytes
-and 5,308 rows, 1,032,192 bytes and 5,536 rows, and 1,114,112 bytes and 5,798 rows.
+The SQLite part uses allocated pages in the synthetic databases: 1,073,152 bytes
+and 5,572 rows, 1,089,536 bytes and 5,800 rows, and 1,175,552 bytes and 6,060 rows.
 This is closer to Recorder than the earlier simplified table, but it remains a
 test model rather than a physical Home Assistant Recorder measurement.
 
@@ -162,6 +174,14 @@ entities on two meters while alternating between `0.000` and `0.051 kW`:
 The event counts are actual callback counts from the deterministic test, not a
 claim about physical database bytes. A separate regression proves a second
 danger during a pending safe clear publishes immediately.
+
+A separate 3,600-second two-meter availability-flap stress alternates the
+source between valid and unavailable every second. CAN ADD and projected
+exceedance each emit only the initial state plus the first fail-closed
+unavailable transition per meter; input stale emits only its initial safe state
+plus the first stale assertion. Recovery is not published until 30 uninterrupted
+healthy seconds, so source loss remains prompt without recording each unsafe
+one-second recovery flap.
 
 The uncontrolled column is the evaluation ceiling, not a physical measurement
 of an older release. The optimized column is asserted from emitted rows in the

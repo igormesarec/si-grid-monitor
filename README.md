@@ -34,9 +34,13 @@ load controller.
   while coalescing routine Home Assistant state events. The default Storage
   Optimized profile needs no SI Grid Monitor Recorder/InfluxDB YAML exclusions.
 - Fail-closed stale-source behavior and asymmetric advice publication: danger
-  and lost headroom are prompt; optimistic clears/recovery require stable
-  evidence. Current-quarter imported energy stays bounded without turning the
-  rest of the integration back into a high-frequency Recorder stream.
+  and lost headroom are prompt; stale current power and all live numeric advice
+  become unavailable rather than retaining an optimistic value; optimistic
+  clears/recovery require stable evidence. Per-entity processing faults also
+  attempt a bounded unavailable publication and remain visible in diagnostics.
+  Current-quarter imported energy stays bounded without turning the rest of the
+  integration back into a high-frequency Recorder stream; because it resets
+  every quarter, it is not advertised as a lifetime-total statistics source.
 
 Exported energy is recorded separately where the selected source measures it.
 It never offsets imported energy when calculating contractual quarter demand.

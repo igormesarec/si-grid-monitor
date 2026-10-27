@@ -227,6 +227,11 @@ def ws_publishing(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> 
         "suppressed_attribute_only": sum(item["suppressed_attribute_only"] for item in meters),
         "critical_publications": sum(item["critical_publications"] for item in meters),
         "processing_failures": sum(item.get("processing_failures", 0) for item in meters),
+        "faulted_entities": [
+            {"meter": item["title"], "entity_key": entity_key}
+            for item in meters
+            for entity_key in item.get("faulted_entities", [])
+        ],
         "effective_current_measurement_interval_seconds": (
             meters[0].get("effective_current_measurement_interval_seconds")
             if meters

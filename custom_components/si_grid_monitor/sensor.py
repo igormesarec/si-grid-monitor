@@ -151,7 +151,6 @@ SENSORS: tuple[SIGridSensorDescription, ...] = (
         translation_key="quarter_import_kwh_so_far",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL,
         value_fn=lambda snapshot, runtime: snapshot.quarter_import_kwh,
     ),
     SIGridSensorDescription(
@@ -159,7 +158,6 @@ SENSORS: tuple[SIGridSensorDescription, ...] = (
         translation_key="quarter_export_kwh_so_far",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL,
         value_fn=lambda snapshot, runtime: snapshot.quarter_export_kwh,
     ),
     SIGridSensorDescription(
@@ -536,13 +534,18 @@ CONTRACTUAL_SENSOR_KEYS = {
     "must_reduce_power",
 }
 
-LIVE_FORECAST_SENSOR_KEYS = {
+LIVE_ADVICE_SENSOR_KEYS = {
+    "quarter_budget_remaining_kwh",
+    "allowed_import_until_end_kw",
     "forecast_instant_kw",
     "forecast_smoothed_kw",
     "forecast_utilization_pct",
     "forecast_instant_utilization_pct",
+    "current_utilization_pct",
     "can_add_power",
     "must_reduce_power",
+    "sustained_can_add_power",
+    "sustained_must_reduce_power",
 }
 
 ARCHIVED_SENSOR_KEYS = {
@@ -576,6 +579,7 @@ class SIGridSensor(SensorEntity):
     ) -> None:
         self.runtime = runtime
         self.entity_description = description
+        self._publication_faulted = False
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
@@ -594,6 +598,8 @@ class SIGridSensor(SensorEntity):
 
     @property
     def available(self) -> bool:
+        if self._publication_faulted:
+            return False
         snapshot = self.runtime.snapshot
         if self.entity_description.key == "source_mode":
             return True
@@ -608,32 +614,20 @@ class SIGridSensor(SensorEntity):
             return self.entity_description.value_fn(snapshot, self.runtime) is not None
         if snapshot is None:
             return False
-        if (
-            self.entity_description.key in LIVE_FORECAST_SENSOR_KEYS
-            and not self.runtime.source_available
-        ):
-            return False
-        if (
-            self.entity_description.key in LIVE_FORECAST_SENSOR_KEYS
-            and not self.runtime.instantaneous_power_known
-        ):
-            return False
+        if self.entity_description.key in LIVE_ADVICE_SENSOR_KEYS:
+            if (
+                not self.runtime.source_available
+                or snapshot.input_stale
+                or not self.runtime.instantaneous_power_known
+                or not self.runtime.current_contractual_available
+            ):
+                return False
+            # A live safety/advice entity with no defensible numeric value is
+            # HA-unavailable, never an available UNKNOWN that could leave an
+            # older optimistic number visible to automations.
+            return self.entity_description.value_fn(snapshot, self.runtime) is not None
         if self.entity_description.key in CONTRACTUAL_SENSOR_KEYS:
             return self.runtime.current_contractual_available
-        if self.entity_description.key in {
-            "sustained_can_add_power",
-            "sustained_must_reduce_power",
-        }:
-            if not self.runtime.source_available:
-                return False
-            forecast = self.runtime.sustained_forecast
-            if forecast is None:
-                return False
-            return (
-                forecast.can_add_kw is not None
-                if self.entity_description.key == "sustained_can_add_power"
-                else forecast.must_reduce_kw is not None
-            )
         return not (
             self.entity_description.requires_fresh_input
             and (not self.runtime.source_available or snapshot.input_stale)
@@ -820,17 +814,31 @@ class SIGridSensor(SensorEntity):
                 SENSOR_PUBLISHING_POLICIES[self.entity_description.key],
                 self._publication_state,
                 self._handle_update,
+                self._handle_publication_failure,
             )
         )
 
     @callback
     def _publication_state(self) -> PublicationState:
-        return PublicationState(
-            value=self.native_value,
-            available=self.available,
-            attributes=self.extra_state_attributes,
-        )
+        # Probe the authoritative runtime even after a fail-closed HA state was
+        # published, so recovery can be detected and stability-debounced.
+        faulted = self._publication_faulted
+        self._publication_faulted = False
+        try:
+            return PublicationState(
+                value=self.native_value,
+                available=self.available,
+                attributes=self.extra_state_attributes,
+            )
+        finally:
+            self._publication_faulted = faulted
 
     @callback
     def _handle_update(self) -> None:
+        self._publication_faulted = False
+        self.async_write_ha_state()
+
+    @callback
+    def _handle_publication_failure(self) -> None:
+        self._publication_faulted = True
         self.async_write_ha_state()

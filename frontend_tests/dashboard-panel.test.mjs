@@ -1085,6 +1085,7 @@ test("publishing diagnostics render bounded estimates without adding a ninth tab
       publications_per_minute: 1.5,
       suppressed_unchanged: 1000, suppressed_policy: 400, critical_publications: 2,
       processing_failures: 3, effective_current_measurement_interval_seconds: 900,
+      faulted_entities: [{meter: "Meter A", entity_key: "can_add_power"}],
       effective_quarter_accumulation_interval_seconds: 180,
       last_successful_publication_utc: "2026-10-25T12:00:00+00:00",
       estimated_total_bytes_per_year: 510500000, budget_utilization_pct: 51.05,
@@ -1097,6 +1098,7 @@ test("publishing diagnostics render bounded estimates without adding a ninth tab
   assert.match(html, /InfluxDB 1\.x physical storage remains unverified/);
   assert.match(html, /current_power/);
   assert.match(html, /Isolated processing failures/);
+  assert.match(html, /Currently faulted publications/);
   assert.match(html, /Quarter-energy max interval/);
   assert.equal((panel._render.toString().match(/"contracts", "calendar"/g) || []).length, 1);
 });

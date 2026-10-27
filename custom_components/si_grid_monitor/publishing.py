@@ -43,8 +43,10 @@ SECONDS_PER_DAY = 24 * 60 * 60
 MIN_ESTIMATE_OBSERVATION_SECONDS = 3600
 CRITICAL_SAFE_CLEAR_DEBOUNCE_SECONDS = 30
 ACTIONABLE_SAFE_DEBOUNCE_SECONDS = 30
+AVAILABILITY_RECOVERY_DEBOUNCE_SECONDS = 30
 CURRENT_MEASUREMENT_MAX_AGE_SECONDS = 180
 PROCESSING_ERROR_LOG_INTERVAL_SECONDS = 300
+FAULT_PUBLICATION_RETRY_SECONDS = 30
 ACTIONABLE_ZERO_TRANSITION_KEYS = frozenset(
     {
         "can_add_power",
@@ -55,6 +57,26 @@ ACTIONABLE_ZERO_TRANSITION_KEYS = frozenset(
 )
 ACTIONABLE_INCREASE_IS_ADVERSE = frozenset({"must_reduce_power", "sustained_must_reduce_power"})
 ACTIONABLE_DECREASE_IS_ADVERSE = frozenset({"can_add_power", "sustained_can_add_power"})
+FAIL_CLOSED_RECOVERY_KEYS = frozenset(
+    {
+        "current_power",
+        "import_power",
+        "export_power",
+        "quarter_budget_remaining_kwh",
+        "allowed_import_until_end_kw",
+        "forecast_instant_kw",
+        "forecast_smoothed_kw",
+        "forecast_utilization_pct",
+        "forecast_instant_utilization_pct",
+        "current_utilization_pct",
+        "can_add_power",
+        "must_reduce_power",
+        "sustained_can_add_power",
+        "sustained_must_reduce_power",
+        "projected_exceedance",
+        "unrecoverable_interval",
+    }
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -169,13 +191,18 @@ class _Registration:
     publishing_class: PublishingClass
     reader: Callable[[], PublicationState]
     callback: Callable[[], None]
+    failure_callback: Callable[[], None] | None = None
     last_state: PublicationState | None = None
     last_fingerprint: str | None = None
     last_attributes_fingerprint: str | None = None
     last_published_utc: datetime | None = None
     last_observed_state: PublicationState | None = None
     pending_safe_clear_utc: datetime | None = None
+    pending_available_recovery_utc: datetime | None = None
     last_error_logged_utc: datetime | None = None
+    last_fault_publish_attempt_utc: datetime | None = None
+    faulted: bool = False
+    fault_publication_succeeded: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,10 +238,13 @@ class PublishingController:
         publishing_class: PublishingClass,
         reader: Callable[[], PublicationState],
         callback: Callable[[], None],
+        failure_callback: Callable[[], None] | None = None,
     ) -> Callable[[], None]:
         """Register exactly one entity callback and return its remover."""
 
-        self._registrations[key] = _Registration(key, publishing_class, reader, callback)
+        self._registrations[key] = _Registration(
+            key, publishing_class, reader, callback, failure_callback
+        )
 
         def remove() -> None:
             registration = self._registrations.get(key)
@@ -234,9 +264,11 @@ class PublishingController:
         now_utc = now_utc.astimezone(UTC)
         self.publishing_evaluations += 1
         for registration in tuple(self._registrations.values()):
+            ha_callback_succeeded = False
             try:
                 state = registration.reader()
                 fingerprint, attributes_fingerprint, payload_bytes = _fingerprint(state)
+                registration.faulted = False
                 should_publish, critical = self._should_publish(
                     registration, state, fingerprint, now_utc
                 )
@@ -244,6 +276,7 @@ class PublishingController:
                     registration.last_observed_state = state
                     continue
                 registration.callback()
+                ha_callback_succeeded = True
                 # The HA callback succeeded, so advance its durable publication
                 # cursor before optional diagnostic event bookkeeping. If that
                 # bookkeeping fails, the entity must not duplicate the already
@@ -253,6 +286,9 @@ class PublishingController:
                 registration.last_fingerprint = fingerprint
                 registration.last_attributes_fingerprint = attributes_fingerprint
                 registration.last_published_utc = now_utc
+                registration.faulted = False
+                registration.fault_publication_succeeded = False
+                registration.last_fault_publish_attempt_utc = None
                 self.publications += 1
                 self.last_successful_publication_utc = now_utc
                 self.critical_publications += int(critical)
@@ -266,6 +302,9 @@ class PublishingController:
                 # previous cursor for retry; a post-callback diagnostic failure
                 # retains the advanced cursor to avoid a duplicate HA state.
                 self.processing_failures += 1
+                if not ha_callback_succeeded:
+                    registration.faulted = True
+                    self._publish_fault_state(registration, now_utc)
                 if (
                     registration.last_error_logged_utc is None
                     or (now_utc - registration.last_error_logged_utc).total_seconds()
@@ -278,6 +317,46 @@ class PublishingController:
                     )
                 continue
         self._discard_old_events(now_utc)
+
+    def _publish_fault_state(self, registration: _Registration, now_utc: datetime) -> None:
+        """Publish one bounded unavailable state when an entity pipeline fails."""
+
+        if registration.failure_callback is None or registration.fault_publication_succeeded:
+            return
+        if (
+            registration.last_fault_publish_attempt_utc is not None
+            and (now_utc - registration.last_fault_publish_attempt_utc).total_seconds()
+            < FAULT_PUBLICATION_RETRY_SECONDS
+        ):
+            return
+        registration.last_fault_publish_attempt_utc = now_utc
+        fault_state = PublicationState(None, False, {"publication_fault": True})
+        try:
+            registration.failure_callback()
+        except Exception:
+            # The normal HA write path itself may be unavailable. Keep the
+            # registration fault visible in diagnostics and retry at a bounded
+            # interval; software cannot guarantee a fallback state when HA's
+            # state-write callback also fails.
+            return
+        fingerprint, attributes_fingerprint, payload_bytes = _fingerprint(fault_state)
+        registration.last_state = fault_state
+        registration.last_observed_state = fault_state
+        registration.last_fingerprint = fingerprint
+        registration.last_attributes_fingerprint = attributes_fingerprint
+        registration.last_published_utc = now_utc
+        registration.fault_publication_succeeded = True
+        self.publications += 1
+        self.critical_publications += 1
+        self.last_successful_publication_utc = now_utc
+        try:
+            if self._events.maxlen is not None and len(self._events) == self._events.maxlen:
+                self._event_history_truncated = True
+            self._events.append(_PublicationEvent(now_utc, registration.key, payload_bytes, True))
+        except Exception:
+            # The HA unavailable state is already durable; diagnostics must not
+            # turn that success into a retry storm or block another entity.
+            return
 
     def record_internal_timer_tick(self) -> None:
         """Record the actual one-second runtime timer independently of evaluations."""
@@ -294,7 +373,25 @@ class PublishingController:
         previous = registration.last_state
         if previous is None or registration.last_published_utc is None:
             return True, registration.publishing_class == PublishingClass.CRITICAL
+        if not state.available and registration.pending_available_recovery_utc is not None:
+            registration.pending_available_recovery_utc = None
         if state.available != previous.available:
+            if not state.available:
+                registration.pending_safe_clear_utc = None
+                registration.pending_available_recovery_utc = None
+                return True, True
+            if registration.key in FAIL_CLOSED_RECOVERY_KEYS:
+                if registration.pending_available_recovery_utc is None:
+                    registration.pending_available_recovery_utc = now_utc
+                elapsed = (now_utc - registration.pending_available_recovery_utc).total_seconds()
+                if elapsed < 0:
+                    registration.pending_available_recovery_utc = now_utc
+                    elapsed = 0
+                if elapsed < AVAILABILITY_RECOVERY_DEBOUNCE_SECONDS:
+                    self.suppressed_policy += 1
+                    return False, False
+                registration.pending_available_recovery_utc = None
+                return True, True
             registration.pending_safe_clear_utc = None
             return True, True
         if (
@@ -327,9 +424,26 @@ class PublishingController:
                 # threshold from producing a critical event every second.
                 if registration.pending_safe_clear_utc is None:
                     registration.pending_safe_clear_utc = now_utc
-                if (
-                    now_utc - registration.pending_safe_clear_utc
-                ).total_seconds() < CRITICAL_SAFE_CLEAR_DEBOUNCE_SECONDS:
+                elapsed = (now_utc - registration.pending_safe_clear_utc).total_seconds()
+                if elapsed < 0:
+                    registration.pending_safe_clear_utc = now_utc
+                    elapsed = 0
+                if elapsed < CRITICAL_SAFE_CLEAR_DEBOUNCE_SECONDS:
+                    self.suppressed_policy += 1
+                    return False, False
+                registration.pending_safe_clear_utc = None
+                return True, True
+        if registration.key == "input_stale":
+            if bool(state.value):
+                registration.pending_safe_clear_utc = None
+            elif bool(previous.value):
+                if registration.pending_safe_clear_utc is None:
+                    registration.pending_safe_clear_utc = now_utc
+                elapsed = (now_utc - registration.pending_safe_clear_utc).total_seconds()
+                if elapsed < 0:
+                    registration.pending_safe_clear_utc = now_utc
+                    elapsed = 0
+                if elapsed < CRITICAL_SAFE_CLEAR_DEBOUNCE_SECONDS:
                     self.suppressed_policy += 1
                     return False, False
                 registration.pending_safe_clear_utc = None
@@ -344,17 +458,44 @@ class PublishingController:
             if transition == "adverse":
                 registration.pending_safe_clear_utc = None
                 return True, True
-            if transition == "improvement":
+            direction = _actionable_value_direction(
+                registration.key,
+                previous.value,
+                state.value,
+                self.settings.actionable_hysteresis_kw,
+            )
+            observed_previous = registration.last_observed_state or previous
+            observed_direction = _actionable_value_direction(
+                registration.key,
+                observed_previous.value,
+                state.value,
+                self.settings.actionable_hysteresis_kw,
+            )
+            if direction == "improvement":
+                if observed_direction == "adverse":
+                    registration.pending_safe_clear_utc = None
                 if registration.pending_safe_clear_utc is None:
                     registration.pending_safe_clear_utc = now_utc
-                if (
-                    now_utc - registration.pending_safe_clear_utc
-                ).total_seconds() < ACTIONABLE_SAFE_DEBOUNCE_SECONDS:
+                elapsed = (now_utc - registration.pending_safe_clear_utc).total_seconds()
+                if elapsed < 0:
+                    registration.pending_safe_clear_utc = now_utc
+                    elapsed = 0
+                if elapsed < ACTIONABLE_SAFE_DEBOUNCE_SECONDS:
                     self.suppressed_policy += 1
                     return False, False
-                registration.pending_safe_clear_utc = None
-                return True, False
-            if registration.pending_safe_clear_utc is not None:
+                if transition == "improvement":
+                    # Crossing the zero/hysteresis boundary changes the
+                    # semantic advice state and is published once after the
+                    # required continuously-safe evidence window.
+                    registration.pending_safe_clear_utc = None
+                    return True, False
+                # The candidate is now safe enough to be eligible, but it is
+                # still an optimistic permission/restriction reduction. Keep
+                # the configured ACTIONABLE cadence and deadband below instead
+                # of creating a new publication every 30 seconds during a
+                # slowly improving trace. Retain the evidence timestamp until
+                # this eligible value is published or the direction worsens.
+            if direction != "improvement" and registration.pending_safe_clear_utc is not None:
                 # The observed value left the continuously safe side before
                 # debounce completion. Retain the conservative public value.
                 registration.pending_safe_clear_utc = None
@@ -479,6 +620,11 @@ class PublishingController:
             "suppressed_attribute_only": self.suppressed_attribute_only,
             "critical_publications": self.critical_publications,
             "processing_failures": self.processing_failures,
+            "faulted_entities": sorted(
+                registration.key
+                for registration in self._registrations.values()
+                if registration.faulted
+            ),
             "last_successful_publication_utc": (
                 self.last_successful_publication_utc.isoformat()
                 if self.last_successful_publication_utc is not None
@@ -557,6 +703,29 @@ def _actionable_zero_transition(
             return "adverse"
         if activated:
             return "improvement"
+    return None
+
+
+def _actionable_value_direction(
+    key: str, previous: Any, current: Any, hysteresis_kw: float
+) -> str | None:
+    """Classify a numeric move relative to the last public conservative value."""
+
+    if not isinstance(previous, (int, float)) or not isinstance(current, (int, float)):
+        return None
+    delta = float(current) - float(previous)
+    if delta == 0:
+        return None
+    if (
+        key in ACTIONABLE_DECREASE_IS_ADVERSE
+        and float(previous) <= hysteresis_kw
+        and float(current) <= hysteresis_kw
+    ):
+        return None
+    if key in ACTIONABLE_INCREASE_IS_ADVERSE:
+        return "adverse" if delta > 0 else "improvement"
+    if key in ACTIONABLE_DECREASE_IS_ADVERSE:
+        return "adverse" if delta < 0 else "improvement"
     return None
 
 

@@ -27,6 +27,7 @@ from custom_components.si_grid_monitor.engine import (
     quarter_bounds,
 )
 from custom_components.si_grid_monitor.publishing import (
+    FAIL_CLOSED_RECOVERY_KEYS,
     STORAGE_BUDGET_BYTES_PER_YEAR,
     PublicationState,
     PublishingClass,
@@ -256,10 +257,21 @@ def test_real_day_type_entity_changes_at_local_midnight_without_heartbeat(sensor
     assert [item.value for item in writes] == ["nonworking", "working"]
 
 
-def test_explicit_source_unavailability_immediately_hides_advice(sensor_module) -> None:
+@pytest.mark.parametrize(
+    ("source_mode", "export_known"),
+    (("signed_power", True), ("separate_power", True), ("import_only", False)),
+    ids=("mode-a", "mode-b", "mode-c"),
+)
+def test_explicit_source_unavailability_immediately_hides_advice(
+    sensor_module, source_mode: str, export_known: bool
+) -> None:
     runtime = _Runtime()
+    runtime.source_mode = source_mode
+    runtime.export_known = export_known
     now = datetime(2026, 10, 25, 12, 1, tzinfo=UTC)
-    _prepare_live_runtime(runtime, now, 2.0, stale=False)
+    # A genuine measured zero is valid in every active source mode and must not
+    # be conflated with the explicit unavailable transition below.
+    _prepare_live_runtime(runtime, now, 0.0, stale=False)
     advice = _entity("can_add_power", runtime, sensor_module)
     projected = _binary_entity("projected_exceedance", runtime, sensor_module)
     stale = _binary_entity("input_stale", runtime, sensor_module)
@@ -322,12 +334,139 @@ def test_natural_staleness_hides_projected_exceedance_without_false_clear(
     assert projected_writes == [(0, True, True), (61, False, True)]
     assert stale_writes == [(0, True, False), (61, True, True)]
 
-    now = start + timedelta(seconds=62)
+    for second in range(62, 93):
+        now = start + timedelta(seconds=second)
+        _prepare_live_runtime(runtime, now, 2.0, stale=False)
+        projected_controller.process(now)
+        stale_controller.process(now)
+    assert projected_writes[-1] == (92, True, False)
+    assert stale_writes[-1] == (92, True, False)
+
+
+def test_natural_staleness_immediately_unpublishes_real_numeric_advice(
+    sensor_module,
+) -> None:
+    """A retained HA source state must not leave optimistic advice available."""
+
+    runtime = _Runtime()
+    start = datetime(2026, 10, 25, 12, 0, tzinfo=UTC)
+    engine = FixedQuarterEngine(stale_after_seconds=60, source_id="mode=signed_power")
+    engine.ingest(PowerSample(start, 1.0))
+    runtime.engine = engine
+    runtime.current_tariff = SlovenianTariffCalendar().classify(start)
+    entities = {
+        key: _entity(key, runtime, sensor_module)
+        for key in (
+            "current_power",
+            "import_power",
+            "export_power",
+            "can_add_power",
+            "must_reduce_power",
+            "forecast_instant_kw",
+        )
+    }
+    projected = _binary_entity("projected_exceedance", runtime, sensor_module)
+    stale = _binary_entity("input_stale", runtime, sensor_module)
+    writes: dict[str, list[tuple[int, bool, object]]] = {
+        key: [] for key in (*entities, "projected_exceedance", "input_stale")
+    }
+    controller = PublishingController(PublishingSettings.from_mapping({}))
+    now = start
+    for key, entity in entities.items():
+        controller.register(
+            key,
+            sensor_module.sensor.SENSOR_PUBLISHING_POLICIES[key],
+            entity._publication_state,
+            lambda key=key, entity=entity: writes[key].append(
+                (int((now - start).total_seconds()), entity.available, entity.native_value)
+            ),
+        )
+    for key, entity in (("projected_exceedance", projected), ("input_stale", stale)):
+        controller.register(
+            key,
+            sensor_module.binary.BINARY_SENSOR_PUBLISHING_POLICIES[key],
+            entity._publication_state,
+            lambda key=key, entity=entity: writes[key].append(
+                (int((now - start).total_seconds()), entity.available, entity.is_on)
+            ),
+        )
+
+    for second in (0, 59, 60, 61):
+        now = start + timedelta(seconds=second)
+        engine.advance(now)
+        runtime.snapshot = engine.snapshot(now=now, target_kw=4.2)
+        controller.process(now)
+
+    for key in entities:
+        assert writes[key][-1][0:2] == (61, False)
+        assert writes[key][-1][2] is None
+    assert writes["projected_exceedance"][-1][0:2] == (61, False)
+    assert writes["input_stale"][-1] == (61, True, True)
+
+    for second in range(62, 93):
+        now = start + timedelta(seconds=second)
+        engine.ingest(PowerSample(now, 1.0))
+        runtime.snapshot = engine.snapshot(now=now, target_kw=4.2)
+        controller.process(now)
+    for key in entities:
+        assert writes[key][-1][0:2] == (92, True)
+
+
+def test_every_live_advice_entity_fails_closed_while_static_and_observed_values_remain(
+    sensor_module,
+) -> None:
+    runtime = _Runtime()
+    now = datetime(2026, 10, 25, 12, 5, tzinfo=UTC)
+    _prepare_live_runtime(runtime, now, 3.0, stale=True)
+    runtime.source_available = True
+    runtime.current_tariff = SlovenianTariffCalendar().classify(now)
+    runtime.sustained_forecast = SimpleNamespace(can_add_kw=1.0, must_reduce_kw=0.0)
+
+    assert sensor_module.sensor.LIVE_ADVICE_SENSOR_KEYS <= FAIL_CLOSED_RECOVERY_KEYS
+    for key in sensor_module.sensor.LIVE_ADVICE_SENSOR_KEYS:
+        assert _entity(key, runtime, sensor_module).available is False, key
+
+    # Known configuration and already observed partial energy remain truthful;
+    # they are not live permission or a fabricated zero measurement.
+    assert _entity("target_kw", runtime, sensor_module).available is True
+    assert _entity("operational_target_kw", runtime, sensor_module).available is True
+    accumulated = _entity("quarter_import_kwh_so_far", runtime, sensor_module)
+    assert accumulated.available is True
+    assert accumulated.native_value > 0
+
+    unrecoverable = _binary_entity("unrecoverable_interval", runtime, sensor_module)
+    assert unrecoverable.is_on is False
+    assert unrecoverable.available is False
+
+    _prepare_live_runtime(runtime, now.replace(minute=14), 5.0, stale=True)
+    runtime.source_available = True
+    proven_unrecoverable = _binary_entity("unrecoverable_interval", runtime, sensor_module)
+    assert proven_unrecoverable.is_on is True
+    assert proven_unrecoverable.available is True
+
+
+def test_fresh_live_advice_with_no_numeric_result_is_ha_unavailable(sensor_module) -> None:
+    runtime = _Runtime()
+    now = datetime(2026, 10, 25, 12, 0, 1, tzinfo=UTC)
     _prepare_live_runtime(runtime, now, 2.0, stale=False)
-    projected_controller.process(now)
-    stale_controller.process(now)
-    assert projected_writes[-1] == (62, True, False)
-    assert stale_writes[-1] == (62, True, False)
+    smoothed = _entity("forecast_smoothed_kw", runtime, sensor_module)
+    assert smoothed.native_value is None
+    assert smoothed.available is False
+
+
+def test_real_entity_fault_callback_publishes_unavailable_and_recovers(sensor_module) -> None:
+    runtime = _Runtime()
+    now = datetime(2026, 10, 25, 12, 5, tzinfo=UTC)
+    _prepare_live_runtime(runtime, now, 3.0, stale=False)
+    entity = _entity("can_add_power", runtime, sensor_module)
+    writes: list[bool] = []
+    entity.async_write_ha_state = lambda: writes.append(entity.available)
+
+    entity._handle_publication_failure()
+    assert writes == [False]
+    assert entity._publication_state().available is True
+    entity._handle_update()
+    assert writes == [False, True]
 
 
 def _live_snapshot(now: datetime, signed_kw: float, *, stale: bool) -> EngineSnapshot:
@@ -475,6 +614,23 @@ def test_constant_load_current_energy_is_fresh_and_completed_energy_is_exact(
     assert boundary_write[0] == start + timedelta(minutes=15)
     assert boundary_write[2] == (start + timedelta(minutes=15)).isoformat()
     assert boundary_write[1] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_resetting_quarter_energy_entities_do_not_claim_lifetime_total_statistics(
+    sensor_module,
+) -> None:
+    """A value resetting every quarter is not a HA lifetime total counter."""
+
+    descriptions = {
+        item.key: item
+        for item in sensor_module.sensor.SENSORS
+        if item.key in {"quarter_import_kwh_so_far", "quarter_export_kwh_so_far"}
+    }
+    assert set(descriptions) == {
+        "quarter_import_kwh_so_far",
+        "quarter_export_kwh_so_far",
+    }
+    assert all(item.state_class is None for item in descriptions.values())
 
 
 @pytest.mark.parametrize(

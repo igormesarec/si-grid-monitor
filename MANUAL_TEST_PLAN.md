@@ -52,7 +52,7 @@ presentation still require real Home Assistant validation.
    exclusions should be required after independent validation.
 8. Measure physical growth for the real 60-day Recorder and unlimited-retention
    InfluxDB installation. CI's three civil-day real-entity workloads project
-   about 740–755 MB/year for two meters, but their InfluxDB component is an unverified allowance—not a
+   about 774–790 MB/year for two meters, but their InfluxDB component is an unverified allowance—not a
    physical measurement. Follow the non-destructive commands in
    `docs/data-publishing-and-storage.md`; record event counts, filesystem growth,
    series cardinality and unrelated writers.
@@ -67,6 +67,12 @@ presentation still require real Home Assistant validation.
     projected exceedance and live advice must become unavailable and
     `input_stale` must be on. A fresh report must recover availability without
     filling the unknown interval with zero.
+    Check `current_power`, import/export power, remaining budget, allowed import,
+    instantaneous/smoothed forecasts, forecast/current utilization and both
+    ordinary/sustained CAN ADD/MUST REDUCE. Each live value must be unavailable,
+    while B1–B5/active static targets and already observed quarter energy remain.
+    Repeat on Mode B by stopping only one channel and by creating timestamp skew;
+    repeat on Mode C. A measured `0.000 kW` must stay distinct from unavailable.
 11. Drive MUST REDUCE through 0.200 → 1.000 → 2.500 kW and verify every
     materially worse step is prompt. Drive CAN ADD downward by the configured
     material delta and verify the headroom loss is prompt; safe improvements may
@@ -76,6 +82,22 @@ presentation still require real Home Assistant validation.
     once per second for one hour on both meters. Confirm MUST REDUCE activation
     and CAN ADD loss remain prompt, safety-improving clears/gains require 30
     stable seconds, and Recorder does not receive a 3,600-event-per-hour stream.
+13. Test nonzero optimism: hold MUST REDUCE at 3.000 kW, briefly improve to
+    2.000 kW, then worsen to 3.500 kW. The transient 2.000 kW must not publish;
+    the worsening must. Repeat CAN ADD `3.000 → 1.000 → 2.000 → 0.500 kW` and
+    confirm both losses publish promptly while the brief gain is withheld.
+14. Inject a test-only entity reader failure. Confirm the affected advice becomes
+    unavailable once, Overview lists the faulted publication, healthy entities
+    continue and recovery requires stable evidence. Then inject a failed HA
+    state-write callback: confirm rate-limited logs and bounded 30-second retry.
+    This is a manual fault-injection test on an isolated HA instance only.
+15. Inspect Developer Tools and Recorder statistics metadata for current-quarter
+    import/export energy. The entities must retain their IDs and kWh values but
+    must not advertise a lifetime-total state class or generate corrupt sums at
+    each 15-minute reset.
+16. Run a 20-minute silent outage spanning a quarter boundary and repeat across
+    the autumn DST fold. Completed quarters must retain only observed energy,
+    coverage/gaps must be truthful, and recovery must not modify the past row.
 
 ## V1.0.3 mobile Contracts and calendar acceptance
 

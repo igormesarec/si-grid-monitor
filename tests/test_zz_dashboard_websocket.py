@@ -243,6 +243,7 @@ def test_publishing_command_aggregates_selected_meter_without_recorder_scan() ->
         "suppressed_attribute_only": 25,
         "critical_publications": 2,
         "processing_failures": 1,
+        "faulted_entities": ["can_add_power"],
         "effective_current_measurement_interval_seconds": 900,
         "effective_quarter_accumulation_interval_seconds": 180,
         "last_successful_publication_utc": "2026-10-25T12:00:00+00:00",
@@ -276,6 +277,9 @@ def test_publishing_command_aggregates_selected_meter_without_recorder_scan() ->
     assert connection.result["totals"]["internal_timer_ticks_per_minute"] == 60.0
     assert connection.result["totals"]["influxdb_physical_storage_verified"] is False
     assert connection.result["totals"]["processing_failures"] == 1
+    assert connection.result["totals"]["faulted_entities"] == [
+        {"meter": "Meter B", "entity_key": "can_add_power"}
+    ]
     assert connection.result["totals"]["effective_quarter_accumulation_interval_seconds"] == 180
 
 

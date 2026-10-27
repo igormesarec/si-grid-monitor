@@ -8,6 +8,8 @@ from collections import deque
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
+
 from custom_components.si_grid_monitor.const import (
     CONF_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS,
     CONF_PUBLISHING_PROFILE,
@@ -301,6 +303,225 @@ def test_second_danger_interrupts_pending_safe_clear_immediately() -> None:
     assert writes == [(0, 0.0), (1, 1.0), (10, 1.6)]
 
 
+def test_nonzero_optimistic_actionable_recovery_requires_stable_evidence() -> None:
+    controller = PublishingController(
+        PublishingSettings.from_mapping({CONF_PUBLISHING_PROFILE: PUBLISHING_PROFILE_AUTOMATION})
+    )
+    mutable = {"must_reduce_power": 3.0, "can_add_power": 3.0}
+    writes: dict[str, list[tuple[int, float]]] = {
+        "must_reduce_power": [],
+        "can_add_power": [],
+    }
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    now = start
+    for key in mutable:
+        controller.register(
+            key,
+            PublishingClass.ACTIONABLE,
+            lambda key=key: PublicationState(mutable[key], True, {}),
+            lambda key=key: writes[key].append((int((now - start).total_seconds()), mutable[key])),
+        )
+    controller.process(now)
+
+    mutable.update(must_reduce_power=2.0, can_add_power=1.0)
+    now = start + timedelta(seconds=1)
+    controller.process(now)
+    assert writes["must_reduce_power"] == [(0, 3.0)]
+    assert writes["can_add_power"] == [(0, 3.0), (1, 1.0)]
+
+    mutable.update(must_reduce_power=3.5, can_add_power=2.0)
+    now = start + timedelta(seconds=10)
+    controller.process(now)
+    assert writes["must_reduce_power"][-1] == (10, 3.5)
+    assert writes["can_add_power"][-1] == (1, 1.0)
+
+    mutable["can_add_power"] = 0.5
+    now = start + timedelta(seconds=11)
+    controller.process(now)
+    assert writes["can_add_power"][-1] == (11, 0.5)
+
+    mutable["must_reduce_power"] = 2.0
+    for second in range(12, 43):
+        now = start + timedelta(seconds=second)
+        controller.process(now)
+    assert writes["must_reduce_power"][-1] == (42, 2.0)
+
+
+def test_nonzero_optimistic_recovery_keeps_storage_optimized_cadence() -> None:
+    controller = PublishingController(PublishingSettings.from_mapping({}))
+    mutable = {"value": 3.0}
+    writes: list[tuple[int, float]] = []
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    now = start
+    controller.register(
+        "must_reduce_power",
+        PublishingClass.ACTIONABLE,
+        lambda: PublicationState(mutable["value"], True, {}),
+        lambda: writes.append((int((now - start).total_seconds()), mutable["value"])),
+    )
+    controller.process(now)
+    mutable["value"] = 2.0
+    for second in range(1, 901):
+        now = start + timedelta(seconds=second)
+        controller.process(now)
+
+    # Thirty seconds makes the improvement eligible; it does not introduce a
+    # 30-second heartbeat. The configured 900-second actionable cadence still
+    # controls the actual optimistic publication.
+    assert writes == [(0, 3.0), (900, 2.0)]
+
+
+def test_fail_closed_availability_flapping_is_bounded_for_two_meters() -> None:
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    now = start
+    controllers: list[PublishingController] = []
+    available = [True, True]
+    writes: dict[tuple[int, str], list[tuple[int, bool]]] = {}
+    for meter in range(2):
+        controller = PublishingController(PublishingSettings.from_mapping({}))
+        controllers.append(controller)
+        for key, publishing_class in (
+            ("can_add_power", PublishingClass.ACTIONABLE),
+            ("projected_exceedance", PublishingClass.CRITICAL),
+            ("input_stale", PublishingClass.CRITICAL),
+        ):
+            writes[(meter, key)] = []
+            controller.register(
+                key,
+                publishing_class,
+                lambda meter=meter, key=key: PublicationState(
+                    not available[meter] if key == "input_stale" else False,
+                    True if key == "input_stale" else available[meter],
+                    {},
+                ),
+                lambda meter=meter, key=key: writes[(meter, key)].append(
+                    (
+                        int((now - start).total_seconds()),
+                        not available[meter] if key == "input_stale" else available[meter],
+                    )
+                ),
+            )
+
+    for second in range(3_600):
+        now = start + timedelta(seconds=second)
+        for meter in range(2):
+            available[meter] = second % 2 == 0
+            controllers[meter].process(now)
+
+    for meter in range(2):
+        assert writes[(meter, "can_add_power")] == [(0, True), (1, False)]
+        assert writes[(meter, "projected_exceedance")] == [(0, True), (1, False)]
+        assert writes[(meter, "input_stale")] == [(0, False), (1, True)]
+
+
+@pytest.mark.parametrize(
+    "settings",
+    (
+        PublishingSettings.from_mapping({}),
+        PublishingSettings.from_mapping({CONF_PUBLISHING_PROFILE: PUBLISHING_PROFILE_AUTOMATION}),
+        _settings(),
+    ),
+    ids=("storage-optimized", "automation-priority", "custom"),
+)
+def test_source_loss_is_immediate_and_recovery_stable_in_every_profile(settings) -> None:
+    controller = PublishingController(settings)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    mutable = {"available": True}
+    writes: list[tuple[int, bool]] = []
+    now = start
+    controller.register(
+        "can_add_power",
+        PublishingClass.ACTIONABLE,
+        lambda: PublicationState(2.0, mutable["available"], {}),
+        lambda: writes.append((int((now - start).total_seconds()), mutable["available"])),
+    )
+    controller.process(now)
+    mutable["available"] = False
+    now = start + timedelta(seconds=1)
+    controller.process(now)
+    mutable["available"] = True
+    for second in range(2, 33):
+        now = start + timedelta(seconds=second)
+        controller.process(now)
+    assert writes == [(0, True), (1, False), (32, True)]
+
+
+def test_persistent_reader_failure_marks_registration_faulted_once() -> None:
+    controller = PublishingController(PublishingSettings.from_mapping({}))
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    failing = {"enabled": False}
+    writes: list[bool] = []
+
+    def reader() -> PublicationState:
+        if failing["enabled"]:
+            raise RuntimeError("authoritative advice reader failed")
+        return PublicationState(2.0, True, {})
+
+    controller.register(
+        "can_add_power",
+        PublishingClass.ACTIONABLE,
+        reader,
+        lambda: writes.append(True),
+        lambda: writes.append(False),
+    )
+    controller.process(start)
+    failing["enabled"] = True
+    for second in range(1, 121):
+        controller.process(start + timedelta(seconds=second))
+
+    registration = controller._registrations["can_add_power"]
+    assert registration.last_state is not None
+    assert registration.last_state.available is False
+    assert writes == [True, False]
+    assert controller.diagnostics(start + timedelta(seconds=120))["faulted_entities"] == [
+        "can_add_power"
+    ]
+
+    failing["enabled"] = False
+    for second in range(121, 152):
+        controller.process(start + timedelta(seconds=second))
+    assert writes == [True, False, True]
+    assert controller.diagnostics(start + timedelta(seconds=151))["faulted_entities"] == []
+
+
+def test_failed_fault_callback_is_retried_at_bounded_interval() -> None:
+    controller = PublishingController(PublishingSettings.from_mapping({}))
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    reader_fails = {"enabled": False}
+    fallback_attempts: list[int] = []
+    now = start
+
+    def reader() -> PublicationState:
+        if reader_fails["enabled"]:
+            raise RuntimeError("reader failed")
+        return PublicationState(2.0, True, {})
+
+    def failure_callback() -> None:
+        fallback_attempts.append(int((now - start).total_seconds()))
+        if len(fallback_attempts) == 1:
+            raise RuntimeError("HA state write failed")
+
+    controller.register(
+        "can_add_power",
+        PublishingClass.ACTIONABLE,
+        reader,
+        lambda: None,
+        failure_callback,
+    )
+    controller.process(start)
+    reader_fails["enabled"] = True
+    for second in range(1, 33):
+        now = start + timedelta(seconds=second)
+        controller.process(now)
+
+    assert fallback_attempts == [1, 31]
+    registration = controller._registrations["can_add_power"]
+    assert registration.faulted is True
+    assert registration.fault_publication_succeeded is True
+    assert registration.last_state is not None
+    assert registration.last_state.available is False
+
+
 def test_projected_exceedance_asserts_immediately_and_safe_clear_is_debounced() -> None:
     controller = PublishingController(_settings())
     mutable = {"value": False, "available": True}
@@ -335,6 +556,32 @@ def test_projected_exceedance_asserts_immediately_and_safe_clear_is_debounced() 
     now = start + timedelta(seconds=3632)
     controller.process(now)
     assert writes[-1] == (3632, False, False)
+
+
+def test_nonmonotonic_time_restarts_projected_safe_evidence_window() -> None:
+    controller = PublishingController(_settings())
+    mutable = {"value": True}
+    writes: list[tuple[datetime, bool]] = []
+    start = datetime(2026, 1, 1, 0, 1, tzinfo=UTC)
+    now = start
+    controller.register(
+        "projected_exceedance",
+        PublishingClass.CRITICAL,
+        lambda: PublicationState(mutable["value"], True, {}),
+        lambda: writes.append((now, mutable["value"])),
+    )
+    controller.process(now)
+    mutable["value"] = False
+    now = start + timedelta(seconds=1)
+    controller.process(now)
+    now = start - timedelta(seconds=10)
+    controller.process(now)
+    now = start + timedelta(seconds=19)
+    controller.process(now)
+    assert writes == [(start, True)]
+    now = start + timedelta(seconds=20)
+    controller.process(now)
+    assert writes == [(start, True), (start + timedelta(seconds=20), False)]
 
 
 def test_callback_failure_does_not_block_other_entities(caplog) -> None:

@@ -150,6 +150,28 @@ def test_long_silent_outage_across_autumn_fold_never_fabricates_zero_measurement
     assert engine.bounds.start_local.fold == 1
 
 
+def test_twenty_minute_silent_outage_preserves_incomplete_quarter_after_recovery() -> None:
+    start = datetime(2026, 10, 18, 10, 0, tzinfo=UTC)
+    engine = FixedQuarterEngine(stale_after_seconds=60, source_id="sensor.grid")
+    engine.ingest(PowerSample(start, 3.0))
+    recovery = start + timedelta(minutes=20)
+    engine.advance(recovery)
+
+    assert len(engine.completed) == 1
+    completed = engine.completed[0]
+    assert completed.import_kwh == pytest.approx(0.05)
+    assert completed.coverage_seconds == pytest.approx(60)
+    assert completed.gap_seconds == pytest.approx(840)
+    assert completed.quality == DataQuality.INCOMPLETE
+
+    engine.ingest(PowerSample(recovery, 2.0))
+    snapshot = engine.snapshot(now=recovery + timedelta(seconds=1), target_kw=4.2)
+    assert snapshot.input_stale is False
+    assert snapshot.coverage_seconds == pytest.approx(1)
+    assert snapshot.gap_seconds == pytest.approx(300)
+    assert engine.completed[0] == completed
+
+
 def test_import_only_billing_acceptance_never_nets_export() -> None:
     engine = FixedQuarterEngine(stale_after_seconds=600)
     engine.ingest(PowerSample(utc(0, 0), 6.0))

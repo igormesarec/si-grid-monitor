@@ -996,10 +996,17 @@ class GridMonitorRuntime:
         publishing_class: PublishingClass,
         state_reader: Callable[[], PublicationState],
         listener: Callable[[], None],
+        failure_listener: Callable[[], None] | None = None,
     ) -> Callable[[], None]:
         """Register an entity with the centralized publication controller."""
 
-        return self.publishing.register(entity_key, publishing_class, state_reader, listener)
+        return self.publishing.register(
+            entity_key,
+            publishing_class,
+            state_reader,
+            listener,
+            failure_listener,
+        )
 
     @callback
     def _async_state_changed(self, event: Event) -> None:

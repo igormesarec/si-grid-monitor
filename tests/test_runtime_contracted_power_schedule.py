@@ -309,6 +309,49 @@ def test_mode_b_timestamp_skew_is_unavailable_without_pairing_stale_channel(tmp_
     assert len(refreshed) == 2
 
 
+def test_mode_b_duplicate_timestamp_cannot_recover_an_unavailable_channel(tmp_path) -> None:
+    runtime, _schedule = _runtime(
+        tmp_path,
+        **{
+            CONF_SOURCE_MODE: SOURCE_SEPARATE_POWER,
+            CONF_IMPORT_POWER_ENTITY: "sensor.import",
+            CONF_EXPORT_POWER_ENTITY: "sensor.export",
+        },
+    )
+    runtime._refresh = lambda _now: None  # type: ignore[method-assign]
+    now = datetime.now(UTC)
+
+    def state(value: str, timestamp: datetime):
+        return types.SimpleNamespace(
+            state=value,
+            attributes={"unit_of_measurement": "W"},
+            last_reported=timestamp,
+            last_updated=timestamp,
+        )
+
+    runtime._ingest_power_states(state("800", now), state("0", now))  # type: ignore[arg-type]
+    assert runtime.source_available is True
+
+    runtime._ingest_power_states(  # type: ignore[arg-type]
+        state("800", now + timedelta(seconds=1)),
+        state("unavailable", now + timedelta(seconds=1)),
+    )
+    assert runtime.source_available is False
+
+    # Replaying the previous paired timestamp is not new evidence and must not
+    # make the failed source look fresh again.
+    runtime._ingest_power_states(state("800", now), state("0", now))  # type: ignore[arg-type]
+    assert runtime.source_available is False
+
+    recovered = now + timedelta(seconds=2)
+    runtime._ingest_power_states(  # type: ignore[arg-type]
+        state("800", recovered), state("0", recovered)
+    )
+    assert runtime.source_available is True
+    assert runtime.engine.last_sample is not None
+    assert runtime.engine.last_sample.timestamp_utc == recovered
+
+
 def test_dashboard_masks_untrusted_live_advice_but_keeps_accumulated_energy(tmp_path) -> None:
     runtime, _schedule = _runtime(tmp_path)
     now = _local_utc(2026, 10, 18, 12, 5)

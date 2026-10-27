@@ -49,6 +49,22 @@ All notable changes to SI Grid Monitor will be documented here.
   Options estimates use selected intervals, fast entities and actual meter count.
 - Reworked Contracts evidence/audit content into mobile cards while retaining
   desktop tables, and corrected calendar scroll alignment and repeated-hour offsets.
+- Corrected the final stale-input availability gap: current/import/export power,
+  every instantaneous-dependent forecast and all CAN ADD/MUST REDUCE advice now
+  publish unavailable on the first stale evaluation instead of leaving an old
+  available numeric state for the normal 900-second cadence. Static contract
+  targets and already evidenced partial energy remain available.
+- Extended conservative recovery to nonzero optimistic advice changes and
+  source-availability recovery. Thirty seconds of uninterrupted evidence is
+  required, while nonzero improvements still follow the configured actionable
+  cadence so recovery cannot become a new 30-second Recorder heartbeat.
+- Added a bounded per-entity publication-fault latch. Reader/policy/serialization
+  failures attempt to publish unavailable, are exposed in diagnostics, and retry
+  failed HA fallback writes no more often than every 30 seconds without blocking
+  healthy entities.
+- Removed the lifetime-total state class from resetting current-quarter import
+  and export energy entities. Entity IDs, values, archive precision and schema 7
+  remain unchanged; no historical statistics are rewritten.
 
 ## [1.0.2] - release candidate
 
