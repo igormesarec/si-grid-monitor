@@ -1,5 +1,12 @@
 # SI Grid Monitor — načini merjenja in razlaga
 
+## Jezik uporabniškega vmesnika
+
+Prednostni jezik nastavite ob namestitvi ali v Možnostih. Dostopno stikalo
+**EN/SL** je v skupni glavi vseh strani nadzorne plošče. Izbira v glavi ima v
+tem brskalniku prednost, ostane po osvežitvi in se ob menjavi merilnika ne
+ponastavi. Nastavitev ne spreminja pogodb, arhiva ali jezika Home Assistant.
+
 ## Izbira vira
 
 | Način | Podatek | Pomembna omejitev |
@@ -63,6 +70,27 @@ ločena primerjava.
 ## Nastavitve
 
 Privzeto glajenje je **120 sekund**, časovno obzorje daljše napovedi **60 minut**, hramba arhiva **trajno**. Simulacija in uporaba začasnih pravil za 2028–2030 sta privzeto izklopljeni. Simulacijski prag ne spremeni uradnih pogodbenih omejitev, dokler simulacije ne omogočite; tudi takrat rezultati niso uradno potrjene prekoračitve.
+
+### Objavljanje podatkov in shranjevanje
+
+Notranji izračun še vedno teče vsako sekundo, vendar centralni krmilnik objavi
+novo stanje Home Assistant samo ob pomembni spremembi, prehodu razpoložljivosti,
+kritičnem dogodku ali po nastavljenem intervalu. Privzeti profil **Optimizirano
+shranjevanje** je namenjen dvema merilnikoma z manj kot 1 GB ocenjenega letnega
+prispevka k Recorderju, InfluxDB in internemu arhivu. Profil **Prednost
+avtomatizacijam** je hitrejši, vendar lahko cilj preseže; **Po meri** omogoča
+intervale, mrtve pasove in izbrane hitre entitete.
+
+Na Pregledu je razdelek **Objavljanje in shranjevanje podatkov** z omejenimi
+števci za uro, dan ali teden. Prikazane velikosti so inženirske ocene, ne dejanska
+velikost zunanje podatkovne zbirke. Menjava profila ne spremeni izračunov,
+pogodb, zgodovine ali ID-jev entitet. Avtomatizacije številskih stanj berejo
+zadnjo objavljeno vrednost; pomembni lastni alarmni prehodi ostanejo takojšnji.
+
+V običajnem privzetem načinu niso potrebne posebne YAML izključitve. Starih
+zapisov V1.0.3 ne briše samodejno. Podrobnosti so v angleškem vodiču
+[Data publishing and storage](../data-publishing-and-storage.md) in
+[Manual cleanup](../manual-storage-cleanup.md).
 
 ## Omejitve in varnost
 

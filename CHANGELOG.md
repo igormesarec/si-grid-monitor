@@ -4,6 +4,81 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+### V1.0.3 localization draft
+
+- Added a first native ConfigFlow **Language / Jezik** selector with English as
+  the default and Slovenščina as the alternative.
+- Added a non-destructive Preferred language option and an accessible EN/SL
+  switch in the shared dashboard header.
+- Dashboard overrides persist across navigation/reloads, take priority over the
+  selected meter preference, and do not reset when the active meter changes.
+- Existing entries default to English only when no preference exists; archives,
+  contracts, source epochs, entry identities and measurements are untouched.
+- Integrated full V1.0.2 Contracts, historical evidence, audit pagination,
+  Repairs and calendar semantics into both English and Slovenian interfaces.
+- Added a centralized publishing controller that preserves one-second internal
+  calculations while suppressing unchanged, below-deadband and premature HA
+  state publications. Every sensor and binary sensor has an explicit policy.
+- Added Storage Optimized (default), Automation Priority and Custom per-meter
+  publishing profiles, including a non-destructive Restore Defaults action.
+- Added authenticated Data Publishing & Storage diagnostics to Overview with
+  bounded hour/day/week counters, per-meter/all-meter estimates and top publishers.
+- Reduced changing public attributes and marked retained high-frequency
+  diagnostic attributes unrecorded, protecting both Recorder and InfluxDB by
+  preventing the underlying HA state events rather than relying on exclusions.
+- Added deterministic two-meter real-entity benchmarks for true 23-, 24-, and
+  25-hour Europe/Ljubljana days (92/96/100 quarters). The enhanced Recorder-like
+  model projects approximately 740–755 MB/year including an explicitly
+  unverified InfluxDB allowance and archive allowance; physical storage remains
+  a manual gate.
+- Removed a per-second tariff wall-clock attribute, limited zero-crossing bypass
+  to actionable signals, added a 30-second continuously-safe clear for projected
+  exceedance, and made every materially worse MUST REDUCE increase or CAN ADD
+  decrease prompt without changing the one-second calculation engine.
+- Explicit or naturally stale source input now immediately hides dependent
+  advice without ingesting zero or changing accumulated energy; reader,
+  serialization, policy, callback and bookkeeping failures are isolated per
+  entity with bounded logging and diagnostics.
+- Added asymmetric actionable-state stabilization: hazardous MUST REDUCE
+  activation and CAN ADD loss remain immediate, while safe clears/headroom
+  recovery require 30 seconds of continuous evidence. Current-quarter imported
+  energy now publishes after the first minute, at most every 180 seconds in the
+  default profile, and immediately resets at a canonical quarter boundary.
+- Truncated diagnostics no longer annualize incomplete evidence. Overview shows
+  selected-meter activity alongside all-meter budget totals, while Custom
+  Options estimates use selected intervals, fast entities and actual meter count.
+- Reworked Contracts evidence/audit content into mobile cards while retaining
+  desktop tables, and corrected calendar scroll alignment and repeated-hour offsets.
+- Corrected the final stale-input availability gap: current/import/export power,
+  every instantaneous-dependent forecast and all CAN ADD/MUST REDUCE advice now
+  publish unavailable on the first stale evaluation instead of leaving an old
+  available numeric state for the normal 900-second cadence. Static contract
+  targets and already evidenced partial energy remain available.
+- Extended conservative recovery to nonzero optimistic advice changes and
+  source-availability recovery. Thirty seconds of uninterrupted evidence is
+  required, while nonzero improvements still follow the configured actionable
+  cadence so recovery cannot become a new 30-second Recorder heartbeat.
+- Added a bounded per-entity publication-fault latch. Reader/policy/serialization
+  failures attempt to publish unavailable, are exposed in diagnostics, and retry
+  failed HA fallback writes no more often than every 30 seconds without blocking
+  healthy entities.
+- Removed the lifetime-total state class from resetting current-quarter import
+  and export energy entities. Entity IDs, values, archive precision and schema 7
+  remain unchanged; no historical statistics are rewritten.
+- Gave current-quarter exported energy the same first-minute, 180-second and
+  canonical-rollover publication contract as imported energy while keeping
+  Mode C export unavailable and contractual import demand export-independent.
+- Added canonical UTC start/end metadata to both completed-quarter sensors so
+  identical consecutive numeric results still create one observable completion
+  event without a per-second heartbeat, including repeated DST hours.
+- Made bounded event-history truncation diagnostic-window specific. Hour/day/
+  week estimates recover after discarded events leave the requested window;
+  incomplete startup or truncated windows are never annualized as complete.
+- Repeated the real-entity two-meter benchmark with sustained export,
+  reversals, outages, safety changes and completion events: the 23/24/25-hour
+  projections are 938.4/917.2/939.4 MB/year. Physical Recorder/InfluxDB growth
+  remains an explicit manual acceptance gate.
+
 ## [1.0.2] - release candidate
 
 - Added guided Schedule change with atomic two- or three-segment inclusive date

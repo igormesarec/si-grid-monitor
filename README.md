@@ -8,9 +8,10 @@ contracted-power target, and preserves auditable quarter history. It is useful
 for homes and small sites with heat pumps, EV charging, solar PV or other loads
 that need clearer visibility into quarter-hour grid import.
 
-**Release status:** V1.0.2 is a proposed release candidate adding guided,
-auditable contracted-power management. It is pending real Home Assistant and
-Android acceptance.
+**Release status:** V1.0.3 is a draft release candidate that integrates the
+complete V1.0.2 contract-management system with English/Slovenian installation,
+dashboard and reporting localization. Real Home Assistant and Android acceptance
+is still required.
 
 This is monitoring and decision-support software—not a distributor-certified
 meter, guaranteed bill calculation, physical protection device or automatic
@@ -29,6 +30,18 @@ load controller.
 - Multiple independent meter entries behind one shared sidebar panel.
 - Three-decimal kW/kWh presentation without reducing stored precision.
 - English and Slovenian configuration and dashboard terminology.
+- Centralized, per-meter entity publishing that keeps one-second calculations
+  while coalescing routine Home Assistant state events. The default Storage
+  Optimized profile needs no SI Grid Monitor Recorder/InfluxDB YAML exclusions.
+- Fail-closed stale-source behavior and asymmetric advice publication: danger
+  and lost headroom are prompt; stale current power and all live numeric advice
+  become unavailable rather than retaining an optimistic value; optimistic
+  clears/recovery require stable evidence. Per-entity processing faults also
+  attempt a bounded unavailable publication and remain visible in diagnostics.
+  Current-quarter import and known export energy stay bounded without turning
+  the rest of the integration back into a high-frequency Recorder stream;
+  because they reset every quarter, they are not advertised as lifetime-total
+  statistics sources.
 
 Exported energy is recorded separately where the selected source measures it.
 It never offsets imported energy when calculating contractual quarter demand.
@@ -72,6 +85,10 @@ their original quality and provenance.
 - **[History and archive safety](docs/history-and-archive.md)**,
   **[data quality](docs/data-quality.md)** and
   **[troubleshooting](docs/troubleshooting.md)**.
+- **[Data publishing and storage](docs/data-publishing-and-storage.md)** — profiles,
+  automation trade-offs, diagnostics and the measured two-meter budget.
+- **[Manual legacy-data cleanup](docs/manual-storage-cleanup.md)** — backup-first
+  guidance for data created by older releases; V1.0.3 never deletes it automatically.
 - **[Slovenščina: hiter začetek](docs/sl/zacetek.md)** and
   **[slovenski vodnik](docs/sl/vodnik.md)**.
 
@@ -84,7 +101,9 @@ brand icons are not presented as Home Assistant screenshots.
    `https://github.com/igormesarec/si-grid-monitor` as an **Integration**.
 2. Install SI Grid Monitor and restart Home Assistant.
 3. Open **Settings → Devices & services → Add integration → SI Grid Monitor**.
-4. Name the meter, choose Mode A, B or C, and select the real grid W/kW sensor(s).
+4. In **Language / Jezik**, choose the initial dashboard language (English is
+   the default), then name the meter, choose Mode A, B or C, and select the real
+   grid W/kW sensor(s).
 5. Configure the actual validity dates and B1–B5 contracted-power values.
 6. Open **SI Grid Monitor** from the automatically registered sidebar entry.
 
@@ -137,6 +156,11 @@ never manufactured as zero.
   permission to exceed breaker, phase, cable, inverter or connection ratings.
 - Forecasts repeat recent or current behavior; they do not predict weather,
   appliance schedules or PV production.
+- The dashboard reads live internal runtime data, while Storage Optimized may
+  publish ordinary `current_power`, `import_power` and `export_power` HA entity
+  states only every 900 seconds. Use Automation Priority or a measured Custom
+  profile for numeric-state automations that require fresher states; critical
+  SI Grid Monitor warnings and material adverse advice remain prompt.
 - Home Assistant samples can produce reconstructed estimates that differ from
   official distributor measurements.
 - Official 2026/2027 tariff tables are versioned. Unverified future years are

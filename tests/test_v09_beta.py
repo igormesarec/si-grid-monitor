@@ -35,8 +35,13 @@ from custom_components.si_grid_monitor.const import (
     CONF_CONTRACTED_POWER_PERIODS,
     CONF_EXPORT_POWER_ENTITY,
     CONF_IMPORT_POWER_ENTITY,
+    CONF_METER_NAME,
+    CONF_PENDING_CONTRACT_AUDIT,
     CONF_POSITIVE_MEANS_IMPORT,
     CONF_POWER_ENTITY,
+    CONF_PREFERRED_LANGUAGE,
+    CONF_PUBLISHING_PROFILE,
+    CONF_PUBLISHING_ROUTINE_INTERVAL_SECONDS,
     CONF_SAFETY_MARGIN_KW,
     CONF_SIMULATION_ENABLED,
     CONF_SIMULATION_TARGET_KW,
@@ -948,9 +953,9 @@ def test_beta_version_frontend_and_hacs_package_are_consistent() -> None:
         encoding="utf-8"
     )
     hacs = json.loads((ROOT / "hacs.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == VERSION == "1.0.2"
-    assert "dashboard-model.mjs?v=1.0.2" in dashboard
-    assert "dashboard-i18n.mjs?v=1.0.2" in dashboard
+    assert manifest["version"] == VERSION == "1.0.3"
+    assert "dashboard-model.mjs?v=1.0.3" in dashboard
+    assert "dashboard-i18n.mjs?v=1.0.3" in dashboard
     assert hacs["name"] == "SI Grid Monitor"
     assert not any(ROOT.joinpath(name).exists() for name in ("release.zip", "dist.zip"))
 
@@ -1308,6 +1313,8 @@ def test_native_options_menu_remains_available_with_dashboard_panel() -> None:
     assert result["step_id"] == "init"
     assert result["menu_options"] == [
         "settings",
+        "data_publishing",
+        "restore_publishing_defaults",
         "assignments",
         "add_assignment",
         "archive_removal",
@@ -1475,10 +1482,115 @@ def test_v09_entry_migrates_to_mode_a_without_changing_identity() -> None:
 
     hass = SimpleNamespace(config_entries=Entries())
     assert _run(async_migrate_entry(hass, entry))
-    assert entry.version == 5
+    assert entry.version == 6
     assert entry.entry_id == "existing-mode-a"
     assert entry.data[CONF_SOURCE_MODE] == "signed_power"
     assert entry.data[CONF_POWER_ENTITY] == "sensor.solaredge_m1_ac_power"
+    assert entry.options["preferred_language"] == "en"
+
+
+def test_v103_language_is_the_first_native_setup_step_and_is_saved() -> None:
+    _ensure_config_flow_stubs()
+    sys.modules.pop("custom_components.si_grid_monitor.config_flow", None)
+    from custom_components.si_grid_monitor.config_flow import SIGridMonitorConfigFlow
+
+    flow = SIGridMonitorConfigFlow()
+    flow.async_show_form = lambda **kwargs: kwargs  # type: ignore[method-assign]
+    first = _run(flow.async_step_user())
+    assert first["step_id"] == "user"
+    assert set(first["data_schema"].schema) == {CONF_PREFERRED_LANGUAGE}
+
+    source = _run(flow.async_step_user({CONF_PREFERRED_LANGUAGE: "sl"}))
+    assert source["step_id"] == "source"
+    assert {CONF_METER_NAME, CONF_SOURCE_MODE} <= set(source["data_schema"].schema)
+    assert flow._values[CONF_PREFERRED_LANGUAGE] == "sl"
+
+
+def test_v103_existing_language_is_preserved_and_missing_language_defaults_to_english() -> None:
+    class Entries:
+        @staticmethod
+        def async_update_entry(target: Any, **changes: Any) -> None:
+            for key, value in changes.items():
+                setattr(target, key, value)
+
+    sl_entry = SimpleNamespace(
+        version=5,
+        minor_version=0,
+        data={CONF_POWER_ENTITY: "sensor.grid", CONF_PREFERRED_LANGUAGE: "sl"},
+        options={},
+    )
+    en_entry = SimpleNamespace(
+        version=5,
+        minor_version=0,
+        data={CONF_POWER_ENTITY: "sensor.grid"},
+        options={},
+    )
+    hass = SimpleNamespace(config_entries=Entries())
+    assert _run(async_migrate_entry(hass, sl_entry))
+    assert _run(async_migrate_entry(hass, en_entry))
+    assert sl_entry.data[CONF_PREFERRED_LANGUAGE] == "sl"
+    assert en_entry.options[CONF_PREFERRED_LANGUAGE] == "en"
+    assert sl_entry.version == en_entry.version == 6
+
+
+def test_v103_options_language_update_preserves_meter_and_archive_configuration() -> None:
+    _ensure_config_flow_stubs()
+    sys.modules.pop("custom_components.si_grid_monitor.config_flow", None)
+    from custom_components.si_grid_monitor.config_flow import SIGridMonitorOptionsFlow
+
+    schedule = ContractedPowerSchedule(
+        (
+            ContractedPowerPeriod(
+                date(2026, 1, 1),
+                date(2026, 12, 31),
+                (3.5, 3.9, 4.1, 4.2, 4.2),
+                "user_configured",
+            ),
+        )
+    )
+    entry = _options_flow_entry(schedule)
+    entry.options["archive_marker"] = "preserve"
+    flow = SIGridMonitorOptionsFlow()
+    flow.config_entry = entry
+    flow.async_create_entry = lambda **kwargs: kwargs  # type: ignore[method-assign]
+    result = flow._save({CONF_PREFERRED_LANGUAGE: "sl"})
+    assert result["data"][CONF_PREFERRED_LANGUAGE] == "sl"
+    assert result["data"][CONF_CONTRACTED_POWER_PERIODS] == schedule.to_json()
+    assert result["data"]["archive_marker"] == "preserve"
+
+
+def test_v103_publishing_update_preserves_contract_and_audit_configuration() -> None:
+    """Publication cadence is not a measurement or contract configuration epoch."""
+
+    _ensure_config_flow_stubs()
+    from custom_components.si_grid_monitor.config_flow import SIGridMonitorOptionsFlow
+
+    schedule = ContractedPowerSchedule(
+        (
+            ContractedPowerPeriod(
+                date(2026, 1, 1),
+                date(2026, 12, 31),
+                (3.5, 3.9, 4.1, 4.2, 4.2),
+                "distributor_record",
+            ),
+        )
+    )
+    entry = _options_flow_entry(schedule)
+    entry.options[CONF_PENDING_CONTRACT_AUDIT] = {"event_id": "preserve"}
+    flow = SIGridMonitorOptionsFlow()
+    flow.config_entry = entry
+    flow.async_create_entry = lambda **kwargs: kwargs  # type: ignore[method-assign]
+
+    result = flow._save(
+        {
+            CONF_PUBLISHING_PROFILE: "automation_priority",
+            CONF_PUBLISHING_ROUTINE_INTERVAL_SECONDS: 60,
+        }
+    )
+
+    assert result["data"][CONF_CONTRACTED_POWER_PERIODS] == schedule.to_json()
+    assert result["data"][CONF_PENDING_CONTRACT_AUDIT] == {"event_id": "preserve"}
+    assert result["data"][CONF_PUBLISHING_PROFILE] == "automation_priority"
 
 
 def test_migrated_mode_a_keeps_the_v09_configuration_epoch_identity(tmp_path: Path) -> None:
@@ -1692,7 +1804,8 @@ def test_setup_translations_cover_three_modes_and_legacy_notice() -> None:
             "separate_power",
             "import_only",
         }
-        assert "meter_name" in translations["config"]["step"]["user"]["data_description"]
+        assert "preferred_language" in translations["config"]["step"]["user"]["data_description"]
+        assert "meter_name" in translations["config"]["step"]["source"]["data_description"]
         assert "reconfigure" in translations["config"]["step"]
         assert "legacy_mode_d_unsupported" in translations["issues"]
         assert "archive_removal" in translations["options"]["step"]

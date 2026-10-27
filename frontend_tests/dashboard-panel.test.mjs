@@ -21,7 +21,7 @@ globalThis.HTMLElement = FakeElement;
 globalThis.customElements = {define() {}};
 
 const {SIGridMonitorPanel} = await import(
-  "../custom_components/si_grid_monitor/frontend/dashboard.js?panel-tests=1.0.2"
+  "../custom_components/si_grid_monitor/frontend/dashboard.js?panel-tests=1.0.3"
 );
 
 const START_A = "2026-10-19T08:00:00+00:00";
@@ -85,6 +85,51 @@ function panelForToday(quarters = [quarter(START_A)]) {
   panel._day = day(quarters);
   return panel;
 }
+
+test("dashboard follows the selected meter preference when there is no explicit override", () => {
+  globalThis.localStorage = memoryStorage();
+  const panel = new SIGridMonitorPanel();
+  panel._reconcileEntries([
+    {entry_id: "meter-a", title: "Main", preferred_language: "sl"},
+    {entry_id: "meter-b", title: "Garage", preferred_language: "en"},
+  ]);
+  assert.equal(panel._language, "sl");
+  panel._activateEntry("meter-b");
+  assert.equal(panel._language, "en");
+  panel._entries[1].preferred_language = "sl";
+  panel._activateEntry("meter-b", {remember: false});
+  assert.equal(panel._language, "sl", "a refreshed meter preference must take effect");
+});
+
+test("explicit EN/SL dashboard override persists across panel instances and reloads", () => {
+  const storage = memoryStorage();
+  globalThis.localStorage = storage;
+  const first = new SIGridMonitorPanel();
+  first._render = () => {};
+  first._selectLanguage("sl");
+  assert.equal(storage.values.get("si_grid_monitor.dashboard_language.v1"), "sl");
+
+  const reopened = new SIGridMonitorPanel();
+  reopened._reconcileEntries([
+    {entry_id: "meter-a", title: "Main", preferred_language: "en"},
+  ]);
+  assert.equal(reopened._language, "sl", "browser override must win over install default");
+  reopened._render = () => {};
+  reopened._selectLanguage("en");
+  assert.equal(storage.values.get("si_grid_monitor.dashboard_language.v1"), "en");
+});
+
+test("shared dashboard header exposes an accessible language switch on every page", () => {
+  globalThis.localStorage = memoryStorage();
+  const panel = new SIGridMonitorPanel();
+  panel._language = "en";
+  panel._render();
+  assert.match(panel.shadowRoot.innerHTML, /role="group"/);
+  assert.match(panel.shadowRoot.innerHTML, /aria-label="Dashboard language"/);
+  assert.match(panel.shadowRoot.innerHTML, /data-dashboard-language="en"/);
+  assert.match(panel.shadowRoot.innerHTML, /data-dashboard-language="sl"/);
+  assert.match(panel.shadowRoot.innerHTML, /data-dashboard-language="en" aria-pressed="true"/);
+});
 
 test("panel reconnect owns exactly one countdown and one refresh timer", () => {
   const originalSetInterval = globalThis.setInterval;
@@ -319,7 +364,7 @@ test("every dashboard tab renders the active friendly name and selector", () => 
   panel._entryId = "meter-b";
   panel._gate.switchEntry("meter-b");
   panel._historyGate.switchEntry("meter-b");
-  for (const tab of ["overview", "today", "period", "blocks", "exceedances", "history", "calendar"]) {
+  for (const tab of ["overview", "today", "period", "blocks", "exceedances", "history", "contracts", "calendar"]) {
     panel._tab = tab;
     panel._render();
     assert.match(panel.shadowRoot.innerHTML, /data-active-meter-name>House main meter/);
@@ -355,9 +400,14 @@ test("all dashboard requests remain entry-namespaced after a meter switch", asyn
     await panel._loadTab();
   }
   assert.ok(requests.length >= 9);
-  assert.deepEqual(new Set(requests.map(request => request.entryId)), new Set(["meter-b"]));
+  const installationRequests = requests.filter(request => request.entryId === null);
+  assert.deepEqual(installationRequests.map(request => request.type), ["publishing"]);
+  assert.deepEqual(
+    new Set(requests.filter(request => request.entryId !== null).map(request => request.entryId)),
+    new Set(["meter-b"]),
+  );
   assert.deepEqual(new Set(requests.map(request => request.type)), new Set([
-    "current", "transitions", "day", "period", "blocks", "exceedances",
+    "current", "transitions", "publishing", "day", "period", "blocks", "exceedances",
     "history", "calendar", "tariff_status",
   ]));
 });
@@ -780,6 +830,7 @@ test("PERIOD panel drills missing quarter and repeated hour by canonical UTC ide
 test("HISTORY distinguishes range totals and exposes source epoch filtering", () => {
   const panel = new SIGridMonitorPanel();
   panel._hass = {language: "sl-SI"};
+  panel._language = "sl";
   panel._historyPage = {
     items: [],
     pagination: {page: 1, pages: 1, total: 3},
@@ -871,18 +922,20 @@ test("HISTORY all-block requests preserve optional server sorting across paginat
   assert.equal(captured.page, 2);
 });
 
-test("Home Assistant language switching preserves meter and HISTORY selection", () => {
+test("dashboard language switching preserves meter and HISTORY selection", () => {
   const panel = new SIGridMonitorPanel();
   panel._loaded = true;
   panel._hass = {language: "en"};
+  panel._language = "en";
   panel._entryId = "meter-a";
   panel._tab = "history";
   panel._historySourceEpoch = "4";
   panel._historyPageNumber = 3;
   let renders = 0;
   panel._render = () => { renders += 1; };
-  panel.hass = {language: "sl-SI"};
+  panel._selectLanguage("sl");
   assert.equal(renders, 1);
+  assert.equal(panel._language, "sl");
   assert.equal(panel._entryId, "meter-a");
   assert.equal(panel._tab, "history");
   assert.equal(panel._historySourceEpoch, "4");
@@ -891,6 +944,7 @@ test("Home Assistant language switching preserves meter and HISTORY selection", 
 
 test("CONTRACTS loads only the selected meter and exposes safe management navigation", async () => {
   const panel = new SIGridMonitorPanel();
+  panel._language = "en";
   panel._render = () => {};
   panel._entryId = "meter-b";
   panel._gate.switchEntry("meter-b");
@@ -922,6 +976,7 @@ test("CONTRACTS loads only the selected meter and exposes safe management naviga
 
 test("CONTRACTS timeline is responsive and keeps three-decimal comparison values", () => {
   const panel = new SIGridMonitorPanel();
+  panel._language = "en";
   panel._contracts = {
     today: "2026-10-25",
     is_admin: true,
@@ -962,7 +1017,7 @@ test("CONTRACTS timeline is responsive and keeps three-decimal comparison values
   assert.match(html, /2\.000/);
   assert.match(html, /\+1\.000/);
   assert.match(html, /Not configured/);
-  assert.match(html, /SCHEDULED_CHANGE/);
+  assert.match(html, /Scheduled change/);
   assert.match(html, /Schedules/);
   assert.match(html, /Historical configuration snapshots/);
   assert.match(html, /Immutable archived-quarter target evidence/);
@@ -979,6 +1034,7 @@ test("CONTRACTS timeline is responsive and keeps three-decimal comparison values
 
 test("Tariff Calendar labels as-recorded evidence separately from current configuration", () => {
   const panel = new SIGridMonitorPanel();
+  panel._language = "en";
   const html = panel._calendarDetails({
     local_datetime: "2026-10-25T02:00:00+02:00",
     start_utc: "2026-10-25T00:00:00+00:00",
@@ -1000,6 +1056,7 @@ test("Tariff Calendar labels as-recorded evidence separately from current config
 
 test("historical calendar cells never replace unknown recorded targets with current values", () => {
   const panel = new SIGridMonitorPanel();
+  panel._language = "en";
   panel._selectedDate = "2026-01-02";
   panel._calendar = {
     date: "2026-01-02", day_classification: "working_day", season: "higher",
@@ -1010,7 +1067,86 @@ test("historical calendar cells never replace unknown recorded targets with curr
       utc_offset_seconds: 3600, fold: 0}],
   };
   const html = panel._calendarView();
-  assert.match(html, /As recorded: — kW/);
-  assert.match(html, /Current configuration: 4\.200 kW/);
-  assert.doesNotMatch(html, /As recorded: 4\.200 kW/);
+  assert.match(html, /Not archived/);
+  assert.doesNotMatch(html, /<small>4\.200 kW<\/small>/);
+  assert.match(html, /Current configuration target/);
+  assert.doesNotMatch(html, /As recorded[^<]*4\.200 kW/);
+});
+
+test("publishing diagnostics render bounded estimates without adding a ninth tab", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._language = "en";
+  panel._publishingWindowSeconds = 3600;
+  panel._publishing = {
+    meter_count: 2,
+    meters: [{title: "Main Grid", profile: "storage_optimized",
+      top_entities: [{entity_key: "current_power", count: 4}]}],
+    totals: {internal_timer_ticks_per_minute: 120, publishing_evaluations_per_minute: 124,
+      publications_per_minute: 1.5,
+      suppressed_unchanged: 1000, suppressed_policy: 400, critical_publications: 2,
+      processing_failures: 3, effective_current_measurement_interval_seconds: 900,
+      faulted_entities: [{meter: "Meter A", entity_key: "can_add_power"}],
+      effective_quarter_accumulation_interval_seconds: 180,
+      last_successful_publication_utc: "2026-10-25T12:00:00+00:00",
+      estimated_total_bytes_per_year: 510500000, budget_utilization_pct: 51.05,
+      estimate_status: "ready", event_history_truncated: false,
+      influxdb_physical_storage_verified: false},
+  };
+  const html = panel._publishingView();
+  assert.match(html, /Data Publishing &amp; Storage/);
+  assert.match(html, /510\.5/);
+  assert.match(html, /InfluxDB 1\.x physical storage remains unverified/);
+  assert.match(html, /current_power/);
+  assert.match(html, /Isolated processing failures/);
+  assert.match(html, /Currently faulted publications/);
+  assert.match(html, /Quarter-energy max interval/);
+  assert.equal((panel._render.toString().match(/"contracts", "calendar"/g) || []).length, 1);
+});
+
+test("publishing diagnostics distinguish warmup, truncation, and unverified InfluxDB", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._language = "en";
+  panel._publishing = {
+    meter_count: 1,
+    meters: [{title: "Main Grid", profile: "storage_optimized", top_entities: []}],
+    totals: {
+      internal_timer_ticks_per_minute: 60,
+      publishing_evaluations_per_minute: 63,
+      publications_per_minute: 0.5,
+      estimated_total_bytes_per_year: null,
+      budget_utilization_pct: null,
+      estimate_status: "warming_up",
+      event_history_truncated: true,
+      influxdb_physical_storage_verified: false,
+    },
+  };
+  const html = panel._publishingView();
+  assert.match(html, /Annual estimates require at least one hour/);
+  assert.match(html, /event history was truncated/);
+  assert.match(html, /InfluxDB 1\.x physical storage remains unverified/);
+  assert.doesNotMatch(html, /0\.0 MB\/year/);
+});
+
+test("Contracts provides mobile cards while retaining desktop evidence tables", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._language = "en";
+  panel._contracts = {
+    today: "2026-10-25", meter_name: "Main Grid", contract_status: "active",
+    current_schedule: [], timeline: [], health: {}, audit_pagination: {page: 1, pages: 1, total: 1},
+    historical_configuration: [], is_admin: false,
+    archived_target_evidence: [{first_start_utc: START_A, last_start_utc: START_B,
+      tariff_block: 2, contractual_target_kw: 3.9, target_provenance: "fixture",
+      contractual_status: "confirmed", quarter_count: 2}],
+    audit_events: [{event_utc: START_B, event_type: "created", effective_from: "2026-01-01",
+      effective_to: "2026-12-31", provenance: "fixture", origin: "user_action",
+      old_schedule_json: "[]", new_schedule_json: "[]", configuration_revision: "abc"}],
+  };
+  const html = panel._contractsView();
+  assert.match(html, /contract-desktop/);
+  assert.match(html, /contract-mobile-list/);
+  assert.match(html, /contract-mobile-card/);
+  const css = panel._contractStyles();
+  assert.match(css, /max-width:700px/);
+  assert.match(css, /grid-template-columns:repeat\(2,minmax\(0,1fr\)\)/);
+  assert.match(css, /max-width:340px/);
 });

@@ -4,16 +4,22 @@
 
 To je pripomoček za spremljanje in odločanje, **ne** uradni števec dobavitelja ali električna zaščitna naprava.
 
-Dokumentacija vključuje predlagano **V1.0.2 RC** upravljanje časovno omejenih
-dodelitev dogovorjene moči. Različica še ni potrjena v pravem Home Assistantu
-oziroma objavljena kot stabilna izdaja.
+V1.0.2 z upravljanjem časovno omejenih dodelitev dogovorjene moči je vključena v
+`main`. Dokumentacija opisuje predlagano **V1.0.3 RC** lokalizacijo v angleščino
+in slovenščino, ki še ni potrjena v pravem Home Assistantu oziroma objavljena kot
+stabilna izdaja.
 
 ## Namestitev
 
 1. V **HACS → Custom repositories** dodajte `https://github.com/igormesarec/si-grid-monitor` kot *Integration*.
 2. Namestite integracijo in **ponovno zaženite Home Assistant**.
 3. Odprite **Nastavitve → Naprave in storitve → Dodaj integracijo → SI Grid Monitor**.
-4. Vnesite ime merilnega mesta in izberite [način A, B ali C](vodnik.md) z živim senzorjem moči W/kW.
+4. V prvem koraku **Language / Jezik** izberite začetni jezik nadzorne
+   plošče (privzeta je angleščina), nato vnesite ime merilnega mesta in
+   izberite [način A, B ali C](vodnik.md) z živim senzorjem moči W/kW.
+
+Izbira jezika velja za vsebino SI Grid Monitor. Izvorna pogovorna okna Home
+Assistant še naprej sledijo jeziku uporabniškega vmesnika Home Assistant.
 5. Nastavite dejanske pogodbene moči B1–B5 ter datume njihove veljavnosti.
 6. V stranskem meniju odprite **SI Grid Monitor** in preverite prvi popolni 15-minutni interval.
 

@@ -1,4 +1,119 @@
-# SI Grid Monitor V1.0.2 Contract Management Release-Candidate Manual Test Plan
+# SI Grid Monitor V1.0.3 Localization Release-Candidate Manual Test Plan
+
+## Installation and dashboard language
+
+1. On desktop and Android, confirm **Language / Jezik** is the first setup step,
+   with English selected by default and Slovenščina available.
+2. Complete one English and one Slovenian installation. Confirm the choice sets
+   the initial language of all eight dashboard pages, including Contracts.
+3. Confirm native ConfigFlow/OptionsFlow chrome still follows the Home Assistant
+   frontend locale; the integration preference does not change HA globally.
+4. Test the header EN/SL control at 320, 360, 390, 430, 768 px and desktop in
+   light/dark themes, larger text, keyboard, touch and screen-reader navigation.
+5. Select Slovenian, switch meters and tabs, reload and reopen the dashboard;
+   Slovenian must remain selected. Switch back to English and repeat.
+6. Change **Preferred language** in Options and verify contracts, archive rows,
+   source epochs, entry ID and entity unique IDs remain unchanged.
+7. Upgrade entries with no language, `en`, and `sl`; verify English defaulting
+   only for the first case and preservation for the other two.
+
+Automated tests cover flow order, migration, Options preservation, WebSocket
+metadata and browser-state behavior. Companion App rendering and native dialog
+presentation still require real Home Assistant validation.
+
+## V1.0.3 publishing and storage acceptance
+
+1. Before upgrading, record Recorder and InfluxDB sizes plus state-change counts
+   for both meters. Keep current temporary exclusions until validation completes.
+2. Upgrade without removing entries. Confirm entity IDs, unique IDs, archive row
+   counts, schema 7, contracts, audits and source epochs remain unchanged.
+3. With **Storage Optimized**, run both meters for at least 24 hours through
+   import, zero, export, quarter/tariff transitions, source stale/recovery and a
+   safe simulated warning. Confirm internal quarter energy remains accurate while
+   stable entities do not produce one-second Home Assistant history.
+   At 3.000 kW constant import, verify current-quarter imported energy is about
+   0.050, 0.250, 0.500 and 0.700 kWh at minutes 1, 5, 10 and 14 (allowing the
+   documented maximum public age), the completed archive is exactly 0.750 kWh,
+   and the live entity resets to the next canonical quarter immediately.
+4. In Overview → **Data Publishing & Storage**, compare hour/day/week scopes for
+   selected-meter detail and the all-meter combined total. Confirm timer ticks remain near 60/minute,
+   publishing evaluations can be higher when source reports arrive, routine
+   publications are much lower, and critical transitions are prompt. During the
+   first hour the annual estimate must say it is warming up; a truncated event
+   window must be visibly flagged.
+5. Switch to Automation Priority for one test meter. Verify the warning and
+   increased event rate, then use Restore Recommended Defaults. Confirm no new
+   contract audit/configuration epoch, no entity recreation and no archive change.
+6. Configure a harmless numeric-state automation against a selected Custom fast
+   entity. Verify its documented cadence. Confirm arbitrary thresholds on other
+   coalesced values are not described as one-second fresh.
+7. Inspect Recorder attributes and InfluxDB writes. Coverage/source-age timing
+   details must not recreate a one-second stream. No SI Grid Monitor-specific
+   exclusions should be required after independent validation.
+8. Measure physical growth for the real 60-day Recorder and unlimited-retention
+   InfluxDB installation. CI's three civil-day real-entity workloads project
+   about 774–790 MB/year for two meters, but their InfluxDB component is an unverified allowance—not a
+   physical measurement. Follow the non-destructive commands in
+   `docs/data-publishing-and-storage.md`; record event counts, filesystem growth,
+   series cardinality and unrelated writers.
+9. Only after success, remove temporary exclusions deliberately. Use the
+   backup-first manual guide for old data; confirm V1.0.3 itself performs no
+   purge, VACUUM, retention change or InfluxDB deletion.
+10. Hold projected demand around its target for 3,600 seconds. Confirm unsafe
+    activation appears on the next evaluation, false does not chatter, and 30
+    continuously safe seconds clear it. Repeat source outage and recovery.
+    Also stop source reports while the last HA state remains available: at 60
+    seconds it remains within the evidence window; just after 60 seconds,
+    projected exceedance and live advice must become unavailable and
+    `input_stale` must be on. A fresh report must recover availability without
+    filling the unknown interval with zero.
+    Check `current_power`, import/export power, remaining budget, allowed import,
+    instantaneous/smoothed forecasts, forecast/current utilization and both
+    ordinary/sustained CAN ADD/MUST REDUCE. Each live value must be unavailable,
+    while B1–B5/active static targets and already observed quarter energy remain.
+    Repeat on Mode B by stopping only one channel and by creating timestamp skew;
+    repeat on Mode C. A measured `0.000 kW` must stay distinct from unavailable.
+11. Drive MUST REDUCE through 0.200 → 1.000 → 2.500 kW and verify every
+    materially worse step is prompt. Drive CAN ADD downward by the configured
+    material delta and verify the headroom loss is prompt; safe improvements may
+    remain coalesced. These are billing-energy-budget signals, not electrical
+    protection authorization.
+12. Alternate all four actionable values between 0 and just above hysteresis
+    once per second for one hour on both meters. Confirm MUST REDUCE activation
+    and CAN ADD loss remain prompt, safety-improving clears/gains require 30
+    stable seconds, and Recorder does not receive a 3,600-event-per-hour stream.
+13. Test nonzero optimism: hold MUST REDUCE at 3.000 kW, briefly improve to
+    2.000 kW, then worsen to 3.500 kW. The transient 2.000 kW must not publish;
+    the worsening must. Repeat CAN ADD `3.000 → 1.000 → 2.000 → 0.500 kW` and
+    confirm both losses publish promptly while the brief gain is withheld.
+14. Inject a test-only entity reader failure. Confirm the affected advice becomes
+    unavailable once, Overview lists the faulted publication, healthy entities
+    continue and recovery requires stable evidence. Then inject a failed HA
+    state-write callback: confirm rate-limited logs and bounded 30-second retry.
+    This is a manual fault-injection test on an isolated HA instance only.
+15. Inspect Developer Tools and Recorder statistics metadata for current-quarter
+    import/export energy. The entities must retain their IDs and kWh values but
+    must not advertise a lifetime-total state class or generate corrupt sums at
+    each 15-minute reset.
+16. Run a 20-minute silent outage spanning a quarter boundary and repeat across
+    the autumn DST fold. Completed quarters must retain only observed energy,
+    coverage/gaps must be truthful, and recovery must not modify the past row.
+
+## V1.0.3 mobile Contracts and calendar acceptance
+
+1. At 320/360/390/430/768/1280 px, English/Slovenian and light/dark themes,
+   verify separate contract status cards, readable timeline periods and no
+   joined label/value text or whole-page overflow.
+2. On phones confirm archived target evidence and audit events use readable
+   cards. Expand technical details; full IDs/JSON must not force page overflow.
+   On desktop confirm full tables and pagination remain available.
+3. Select Sunday 25 October 2026. Confirm 25 hour tiles and two distinct 02:00
+   entries with UTC+2/UTC+1. Select the second occurrence, scroll deliberately
+   and refresh: the same-date position/selection remains. Change date: the
+   timeline realigns to the selected/default hour.
+4. Verify the spring DST day contains 23 hours/92 quarters and no fabricated
+   archived target. `Not archived`, historical inference and current
+   configuration must remain distinct.
 
 ## V1.0.1 native OptionsFlow hotfix
 
@@ -725,6 +840,33 @@ instance before recommending a beta release. Preserve evidence for:
 Automated tests do not satisfy this gate. Record the HA version, HACS version,
 browser/app version, integration commit, source update cadence and database
 before/after counts with the results.
+
+## V1.0.3 final publication review
+
+1. In Mode A or B, hold a genuine 3.000 kW export for a full quarter. Confirm
+   current-quarter export shows approximately 0.050/0.250/0.500/0.700 kWh at
+   minutes 1/5/10/14 within the documented 180-second freshness bound, and the
+   completed archive contains 0.750 kWh export and 0.000 kWh import.
+2. Repeat with import → export → import. Confirm import/export energy remain
+   separate and contractual demand uses import only. Interrupt the source and
+   confirm evidenced energy remains while unknown time becomes incomplete; no
+   zero samples are manufactured. In Mode C, export must stay unavailable.
+3. Complete two consecutive quarters with the same demand and signed average.
+   Confirm both completed sensors emit once for each distinct UTC start/end and
+   remain quiet afterward. Restart between quarters and repeat across the two
+   local 02:00 hours on the autumn fallback day.
+4. Compare the dashboard with ordinary HA power entities under Storage
+   Optimized. The dashboard should follow internal live data; ordinary numeric
+   entity states may be up to 900 seconds old. Verify Automation Priority or a
+   measured Custom profile before using those numeric states in faster external
+   automations. Critical warnings and materially worsening advice must remain
+   prompt in every profile.
+5. Observe publication diagnostics for at least one complete hour. A truncated
+   window must show no annual estimate; after lost events age out and a complete
+   window exists, its estimate may recover. Repeat for day/week where practical.
+6. Measure physical Recorder and InfluxDB allocation for two meters for at
+   least 24 hours (seven days preferred). The synthetic 23/24/25-hour results
+   remain planning evidence only and do not satisfy this physical gate.
 # V1.0.2 contract-management acceptance
 
 1. Back up `.storage/si_grid_monitor_<entry-id>.db`, upgrade from V1.0.1 and

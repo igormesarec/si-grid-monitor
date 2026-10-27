@@ -108,6 +108,16 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.config_entries.async_update_entry(
             entry, data=data, options=options, version=5, minor_version=0
         )
+    if entry.version < 6:
+        from .const import CONF_PREFERRED_LANGUAGE, DEFAULT_PREFERRED_LANGUAGE
+
+        data = dict(entry.data)
+        options = dict(entry.options)
+        if CONF_PREFERRED_LANGUAGE not in data and CONF_PREFERRED_LANGUAGE not in options:
+            options[CONF_PREFERRED_LANGUAGE] = DEFAULT_PREFERRED_LANGUAGE
+        hass.config_entries.async_update_entry(
+            entry, data=data, options=options, version=6, minor_version=0
+        )
     return True
 
 

@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   DASHBOARD_TRANSLATIONS,
   dashboardLanguage,
+  normalizeDashboardLanguage,
   translateDashboard,
 } from "../custom_components/si_grid_monitor/frontend/dashboard-i18n.mjs";
 
@@ -11,6 +12,13 @@ test("dashboard language follows Home Assistant with English fallback", () => {
   assert.equal(dashboardLanguage({language: "sl-SI"}), "sl");
   assert.equal(dashboardLanguage({locale: {language: "en-GB"}}), "en");
   assert.equal(dashboardLanguage(null), "en");
+});
+
+test("installation language normalization accepts only English and Slovenian", () => {
+  assert.equal(normalizeDashboardLanguage("sl-SI"), "sl");
+  assert.equal(normalizeDashboardLanguage("en-GB"), "en");
+  assert.equal(normalizeDashboardLanguage("de-DE"), "en");
+  assert.equal(dashboardLanguage({language: "sl"}, "en"), "en");
 });
 
 test("parameterized translations keep values and use English fallback", () => {
@@ -48,7 +56,7 @@ test("forecast and HISTORY monitoring semantics are explicit in Slovenian", () =
 });
 
 test("language switching translates dynamic audit and all navigation keys", () => {
-  for (const page of ["overview", "today", "period", "blocks", "exceedances", "history", "calendar"]) {
+  for (const page of ["overview", "today", "period", "blocks", "exceedances", "history", "contracts", "calendar"]) {
     assert.notEqual(translateDashboard(`nav.${page}`, "sl"), `nav.${page}`);
     assert.notEqual(translateDashboard(`nav.${page}`, "en"), `nav.${page}`);
   }
@@ -100,5 +108,33 @@ test("Slovenian localization covers static content and accessibility on every ta
   ]) {
     assert.ok(sl[text], `missing Slovenian dashboard translation for ${text}`);
     assert.notEqual(sl[text], text);
+  }
+});
+
+test("language controls and dynamic forecast reasons have complete bilingual keys", () => {
+  for (const key of [
+    "language.switcher", "language.english", "language.slovenian",
+    "reason.no_valid_measurement", "reason.source_measurement_stale",
+    "reason.insufficient_coverage", "reason.current_quarter_incomplete",
+    "reason.smoothing_window_incomplete", "reason.target_unavailable",
+  ]) {
+    assert.notEqual(translateDashboard(key, "en"), key);
+    assert.notEqual(translateDashboard(key, "sl"), key);
+  }
+});
+
+test("Contracts and historical calendar dynamic content has complete bilingual keys", () => {
+  for (const key of [
+    "contracts.current_status", "contracts.timeline", "contracts.historical_configuration",
+    "contracts.archived_evidence", "contracts.audit", "contracts.open_settings",
+    "contract_health.warning", "contract_health.urgent", "contract_health.error",
+    "contract_status.active", "contract_status.expired", "contract_status.no_assignment",
+    "contract_event.created", "contract_event.scheduled_change", "contract_event.corrected",
+    "reason.missing_current_assignment", "reason.uncovered_expiry", "reason.future_gap",
+    "calendar.selected_hour", "calendar.as_recorded_target", "calendar.historical_inference",
+    "calendar.current_target", "calendar.archived_target_unknown", "calendar.hours_aria",
+  ]) {
+    assert.notEqual(translateDashboard(key, "en"), key, `missing English translation for ${key}`);
+    assert.notEqual(translateDashboard(key, "sl"), key, `missing Slovenian translation for ${key}`);
   }
 });

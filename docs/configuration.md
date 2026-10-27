@@ -1,5 +1,13 @@
 # Setup fields and options — explained
 
+## Preferred language
+
+**Preferred language** initializes SI Grid Monitor-owned dashboard and report
+content. Existing installations without the setting default safely to English.
+Changing it in Options does not recreate the meter, alter contracts, or modify
+SQLite history. An explicit EN/SL dashboard choice takes priority in that
+browser and remains stable when meters are switched.
+
 A meter's configuration is **independent of other SI Grid Monitor meters**. Replacing the source or changing contracted-power assignments can affect future interpretation; historic records have stored provenance and must not be silently recalculated.
 
 ## Setup wizard
@@ -27,6 +35,37 @@ A meter's configuration is **independent of other SI Grid Monitor meters**. Repl
 | Provisional tariffs 2028–2030 | **Off** | Optional planning continuation of the 2027 pattern; never equivalent to official future rules |
 | Temporary simulation | **Off** | Enables what-if threshold calculations; simulated results do not become confirmed contractual statistics |
 | Simulation threshold | A chosen kW value | Inactive while simulation is off; does not overwrite dated distributor assignments |
+
+## Data Publishing / Objavljanje podatkov
+
+The calculation engine always continues its one-second work. These settings
+control only when an entity publishes a new Home Assistant state event.
+
+- **Storage Optimized (default):** immediate critical and availability
+  transitions, change-only configuration states, coalesced routine values, and
+  a bounded current-quarter imported-energy view (first minute, at most 180
+  seconds thereafter, immediate quarter reset). This is the benchmarked profile
+  and normally needs no integration-specific Recorder or InfluxDB exclusion.
+- **Automation Priority:** shorter publication intervals for users whose
+  third-party automations need fresher published values. More events can exceed
+  the documented storage budget.
+- **Custom:** configure routine/actionable intervals, kW/kWh deadbands and an
+  explicit list of fast entity keys. Review the predicted two-meter storage
+  impact before confirming.
+
+**Restore recommended defaults** changes publishing policy only. It does not
+recreate entities, change calculations, create a contract epoch or audit event,
+or modify archive rows. Existing entity IDs remain stable. Numeric-state
+automations evaluate the last *published* state, not every internal calculation;
+critical SI Grid Monitor state transitions remain immediate.
+
+MUST REDUCE activation/increases and CAN ADD headroom loss are safety-worsening
+and publish promptly. A clear or headroom recovery is safety-improving and must
+remain stable for 30 seconds before it becomes public. Natural source staleness
+makes live forecasts/advice unavailable; it is never represented as a safe
+zero.
+
+See [Data publishing and storage](data-publishing-and-storage.md).
 
 A screen may still display a simulation threshold field even when simulation is off; that stored number is **not active** unless enabled.
 

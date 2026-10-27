@@ -2,11 +2,11 @@
 
 **SI Grid Monitor** is an independent, HACS-compatible Home Assistant integration for monitoring Slovenia's fixed 15-minute imported-electricity demand. It helps you understand how much power you have imported in each billing interval, how this relates to your contracted power in tariff blocks B1–B5, and whether additional demand is likely to fit within the remaining quarter.
 
-**Version documented: proposed V1.0.2 release candidate.** V1.0.1 is the current
-merged application; the contract-management changes described for V1.0.2 still
-require real Home Assistant acceptance. This is monitoring and decision support,
-not a certified utility meter, automatic load controller, or electrical safety
-device.
+**Version documented: proposed V1.0.3 localization release candidate.** V1.0.2
+contract management is merged in `main`; V1.0.3 adds English/Slovenian setup,
+dashboard and reporting localization and still requires real Home Assistant
+acceptance. This is monitoring and decision support, not a certified utility
+meter, automatic load controller, or electrical safety device.
 
 ## Why use it?
 
@@ -55,6 +55,9 @@ Permanent per-meter SQLite archive and measurement-quality audit
 **Interpretation:** [Dashboard guide](dashboard-guide.md) · [Calculations](calculations.md) · [Forecasts](forecasts.md) · [Tariffs](tariffs.md) · [Data quality](data-quality.md)
 
 **Manage and troubleshoot:** [History and archives](history-and-archive.md) · [Multiple meters](multiple-meters.md) · [Troubleshooting](troubleshooting.md) · [FAQ](faq.md) · [Glossary](glossary.md)
+
+**Storage:** [Data publishing and storage](data-publishing-and-storage.md) ·
+[Manual legacy-data cleanup](manual-storage-cleanup.md)
 
 **Technical:** [Architecture](developer-architecture.md) · [Testing](testing-and-validation.md) · [Limitations and roadmap](limitations-and-roadmap.md)
 

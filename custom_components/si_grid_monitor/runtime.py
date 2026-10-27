@@ -9,6 +9,7 @@ import uuid
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from functools import partial
+from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_UNIT_OF_MEASUREMENT
@@ -49,6 +50,14 @@ from .const import (
     CONF_PENDING_CONTRACT_AUDIT,
     CONF_POSITIVE_MEANS_IMPORT,
     CONF_POWER_ENTITY,
+    CONF_PUBLISHING_ACTIONABLE_DELTA_KW,
+    CONF_PUBLISHING_ACTIONABLE_HYSTERESIS_KW,
+    CONF_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS,
+    CONF_PUBLISHING_ENERGY_DEADBAND_KWH,
+    CONF_PUBLISHING_FAST_ENTITIES,
+    CONF_PUBLISHING_POWER_DEADBAND_KW,
+    CONF_PUBLISHING_PROFILE,
+    CONF_PUBLISHING_ROUTINE_INTERVAL_SECONDS,
     CONF_RETENTION,
     CONF_SAFETY_MARGIN_KW,
     CONF_SIMULATION_ENABLED,
@@ -62,6 +71,13 @@ from .const import (
     CONF_TARGET_B4_KW,
     CONF_TARGET_B5_KW,
     CONF_TARGET_KW,
+    DEFAULT_PUBLISHING_ACTIONABLE_DELTA_KW,
+    DEFAULT_PUBLISHING_ACTIONABLE_HYSTERESIS_KW,
+    DEFAULT_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS,
+    DEFAULT_PUBLISHING_ENERGY_DEADBAND_KWH,
+    DEFAULT_PUBLISHING_POWER_DEADBAND_KW,
+    DEFAULT_PUBLISHING_PROFILE,
+    DEFAULT_PUBLISHING_ROUTINE_INTERVAL_SECONDS,
     DEFAULT_RETENTION,
     DEFAULT_SAFETY_MARGIN_KW,
     DEFAULT_SMOOTHING_SECONDS,
@@ -90,6 +106,7 @@ from .engine import (
     PowerSample,
     quarter_bounds,
 )
+from .publishing import PublicationState, PublishingClass, PublishingController, PublishingSettings
 from .reconstruction import audit_summary, plan_reconstruction
 from .sustained import SustainedForecast, calculate_sustained_forecast
 from .tariffs import SlovenianTariffCalendar, TariffClassification
@@ -174,6 +191,7 @@ class GridMonitorRuntime:
         self.sustained_status_reason: str | None = None
         self.archived_last_completed: ArchivedQuarterSnapshot | None = None
         self._listeners: set[Callable[[], None]] = set()
+        self.publishing = PublishingController(PublishingSettings.from_mapping(configured))
         self._unsubscribers: list[Callable[[], None]] = []
         self.namespace = entry.entry_id
         self.archive = QuarterArchive(
@@ -228,7 +246,7 @@ class GridMonitorRuntime:
         )
 
     @property
-    def settings(self) -> dict[str, float | int | bool | str]:
+    def settings(self) -> dict[str, Any]:
         """Return effective editable settings."""
 
         data = {**self.entry.data, **self.entry.options}
@@ -257,6 +275,46 @@ class GridMonitorRuntime:
                     DEFAULT_SUSTAINED_HORIZON_MINUTES,
                 )
             ),
+            CONF_PUBLISHING_PROFILE: str(
+                data.get(CONF_PUBLISHING_PROFILE, DEFAULT_PUBLISHING_PROFILE)
+            ),
+            CONF_PUBLISHING_ROUTINE_INTERVAL_SECONDS: int(
+                data.get(
+                    CONF_PUBLISHING_ROUTINE_INTERVAL_SECONDS,
+                    DEFAULT_PUBLISHING_ROUTINE_INTERVAL_SECONDS,
+                )
+            ),
+            CONF_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS: int(
+                data.get(
+                    CONF_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS,
+                    DEFAULT_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS,
+                )
+            ),
+            CONF_PUBLISHING_POWER_DEADBAND_KW: float(
+                data.get(
+                    CONF_PUBLISHING_POWER_DEADBAND_KW,
+                    DEFAULT_PUBLISHING_POWER_DEADBAND_KW,
+                )
+            ),
+            CONF_PUBLISHING_ENERGY_DEADBAND_KWH: float(
+                data.get(
+                    CONF_PUBLISHING_ENERGY_DEADBAND_KWH,
+                    DEFAULT_PUBLISHING_ENERGY_DEADBAND_KWH,
+                )
+            ),
+            CONF_PUBLISHING_ACTIONABLE_DELTA_KW: float(
+                data.get(
+                    CONF_PUBLISHING_ACTIONABLE_DELTA_KW,
+                    DEFAULT_PUBLISHING_ACTIONABLE_DELTA_KW,
+                )
+            ),
+            CONF_PUBLISHING_ACTIONABLE_HYSTERESIS_KW: float(
+                data.get(
+                    CONF_PUBLISHING_ACTIONABLE_HYSTERESIS_KW,
+                    DEFAULT_PUBLISHING_ACTIONABLE_HYSTERESIS_KW,
+                )
+            ),
+            CONF_PUBLISHING_FAST_ENTITIES: data.get(CONF_PUBLISHING_FAST_ENTITIES, []),
         }
 
     @property
@@ -332,12 +390,17 @@ class GridMonitorRuntime:
             if confirmed_contractual_target_kw is not None
             else None
         )
+        live_source_trusted = self.source_available and not snapshot.input_stale
         smoothed_future_import_kw = (
             snapshot.smoothed_import.value_kw
-            if projection.forecast_smoothed_kw is not None and snapshot.smoothed_import.complete
+            if live_source_trusted
+            and projection.forecast_smoothed_kw is not None
+            and snapshot.smoothed_import.complete
             else None
         )
-        if smoothed_future_import_kw is not None and (
+        if not self.source_available:
+            smoothed_forecast_reason = self.source_status_reason or "source unavailable"
+        elif smoothed_future_import_kw is not None and (
             simulation_enabled
             or (tariff is not None and tariff.rule_status == RuleStatus.PROVISIONAL)
         ):
@@ -391,22 +454,24 @@ class GridMonitorRuntime:
             },
             "power": {
                 "signed_kw": snapshot.current_signed_power_kw
-                if self.instantaneous_power_known
+                if self.instantaneous_power_known and live_source_trusted
                 else None,
                 "import_kw": (
                     max(0.0, snapshot.current_signed_power_kw)
                     if self.instantaneous_power_known
+                    and live_source_trusted
                     and snapshot.current_signed_power_kw is not None
                     else None
                 ),
                 "export_kw": (
                     max(0.0, -snapshot.current_signed_power_kw)
                     if self.instantaneous_power_known
+                    and live_source_trusted
                     and snapshot.current_signed_power_kw is not None
                     and self.export_known
                     else None
                 ),
-                "input_stale": (snapshot.input_stale),
+                "input_stale": (not self.source_available or snapshot.input_stale),
                 "source_age_seconds": source_age_seconds,
                 "source_mode": self.source_mode,
                 "source_entities": list(self.source_entities),
@@ -447,8 +512,12 @@ class GridMonitorRuntime:
                 "budget_kwh": projection.budget_kwh,
                 "budget_remaining_kwh": projection.budget_remaining_kwh,
                 "allowed_remaining_import_kw": projection.allowed_remaining_import_kw,
-                "forecast_instant_kw": projection.forecast_instant_kw,
-                "forecast_smoothed_kw": projection.forecast_smoothed_kw,
+                "forecast_instant_kw": (
+                    projection.forecast_instant_kw if live_source_trusted else None
+                ),
+                "forecast_smoothed_kw": (
+                    projection.forecast_smoothed_kw if live_source_trusted else None
+                ),
                 "smoothed_future_import_kw": smoothed_future_import_kw,
                 "smoothed_future_anchor_utc": (
                     snapshot.now_utc.isoformat() if smoothed_future_import_kw is not None else None
@@ -470,13 +539,19 @@ class GridMonitorRuntime:
                     else "unavailable"
                 ),
                 "smoothed_future_reason": smoothed_forecast_reason,
-                "forecast_instant_utilization_pct": (projection.forecast_instant_utilization_pct),
-                "forecast_smoothed_utilization_pct": (projection.forecast_smoothed_utilization_pct),
+                "forecast_instant_utilization_pct": (
+                    projection.forecast_instant_utilization_pct if live_source_trusted else None
+                ),
+                "forecast_smoothed_utilization_pct": (
+                    projection.forecast_smoothed_utilization_pct if live_source_trusted else None
+                ),
                 "current_utilization_pct": projection.current_utilization_pct,
-                "can_add_kw": projection.can_add_kw,
-                "must_reduce_kw": projection.must_reduce_kw,
+                "can_add_kw": projection.can_add_kw if live_source_trusted else None,
+                "must_reduce_kw": projection.must_reduce_kw if live_source_trusted else None,
                 "unrecoverable": projection.unrecoverable,
-                "projected_exceedance": projection.projected_exceedance,
+                "projected_exceedance": (
+                    projection.projected_exceedance if live_source_trusted else None
+                ),
             },
             "sustained": (
                 {
@@ -495,8 +570,13 @@ class GridMonitorRuntime:
                     "reason": sustained.reason,
                     "assumption": sustained.assumption,
                 }
-                if sustained
-                else {"quality": "unavailable", "reason": self.sustained_status_reason}
+                if sustained and live_source_trusted
+                else {
+                    "quality": "unavailable",
+                    "reason": self.source_status_reason
+                    if not live_source_trusted
+                    else self.sustained_status_reason,
+                }
             ),
             "contractual_available": self.current_contractual_available,
             "contractual_confirmed": self.current_contractual_confirmed,
@@ -855,6 +935,9 @@ class GridMonitorRuntime:
                 _LOGGER.exception("Failed to remove SI Grid Monitor runtime listener")
         self._unsubscribers.clear()
         self._listeners.clear()
+        publishing = getattr(self, "publishing", None)
+        if publishing is not None:
+            publishing.clear()
         try:
             await self._archive_tasks.cancel_and_wait(self._backfill_task)
         except Exception as err:
@@ -907,11 +990,31 @@ class GridMonitorRuntime:
         return remove
 
     @callback
+    def add_publishing_listener(
+        self,
+        entity_key: str,
+        publishing_class: PublishingClass,
+        state_reader: Callable[[], PublicationState],
+        listener: Callable[[], None],
+        failure_listener: Callable[[], None] | None = None,
+    ) -> Callable[[], None]:
+        """Register an entity with the centralized publication controller."""
+
+        return self.publishing.register(
+            entity_key,
+            publishing_class,
+            state_reader,
+            listener,
+            failure_listener,
+        )
+
+    @callback
     def _async_state_changed(self, event: Event) -> None:
         self._ingest_current_sources()
 
     @callback
     def _async_tick(self, now) -> None:
+        self.publishing.record_internal_timer_tick()
         self._refresh(now)
 
     @callback
@@ -926,15 +1029,23 @@ class GridMonitorRuntime:
             state = self.hass.states.get(self.power_entity)
             if state is not None:
                 self._ingest_power_states(state, None)
+            else:
+                self._mark_source_unavailable("configured signed-power source is unavailable")
         elif self.source_mode == SOURCE_IMPORT_ONLY:
             state = self.hass.states.get(self.import_power_entity)
             if state is not None:
                 self._ingest_power_states(state, None)
+            else:
+                self._mark_source_unavailable("configured import-power source is unavailable")
         elif self.source_mode == SOURCE_SEPARATE_POWER:
             import_state = self.hass.states.get(self.import_power_entity)
             export_state = self.hass.states.get(self.export_power_entity)
             if import_state is not None and export_state is not None:
                 self._ingest_power_states(import_state, export_state)
+            else:
+                self._mark_source_unavailable(
+                    "one or more configured import/export sources are unavailable"
+                )
         else:
             raise UnsupportedSourceModeError(self.source_mode)
 
@@ -942,20 +1053,17 @@ class GridMonitorRuntime:
     def _ingest_power_states(self, primary: State, secondary: State | None) -> None:
         states = (primary,) if secondary is None else (primary, secondary)
         if any(state.state in {"unknown", "unavailable", "none", ""} for state in states):
-            self.source_available = False
-            self.source_status_reason = "one or more source readings are unavailable"
+            self._mark_source_unavailable("one or more source readings are unavailable")
             return
         units = [state.attributes.get(ATTR_UNIT_OF_MEASUREMENT) for state in states]
         if any(not isinstance(unit, str) for unit in units):
-            self.source_available = False
-            self.source_status_reason = "source has no W/kW unit"
+            self._mark_source_unavailable("source has no W/kW unit")
             return
         timestamps = [
             (state.last_reported or state.last_updated).astimezone(UTC) for state in states
         ]
         if max(timestamps) - min(timestamps) > timedelta(seconds=DEFAULT_STALE_AFTER_SECONDS):
-            self.source_available = False
-            self.source_status_reason = "source timestamps are too far apart"
+            self._mark_source_unavailable("source timestamps are too far apart")
             return
         try:
             if self.source_mode == SOURCE_SEPARATE_POWER and secondary is not None:
@@ -979,12 +1087,22 @@ class GridMonitorRuntime:
             # timestamp. It is safe to ignore that duplicate without degrading
             # the last accepted sample.
             if "strictly" not in str(err):
-                self.source_available = False
-                self.source_status_reason = str(err)
+                self._mark_source_unavailable(str(err))
                 _LOGGER.warning("Rejected source sample from %s: %s", self.source_entities, err)
             return
         self.source_available = True
         self.source_status_reason = None
+        self._refresh(dt_util.utcnow())
+
+    @callback
+    def _mark_source_unavailable(self, reason: str) -> None:
+        """Expose an explicit source failure immediately without inventing a sample."""
+
+        self.source_available = False
+        self.source_status_reason = reason
+        # Re-evaluate publication availability immediately.  The calculation
+        # engine retains its last evidenced sample and accumulated energy; no
+        # fake zero or gap-filling measurement is ingested here.
         self._refresh(dt_util.utcnow())
 
     @callback
@@ -1012,6 +1130,7 @@ class GridMonitorRuntime:
             else None
         )
         if self.engine.bounds is None:
+            self.publishing.process(now_utc)
             for listener in tuple(self._listeners):
                 listener()
             return
@@ -1093,6 +1212,7 @@ class GridMonitorRuntime:
                     _LOGGER.info("Sustained forecast unavailable: %s", err)
         self._drain_completed()
         self._checkpoint_if_due(now)
+        self.publishing.process(now_utc)
         for listener in tuple(self._listeners):
             listener()
 

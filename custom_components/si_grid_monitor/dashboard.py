@@ -24,6 +24,8 @@ from .analysis import (
     resolve_period,
 )
 from .const import (
+    CONF_PREFERRED_LANGUAGE,
+    DEFAULT_PREFERRED_LANGUAGE,
     DOMAIN,
     FRONTEND_URL,
     PANEL_ICON,
@@ -72,10 +74,22 @@ def _runtime(hass: HomeAssistant, msg: dict[str, Any]) -> Any:
 
 def _entry_list(hass: HomeAssistant) -> list[dict[str, str]]:
     runtimes = hass.data.get(DOMAIN, {}).get(DATA_RUNTIMES, {})
-    return [
-        {"entry_id": entry_id, "title": runtime.entry.title}
-        for entry_id, runtime in runtimes.items()
-    ]
+    entries = []
+    for entry_id, runtime in runtimes.items():
+        configured = {
+            **getattr(runtime.entry, "data", {}),
+            **getattr(runtime.entry, "options", {}),
+        }
+        entries.append(
+            {
+                "entry_id": entry_id,
+                "title": runtime.entry.title,
+                "preferred_language": str(
+                    configured.get(CONF_PREFERRED_LANGUAGE, DEFAULT_PREFERRED_LANGUAGE)
+                ),
+            }
+        )
+    return entries
 
 
 def _row(row: Any) -> dict[str, Any]:
@@ -124,6 +138,7 @@ async def async_setup_dashboard(hass: HomeAssistant) -> None:
             ws_tariff_status,
             ws_transitions,
             ws_archive_status,
+            ws_publishing,
         ):
             websocket_api.async_register_command(hass, handler)
         domain_data[DATA_COMMANDS_READY] = True
@@ -164,6 +179,117 @@ def async_unregister_panel(hass: HomeAssistant) -> None:
 @callback
 def ws_entries(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
     connection.send_result(msg["id"], {"entries": _entry_list(hass), "version": VERSION})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/publishing",
+        vol.Optional("entry_id"): str,
+        vol.Optional("window_seconds", default=3600): vol.In((3600, 86400, 604800)),
+    }
+)
+@callback
+def ws_publishing(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
+    """Return bounded in-memory publication diagnostics without scanning Recorder."""
+
+    runtimes = hass.data.get(DOMAIN, {}).get(DATA_RUNTIMES, {})
+    selected = msg.get("entry_id")
+    if selected is not None:
+        runtime = runtimes.get(selected)
+        selected_runtimes = [(selected, runtime)] if runtime is not None else []
+    else:
+        selected_runtimes = list(runtimes.items())
+    now_utc = datetime.now(UTC)
+    meters: list[dict[str, Any]] = []
+    for entry_id, runtime in selected_runtimes:
+        publishing = getattr(runtime, "publishing", None)
+        if publishing is None:
+            continue
+        metrics = publishing.diagnostics(now_utc, int(msg["window_seconds"]))
+        meters.append(
+            {
+                "entry_id": entry_id,
+                "title": runtime.entry.title,
+                **metrics,
+            }
+        )
+    totals = {
+        "publishing_evaluations_per_minute": sum(
+            item["publishing_evaluations_per_minute"] for item in meters
+        ),
+        "internal_timer_ticks_per_minute": sum(
+            item["internal_timer_ticks_per_minute"] for item in meters
+        ),
+        "publications_per_minute": sum(item["publications_per_minute"] for item in meters),
+        "publications_in_window": sum(item["publications_in_window"] for item in meters),
+        "suppressed_unchanged": sum(item["suppressed_unchanged"] for item in meters),
+        "suppressed_policy": sum(item["suppressed_policy"] for item in meters),
+        "suppressed_attribute_only": sum(item["suppressed_attribute_only"] for item in meters),
+        "critical_publications": sum(item["critical_publications"] for item in meters),
+        "processing_failures": sum(item.get("processing_failures", 0) for item in meters),
+        "faulted_entities": [
+            {"meter": item["title"], "entity_key": entity_key}
+            for item in meters
+            for entity_key in item.get("faulted_entities", [])
+        ],
+        "effective_current_measurement_interval_seconds": (
+            meters[0].get("effective_current_measurement_interval_seconds")
+            if meters
+            and len({item.get("effective_current_measurement_interval_seconds") for item in meters})
+            == 1
+            else None
+        ),
+        "effective_quarter_accumulation_interval_seconds": (
+            meters[0].get("effective_quarter_accumulation_interval_seconds")
+            if meters
+            and len(
+                {item.get("effective_quarter_accumulation_interval_seconds") for item in meters}
+            )
+            == 1
+            else None
+        ),
+        "last_successful_publication_utc": max(
+            (
+                item["last_successful_publication_utc"]
+                for item in meters
+                if item.get("last_successful_publication_utc") is not None
+            ),
+            default=None,
+        ),
+        "estimated_total_bytes_per_year": (
+            sum(item["estimated_total_bytes_per_year"] for item in meters)
+            if meters and all(item["estimated_total_bytes_per_year"] is not None for item in meters)
+            else None
+        ),
+        "estimate_status": (
+            "truncated"
+            if any(item["estimate_status"] == "truncated" for item in meters)
+            else "ready"
+            if meters and all(item["estimate_status"] == "ready" for item in meters)
+            else "warming_up"
+        ),
+        "event_history_truncated": any(item["event_history_truncated"] for item in meters),
+        "influxdb_physical_storage_verified": False,
+    }
+    totals["budget_bytes_per_year"] = 1_000_000_000
+    totals["budget_utilization_pct"] = (
+        totals["estimated_total_bytes_per_year"] / totals["budget_bytes_per_year"] * 100
+        if totals["estimated_total_bytes_per_year"] is not None
+        else None
+    )
+    connection.send_result(
+        msg["id"],
+        {
+            "window_seconds": int(msg["window_seconds"]),
+            "meter_count": len(meters),
+            "meters": meters,
+            "totals": totals,
+            "estimate_notice": (
+                "Recorder-like estimate after at least one hour; InfluxDB physical storage is "
+                "unverified until measured on an isolated InfluxDB 1.x instance"
+            ),
+        },
+    )
 
 
 _ENTRY_SCHEMA = {vol.Optional("entry_id"): str}

@@ -23,6 +23,7 @@ from .const import (
     DOMAIN,
 )
 from .engine import EngineSnapshot
+from .publishing import PublicationState, PublishingClass
 from .runtime import GridMonitorRuntime
 
 
@@ -150,7 +151,6 @@ SENSORS: tuple[SIGridSensorDescription, ...] = (
         translation_key="quarter_import_kwh_so_far",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL,
         value_fn=lambda snapshot, runtime: snapshot.quarter_import_kwh,
     ),
     SIGridSensorDescription(
@@ -158,7 +158,6 @@ SENSORS: tuple[SIGridSensorDescription, ...] = (
         translation_key="quarter_export_kwh_so_far",
         native_unit_of_measurement=UnitOfEnergy.KILO_WATT_HOUR,
         device_class=SensorDeviceClass.ENERGY,
-        state_class=SensorStateClass.TOTAL,
         value_fn=lambda snapshot, runtime: snapshot.quarter_export_kwh,
     ),
     SIGridSensorDescription(
@@ -435,6 +434,75 @@ SENSORS: tuple[SIGridSensorDescription, ...] = (
     ),
 )
 
+# Every public entity has an explicit policy.  This mapping is intentionally
+# exhaustive and regression-tested so a newly added entity cannot accidentally
+# inherit calculation-rate publication.
+SENSOR_PUBLISHING_POLICIES: dict[str, PublishingClass] = {
+    "source_mode": PublishingClass.CONFIGURATION,
+    "current_power": PublishingClass.CURRENT_MEASUREMENT,
+    "import_power": PublishingClass.CURRENT_MEASUREMENT,
+    "export_power": PublishingClass.CURRENT_MEASUREMENT,
+    "net_power_15m_rolling": PublishingClass.MONITORING,
+    "import_power_15m_rolling": PublishingClass.MONITORING,
+    "smoothed_signed_power": PublishingClass.MONITORING,
+    "smoothed_import_power": PublishingClass.MONITORING,
+    "current_interval_import_average": PublishingClass.MONITORING,
+    "current_interval_signed_average": PublishingClass.MONITORING,
+    "last_completed_15m_import_demand": PublishingClass.CONFIGURATION,
+    "last_completed_15m_signed_average": PublishingClass.CONFIGURATION,
+    "quarter_import_kwh_so_far": PublishingClass.QUARTER_ACCUMULATION,
+    "quarter_export_kwh_so_far": PublishingClass.QUARTER_ACCUMULATION,
+    "target_kw": PublishingClass.CONFIGURATION,
+    "current_tariff_block": PublishingClass.CONFIGURATION,
+    "current_tariff_season": PublishingClass.CONFIGURATION,
+    "current_tariff_day_type": PublishingClass.CONFIGURATION,
+    "current_block_contracted_power": PublishingClass.CONFIGURATION,
+    "next_tariff_block": PublishingClass.CONFIGURATION,
+    "time_to_next_tariff_block": PublishingClass.DIAGNOSTIC,
+    "next_block_contracted_power": PublishingClass.CONFIGURATION,
+    "tariff_calendar_year": PublishingClass.CONFIGURATION,
+    "tariff_rule_status": PublishingClass.CONFIGURATION,
+    "contracted_power_b1": PublishingClass.CONFIGURATION,
+    "contracted_power_b2": PublishingClass.CONFIGURATION,
+    "contracted_power_b3": PublishingClass.CONFIGURATION,
+    "contracted_power_b4": PublishingClass.CONFIGURATION,
+    "contracted_power_b5": PublishingClass.CONFIGURATION,
+    "operational_target_kw": PublishingClass.CONFIGURATION,
+    "quarter_budget_remaining_kwh": PublishingClass.MONITORING,
+    "allowed_import_until_end_kw": PublishingClass.ACTIONABLE,
+    "forecast_instant_kw": PublishingClass.ACTIONABLE,
+    "forecast_smoothed_kw": PublishingClass.ACTIONABLE,
+    "forecast_utilization_pct": PublishingClass.ACTIONABLE,
+    "forecast_instant_utilization_pct": PublishingClass.ACTIONABLE,
+    "current_utilization_pct": PublishingClass.ACTIONABLE,
+    "can_add_power": PublishingClass.ACTIONABLE,
+    "must_reduce_power": PublishingClass.ACTIONABLE,
+    "sustained_can_add_power": PublishingClass.ACTIONABLE,
+    "sustained_must_reduce_power": PublishingClass.ACTIONABLE,
+    "sustained_forecast_quality": PublishingClass.CRITICAL,
+    "interval_elapsed_seconds": PublishingClass.DIAGNOSTIC,
+    "interval_remaining_seconds": PublishingClass.DIAGNOSTIC,
+    "data_quality": PublishingClass.CRITICAL,
+}
+
+_DYNAMIC_UNRECORDED_ATTRIBUTES = frozenset(
+    {
+        "coverage_seconds",
+        "gap_seconds",
+        "rolling_coverage_seconds",
+        "rolling_gap_seconds",
+        "source_measurement_age_seconds",
+        "valid_measurement_coverage_seconds",
+        "smoothing_coverage_seconds",
+        "smoothing_gap_seconds",
+        "limiting_quarter_start",
+        "limiting_quarter_end",
+        "quarter_elapsed_seconds",
+        "quarter_start_utc",
+        "quarter_end_utc",
+    }
+)
+
 TARIFF_ONLY_SENSOR_KEYS = {
     "current_tariff_block",
     "current_tariff_season",
@@ -466,13 +534,18 @@ CONTRACTUAL_SENSOR_KEYS = {
     "must_reduce_power",
 }
 
-LIVE_FORECAST_SENSOR_KEYS = {
+LIVE_ADVICE_SENSOR_KEYS = {
+    "quarter_budget_remaining_kwh",
+    "allowed_import_until_end_kw",
     "forecast_instant_kw",
     "forecast_smoothed_kw",
     "forecast_utilization_pct",
     "forecast_instant_utilization_pct",
+    "current_utilization_pct",
     "can_add_power",
     "must_reduce_power",
+    "sustained_can_add_power",
+    "sustained_must_reduce_power",
 }
 
 ARCHIVED_SENSOR_KEYS = {
@@ -496,6 +569,7 @@ class SIGridSensor(SensorEntity):
     """Representation of one calculation output."""
 
     _attr_has_entity_name = True
+    _unrecorded_attributes = _DYNAMIC_UNRECORDED_ATTRIBUTES
 
     def __init__(
         self,
@@ -505,6 +579,7 @@ class SIGridSensor(SensorEntity):
     ) -> None:
         self.runtime = runtime
         self.entity_description = description
+        self._publication_faulted = False
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
@@ -523,6 +598,8 @@ class SIGridSensor(SensorEntity):
 
     @property
     def available(self) -> bool:
+        if self._publication_faulted:
+            return False
         snapshot = self.runtime.snapshot
         if self.entity_description.key == "source_mode":
             return True
@@ -537,26 +614,24 @@ class SIGridSensor(SensorEntity):
             return self.entity_description.value_fn(snapshot, self.runtime) is not None
         if snapshot is None:
             return False
-        if (
-            self.entity_description.key in LIVE_FORECAST_SENSOR_KEYS
-            and not self.runtime.instantaneous_power_known
-        ):
-            return False
+        if self.entity_description.key in LIVE_ADVICE_SENSOR_KEYS:
+            if (
+                not self.runtime.source_available
+                or snapshot.input_stale
+                or not self.runtime.instantaneous_power_known
+                or not self.runtime.current_contractual_available
+            ):
+                return False
+            # A live safety/advice entity with no defensible numeric value is
+            # HA-unavailable, never an available UNKNOWN that could leave an
+            # older optimistic number visible to automations.
+            return self.entity_description.value_fn(snapshot, self.runtime) is not None
         if self.entity_description.key in CONTRACTUAL_SENSOR_KEYS:
             return self.runtime.current_contractual_available
-        if self.entity_description.key in {
-            "sustained_can_add_power",
-            "sustained_must_reduce_power",
-        }:
-            forecast = self.runtime.sustained_forecast
-            if forecast is None:
-                return False
-            return (
-                forecast.can_add_kw is not None
-                if self.entity_description.key == "sustained_can_add_power"
-                else forecast.must_reduce_kw is not None
-            )
-        return not (self.entity_description.requires_fresh_input and snapshot.input_stale)
+        return not (
+            self.entity_description.requires_fresh_input
+            and (not self.runtime.source_available or snapshot.input_stale)
+        )
 
     @property
     def native_value(self) -> float | int | str | None:
@@ -579,14 +654,24 @@ class SIGridSensor(SensorEntity):
             {
                 "source_mode": self.runtime.source_mode,
                 "source_entities": self.runtime.source_entities,
-                "source_available": self.runtime.source_available,
-                "source_status_reason": self.runtime.source_status_reason,
-                "source_measurement_timestamp_utc": (self.runtime.source_measurement_timestamp_utc),
                 "instantaneous_power_known": self.runtime.instantaneous_power_known,
                 "export_known": self.runtime.export_known,
             }
         )
-        if snapshot is not None:
+        if self.entity_description.key in {"current_power", "import_power", "export_power"}:
+            attributes.update(
+                {
+                    "source_available": self.runtime.source_available,
+                    "source_status_reason": self.runtime.source_status_reason,
+                }
+            )
+        if snapshot is not None and self.entity_description.key in {
+            "current_interval_import_average",
+            "current_interval_signed_average",
+            "quarter_import_kwh_so_far",
+            "quarter_export_kwh_so_far",
+            "quarter_budget_remaining_kwh",
+        }:
             attributes.update(
                 {
                     "quality": snapshot.quality.value,
@@ -597,9 +682,9 @@ class SIGridSensor(SensorEntity):
                         if self.runtime.instantaneous_power_known
                         else not self.runtime.source_available
                     ),
-                    "simulation_enabled": bool(
-                        self.runtime.settings.get("simulation_enabled", False)
-                    ),
+                    "quarter_start_utc": snapshot.bounds.start_utc.isoformat(),
+                    "quarter_end_utc": snapshot.bounds.end_utc.isoformat(),
+                    "quarter_elapsed_seconds": round(snapshot.elapsed_seconds, 3),
                 }
             )
         if snapshot is not None and self.entity_description.key.endswith("15m_rolling"):
@@ -654,7 +739,11 @@ class SIGridSensor(SensorEntity):
                         "rule_status": tariff.rule_status.value,
                         "source_reference": tariff.source_url,
                         "holiday_name": tariff.holiday_name,
-                        "local_datetime": tariff.local_datetime,
+                        # Do not expose the classification wall clock. Runtime
+                        # classification runs every second and that timestamp
+                        # would turn otherwise stable configuration entities
+                        # into one-second Recorder streams. Offset and fold are
+                        # material at DST boundaries and remain published.
                         "utc_offset_seconds": tariff.utc_offset_seconds,
                         "fold": tariff.fold,
                     }
@@ -680,6 +769,9 @@ class SIGridSensor(SensorEntity):
         ):
             attributes.update(
                 {
+                    "simulation_enabled": bool(
+                        self.runtime.settings.get("simulation_enabled", False)
+                    ),
                     "contractual_available": self.runtime.current_contractual_available,
                     "contractual_confirmed": self.runtime.current_contractual_confirmed,
                     "contractual_status_reason": self.runtime.contractual_status_reason,
@@ -699,14 +791,26 @@ class SIGridSensor(SensorEntity):
             "last_completed_15m_import_demand",
             "last_completed_15m_signed_average",
         }:
+            completed = self.runtime.engine.completed
             archived = self.runtime.archived_last_completed
-            if not self.runtime.engine.completed and archived is not None:
+            if completed:
+                latest = completed[-1]
+                attributes.update(
+                    {
+                        "quality": latest.quality.value,
+                        "provenance": latest.source_id,
+                        "quarter_start_utc": latest.start_utc.isoformat(),
+                        "quarter_end_utc": latest.end_utc.isoformat(),
+                        "restored_from_archive": False,
+                    }
+                )
+            elif archived is not None:
                 attributes.update(
                     {
                         "quality": archived.quality,
                         "provenance": archived.provenance,
-                        "quarter_start_utc": archived.start_utc,
-                        "quarter_end_utc": archived.end_utc,
+                        "quarter_start_utc": archived.start_utc.isoformat(),
+                        "quarter_end_utc": archived.end_utc.isoformat(),
                         "restored_from_archive": True,
                     }
                 )
@@ -716,8 +820,37 @@ class SIGridSensor(SensorEntity):
         """Subscribe to runtime updates."""
 
         await super().async_added_to_hass()
-        self.async_on_remove(self.runtime.add_listener(self._handle_update))
+        self.async_on_remove(
+            self.runtime.add_publishing_listener(
+                self.entity_description.key,
+                SENSOR_PUBLISHING_POLICIES[self.entity_description.key],
+                self._publication_state,
+                self._handle_update,
+                self._handle_publication_failure,
+            )
+        )
+
+    @callback
+    def _publication_state(self) -> PublicationState:
+        # Probe the authoritative runtime even after a fail-closed HA state was
+        # published, so recovery can be detected and stability-debounced.
+        faulted = self._publication_faulted
+        self._publication_faulted = False
+        try:
+            return PublicationState(
+                value=self.native_value,
+                available=self.available,
+                attributes=self.extra_state_attributes,
+            )
+        finally:
+            self._publication_faulted = faulted
 
     @callback
     def _handle_update(self) -> None:
+        self._publication_faulted = False
+        self.async_write_ha_state()
+
+    @callback
+    def _handle_publication_failure(self) -> None:
+        self._publication_faulted = True
         self.async_write_ha_state()

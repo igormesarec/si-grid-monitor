@@ -1,5 +1,16 @@
 # Installation, upgrade and first validation
 
+## Installation language
+
+The first integration step is **Language / Jezik**. Choose English (default) or
+Slovenščina. This preference initializes SI Grid Monitor's own dashboard and
+reports. The accessible EN/SL control in the shared dashboard header can create
+a browser-specific override that persists across navigation and reloads.
+
+Home Assistant's native setup and OptionsFlow dialog chrome still follows the
+Home Assistant user's frontend locale. Choosing Slovenščina here does not
+change Home Assistant's global language.
+
 ## Prerequisites
 
 - Working **Home Assistant** installation with an existing compatible sensor.
@@ -44,9 +55,16 @@ your Home Assistant installation. Test with a backup.
 
 ## V0.9.6 → V1.0 release-candidate migration
 
-V1.0.1 is the current merged application. V1.0.2 contract management remains a
-release candidate until it passes real Home Assistant acceptance.
+V1.0.2 contract management is the current merged application. V1.0.3 localization
+remains a draft release candidate until it passes real Home Assistant acceptance.
 Use a copied/test Home Assistant instance until the release candidate is accepted.
+
+V1.0.3 also defaults to **Storage Optimized** entity publishing. No SI Grid
+Monitor-specific Recorder or InfluxDB YAML exclusions are required for a normal
+new installation. If an older installation already uses temporary exclusions,
+leave them in place until the optimized event rate is validated; then follow the
+[manual cleanup and exclusion-removal guide](manual-storage-cleanup.md). Updating
+does not purge existing historical database rows.
 
 ### Backup first
 

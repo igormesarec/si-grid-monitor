@@ -28,23 +28,12 @@ import {
   selectTimelineHour,
   todayChartModel,
   todayQuarterAction,
-} from "./dashboard-model.mjs?v=1.0.2";
-import {dashboardLanguage, localizeDashboard, translateDashboard} from "./dashboard-i18n.mjs?v=1.0.2";
+} from "./dashboard-model.mjs?v=1.0.3";
+import {localizeDashboard, normalizeDashboardLanguage, translateDashboard} from "./dashboard-i18n.mjs?v=1.0.3";
 
 const fmt = (value, digits = 3) => value == null ? "—" : Number(value).toFixed(digits);
 const fmtPct = value => fmt(value, 2);
 const fmtEnergyReference = value => value == null ? "—" : Number(value).toFixed(3);
-const readableReason = value => ({
-  no_valid_measurement: "no valid measurement is available",
-  source_measurement_stale: "the latest source measurement is stale",
-  insufficient_coverage: "insufficient valid measurement history",
-  current_quarter_incomplete: "the current quarter has incomplete measurement coverage",
-  current_quarter_energy_incomplete: "the current quarter has incomplete measurement coverage",
-  smoothing_window_incomplete: "the smoothing window lacks sufficient valid measurements",
-  scheduled_reduction_cannot_recover_limiting_quarter: "the limiting quarter cannot be recovered by a scheduled reduction",
-  target_unavailable: "no verified contractual target is available",
-  current_quarter_already_unrecoverable: "the current quarter is already unrecoverable",
-}[value] || String(value ?? "reason unavailable").replaceAll("_", " "));
 const fmtAxis = value => {
   const magnitude = Math.abs(Number(value));
   if (magnitude < 1e-12) return "0";
@@ -56,6 +45,7 @@ const esc = value => String(value ?? "").replace(/[&<>"']/g, character => ({
 const localDate = value => ljubljanaDate(value);
 const localTime = value => ljubljanaTimeLabel(value);
 export const ACTIVE_METER_STORAGE_KEY = "si_grid_monitor.active_meter.v1";
+export const DASHBOARD_LANGUAGE_STORAGE_KEY = "si_grid_monitor.dashboard_language.v1";
 
 export class SIGridMonitorPanel extends HTMLElement {
   constructor() {
@@ -64,6 +54,8 @@ export class SIGridMonitorPanel extends HTMLElement {
     this._tab = "overview";
     this._entryId = null;
     this._entries = [];
+    this._languageOverride = this._storedLanguageOverride();
+    this._language = this._languageOverride;
     this._selectedDate = localDate();
     this._gate = new RequestGate();
     this._historyGate = new RequestGate();
@@ -71,17 +63,55 @@ export class SIGridMonitorPanel extends HTMLElement {
   }
 
   set hass(value) {
-    const previousLanguage = dashboardLanguage(this._hass);
     this._hass = value;
     if (!this._loaded) this._load();
-    else if (previousLanguage !== dashboardLanguage(value)) this._render();
   }
 
   set panel(value) { this._panel = value; }
   set route(value) { this._route = value; }
 
   _t(key, parameters = {}) {
-    return translateDashboard(key, dashboardLanguage(this._hass), parameters);
+    return translateDashboard(key, this._language || "en", parameters);
+  }
+
+  _reason(value) {
+    const normalized = value === "current_quarter_energy_incomplete"
+      ? "current_quarter_incomplete" : value;
+    const key = `reason.${normalized || "unavailable"}`;
+    const translated = this._t(key);
+    return translated === key ? String(value || this._t("reason.unavailable")).replaceAll("_", " ")
+      : translated;
+  }
+
+  _enum(prefix, value) {
+    const raw = String(value ?? "unknown");
+    const key = `${prefix}.${raw.toLowerCase()}`;
+    const translated = this._t(key);
+    return translated === key ? raw : translated;
+  }
+
+  _storedLanguageOverride() {
+    try {
+      const value = globalThis.localStorage?.getItem(DASHBOARD_LANGUAGE_STORAGE_KEY);
+      return value ? normalizeDashboardLanguage(value, null) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  _selectLanguage(language) {
+    const normalized = normalizeDashboardLanguage(language);
+    this._language = normalized;
+    this._languageOverride = normalized;
+    try {
+      globalThis.localStorage?.setItem(DASHBOARD_LANGUAGE_STORAGE_KEY, normalized);
+    } catch {
+      // The explicit choice remains active for this panel session when browser
+      // storage is unavailable (for example in a private embedded WebView).
+    }
+    this._render();
+    this.shadowRoot.querySelector(`[data-dashboard-language="${normalized}"]`)
+      ?.focus({preventScroll: true});
   }
 
   connectedCallback() {
@@ -111,6 +141,9 @@ export class SIGridMonitorPanel extends HTMLElement {
     this._contractSelection = [];
     this._contractAuditPage = 1;
     this._transitions = null;
+    this._publishing = null;
+    this._publishingAll = null;
+    this._publishingWindowSeconds ??= 3600;
     this._period = null;
     this._blocks = null;
     this._exceedances = null;
@@ -159,6 +192,7 @@ export class SIGridMonitorPanel extends HTMLElement {
     this._selectedTodayQuarterUtc = null;
     this._todaySelectionMessage = null;
     this._calendarScrollLeft = 0;
+    this._calendarAlignSelection = false;
     this._todayScrollLeft = 0;
     this._chartScrollPositions = {power: 0, energy: 0};
     this._chartDataKey = null;
@@ -175,12 +209,18 @@ export class SIGridMonitorPanel extends HTMLElement {
   }
 
   async _call(type, extra = {}, entryId = this._entryId) {
-    if (!entryId) throw new Error("No SI Grid Monitor meter is selected");
-    return this._hass.connection.sendMessagePromise({
+    if (entryId === undefined || entryId === "") {
+      throw new Error("No SI Grid Monitor meter is selected");
+    }
+    const message = {
       type: `si_grid_monitor/${type}`,
-      entry_id: entryId,
       ...extra,
-    });
+    };
+    // A deliberate null is reserved for bounded installation-wide endpoints
+    // such as publishing diagnostics. Measurement and archive calls always
+    // pass the selected entry id explicitly.
+    if (entryId !== null) message.entry_id = entryId;
+    return this._hass.connection.sendMessagePromise(message);
   }
 
   _storedEntryId() {
@@ -204,6 +244,10 @@ export class SIGridMonitorPanel extends HTMLElement {
 
   _activateEntry(entryId, {remember = true} = {}) {
     const nextEntryId = entryId || null;
+    if (!this._languageOverride) {
+      this._language = this._entries.find(item => item.entry_id === nextEntryId)
+        ?.preferred_language || "en";
+    }
     if (nextEntryId === this._entryId) {
       if (remember) this._rememberEntry(nextEntryId);
       return false;
@@ -221,6 +265,7 @@ export class SIGridMonitorPanel extends HTMLElement {
       ? entries.filter(item => item?.entry_id).map(item => ({
         entry_id: String(item.entry_id),
         title: String(item.title || item.entry_id),
+        preferred_language: normalizeDashboardLanguage(item.preferred_language || "en"),
       })) : [];
     const storedEntryId = this._storedEntryId();
     const preferredEntryId = this._entryId || storedEntryId;
@@ -276,13 +321,17 @@ export class SIGridMonitorPanel extends HTMLElement {
     const entryId = this._entryId;
     try {
       if (this._tab === "overview") {
-        const [live, transitions] = await Promise.all([
+        const [live, transitions, publishing, publishingAll] = await Promise.all([
           this._call("current", {}, entryId),
           this._call("transitions", {}, entryId),
+          this._call("publishing", {window_seconds: this._publishingWindowSeconds}, entryId),
+          this._call("publishing", {window_seconds: this._publishingWindowSeconds}, null),
         ]);
         if (!this._gate.accepts(token)) return;
         this._live = live;
         this._transitions = transitions;
+        this._publishing = publishing;
+        this._publishingAll = publishingAll;
       } else if (this._tab === "today") {
         const day = await this._call("day", {date: this._selectedDate}, entryId);
         if (!this._gate.accepts(token)) return;
@@ -396,6 +445,18 @@ export class SIGridMonitorPanel extends HTMLElement {
         ]);
         if (!this._gate.accepts(token)) return;
         this._calendar = calendar;
+        const knownHours = new Set((calendar.hours || []).map(hour => hour.start_utc));
+        if (!this._selectedHourUtc || !knownHours.has(this._selectedHourUtc)) {
+          const localHour = new Intl.DateTimeFormat("en-GB", {
+            timeZone: "Europe/Ljubljana", hour: "2-digit", minute: "2-digit",
+            hour12: false,
+          }).format(new Date()).slice(0, 2);
+          const preferred = this._selectedDate === localDate()
+            ? (calendar.hours || []).find(hour => hour.local_datetime?.slice(11, 13) === localHour)
+            : null;
+          this._selectedHourUtc = preferred?.start_utc || calendar.hours?.[0]?.start_utc || null;
+          this._calendarAlignSelection = true;
+        }
         this._tariffStatus = tariffStatus;
         this._calendarError = null;
       }
@@ -501,6 +562,7 @@ export class SIGridMonitorPanel extends HTMLElement {
     this._historicalRequestPromise = null;
     this._historicalRequestToken = null;
     this._calendarScrollLeft = 0;
+    this._calendarAlignSelection = true;
     this._todayScrollLeft = 0;
     if (this._tab === "today") {
       this._day = null;
@@ -813,7 +875,7 @@ export class SIGridMonitorPanel extends HTMLElement {
   _overview() {
     const live = this._live;
     if (!live) return `<section class="card">${esc(this._t("error.live_loading"))}</section>`;
-    if (!live.available) return `<section class="card"><h2>Waiting for measurements</h2><p>${esc(readableReason(live.reason))}</p></section>`;
+    if (!live.available) return `<section class="card"><h2>Waiting for measurements</h2><p>${esc(this._reason(live.reason))}</p></section>`;
     const quarter = live.quarter;
     const power = live.power;
     const tariff = live.tariff;
@@ -835,16 +897,39 @@ export class SIGridMonitorPanel extends HTMLElement {
       : "";
     const currentForecastQuality = forecast.smoothed_future_quality || "unavailable";
     const currentForecastStatus = currentForecastQuality === "unavailable"
-      ? `Unavailable: ${forecast.smoothed_future_reason || "no supported smoothed forecast"}`
-      : `${currentForecastQuality}${forecast.smoothed_future_reason ? `: ${forecast.smoothed_future_reason}` : ""}`;
+      ? `${this._t("common.unavailable")}: ${this._reason(forecast.smoothed_future_reason || "no_valid_measurement")}`
+      : `${this._t("common.available")}${forecast.smoothed_future_reason ? `: ${this._reason(forecast.smoothed_future_reason)}` : ""}`;
     const sustainedStatus = sustained.quality === "available"
-      ? `Available · ${fmt(sustained.coverage_seconds, 0)} s coverage`
-      : `Unavailable: ${readableReason(sustained.reason || "insufficient_coverage")}`;
-    return `<section class="card hero"><div class="herohead"><div><p class="eyebrow">CURRENT FIXED 15-MINUTE INTERVAL</p><h2>${esc(quarter.start_local.slice(0, 10))} · ${esc(quarter.start_local.slice(11, 16))}–${esc(quarter.end_local.slice(11, 16))}</h2><p>B${esc(tariff.block)} · ${fmt(tariff.target_kw)} kW · ${esc(quarter.quality)}</p></div><div class="count" data-countdown>--:--</div></div>
-      <div class="direction"><div class="import"><span>IMPORT</span><b>${fmt(power.import_kw)} kW</b></div><div class="export"><span>EXPORT</span><b>${power.export_known === false ? "Unknown" : `${fmt(power.export_kw)} kW`}</b></div></div>${this._liveChart(live)}${this._energyChart(live)}
+      ? this._t("forecast.available_coverage", {seconds: fmt(sustained.coverage_seconds, 0)})
+      : `${this._t("common.unavailable")}: ${this._reason(sustained.reason || "insufficient_coverage")}`;
+    return `<section class="card hero"><div class="herohead"><div><p class="eyebrow">${esc(this._t("overview.current_interval"))}</p><h2>${esc(quarter.start_local.slice(0, 10))} · ${esc(quarter.start_local.slice(11, 16))}–${esc(quarter.end_local.slice(11, 16))}</h2><p>B${esc(tariff.block)} · ${fmt(tariff.target_kw)} kW · ${esc(quarter.quality)}</p></div><div class="count" data-countdown>--:--</div></div>
+      <div class="direction"><div class="import"><span>${esc(this._t("overview.import"))}</span><b>${fmt(power.import_kw)} kW</b></div><div class="export"><span>${esc(this._t("overview.export"))}</span><b>${power.export_known === false ? esc(this._t("common.unknown")) : `${fmt(power.export_kw)} kW`}</b></div></div>${this._liveChart(live)}${this._energyChart(live)}
       <div class="grid">${this._metric("Signed grid power", fmt(power.signed_kw), "kW")}${this._metric("Source observation age", fmt(power.source_age_seconds, 0), "seconds")}${this._metric("Imported so far", fmt(quarter.import_kwh, 3), "kWh")}${this._metric("Exported so far", power.export_known === false ? "Unknown" : fmt(quarter.export_kwh, 3), power.export_known === false ? "" : "kWh")}${this._metric("Import average", fmt(quarter.import_average_kw), "kW")}${this._metric("Instant projected final quarter average", fmt(displayedInstantForecast), "kW")}${this._metric("Smoothed projected final quarter average", fmt(displayedSmoothedForecast), "kW")}${this._metric("Current-quarter forecast status", currentForecastStatus)}${this._metric("Utilization", fmtPct(forecast.current_utilization_pct), "%")}${this._metric("Remaining budget", fmt(forecast.budget_remaining_kwh, 3), "kWh")}${this._metric("Allowed remainder", fmt(forecast.allowed_remaining_import_kw), "kW")}${this._metric("CAN ADD THIS QUARTER", fmt(forecast.can_add_kw), "kW", "good")}${this._metric("MUST REDUCE THIS QUARTER", fmt(forecast.must_reduce_kw), "kW", forecast.must_reduce_kw > 0 ? "bad" : "")}${this._metric("SUSTAINED CAN ADD", fmt(sustained.can_add_kw), "kW", "accent")}${this._metric("SUSTAINED MUST REDUCE", fmt(sustained.must_reduce_kw), "kW", sustained.must_reduce_kw > 0 ? "bad" : "")}${this._metric("Sustained forecast quality", sustainedStatus)}${this._metric("Sustained horizon", sustained.horizon_minutes, "minutes")}</div>${projectionWarning}
       <p class="safety"><strong>Electrical safety:</strong> CAN ADD and sustained headroom are billing-energy-budget estimates only. They are not permission or assurance that the breaker, phases, grid connection, wiring, or inverter can carry that instantaneous load.</p></section>
-      ${this._transitionCard()}<section class="card"><div class="row"><h2>Quarter archive</h2><button data-prev>Previous quarter</button><button data-next>Next quarter</button><button data-live>Current / live</button></div>${this._historicalCard()}</section>`;
+      ${this._transitionCard()}${this._publishingView()}<section class="card"><div class="row"><h2>Quarter archive</h2><button data-prev>Previous quarter</button><button data-next>Next quarter</button><button data-live>Current / live</button></div>${this._historicalCard()}</section>`;
+  }
+
+  _publishingView() {
+    const report = this._publishing;
+    if (!report) return "";
+    const totals = report.totals || {};
+    const installation = this._publishingAll || report;
+    const installationTotals = installation.totals || {};
+    const estimateReady = installationTotals.estimate_status === "ready";
+    const warning = estimateReady && Number(installationTotals.budget_utilization_pct || 0) >= 100
+      ? this._t("publishing.budget_exceeded")
+      : estimateReady && Number(installationTotals.budget_utilization_pct || 0) >= 80
+        ? this._t("publishing.budget_warning") : "";
+    const profiles = [...new Set((report.meters || []).map(item => item.profile))].join(", ");
+    const top = (report.meters || []).flatMap(meter => (meter.top_entities || []).map(item => ({
+      ...item, meter: meter.title,
+    }))).sort((left, right) => right.count - left.count).slice(0, 10);
+    const notices = [
+      installationTotals.estimate_status === "warming_up" ? this._t("publishing.warming_up") : "",
+      installationTotals.event_history_truncated ? this._t("publishing.history_truncated") : "",
+      this._t("publishing.influx_unverified"),
+    ].filter(Boolean).map(item => `<p class="note">${esc(item)}</p>`).join("");
+    return `<section class="card publishing-report"><div class="herohead"><div><p class="eyebrow">${esc(this._t("publishing.eyebrow"))}</p><h2>${esc(this._t("publishing.title"))}</h2><p>${esc(this._t("publishing.estimate_notice"))}</p></div><label>${esc(this._t("publishing.window"))}<select data-publishing-window><option value="3600" ${this._publishingWindowSeconds === 3600 ? "selected" : ""}>${esc(this._t("publishing.hour"))}</option><option value="86400" ${this._publishingWindowSeconds === 86400 ? "selected" : ""}>${esc(this._t("publishing.day"))}</option><option value="604800" ${this._publishingWindowSeconds === 604800 ? "selected" : ""}>${esc(this._t("publishing.week"))}</option></select></label></div><div class="grid">${this._metric(this._t("publishing.profile"), profiles || "—")}${this._metric(this._t("publishing.meters"), installation.meter_count ?? 0)}${this._metric(this._t("publishing.timer_ticks_per_minute"), fmt(totals.internal_timer_ticks_per_minute, 1))}${this._metric(this._t("publishing.evaluations_per_minute"), fmt(totals.publishing_evaluations_per_minute, 1))}${this._metric(this._t("publishing.states_per_minute"), fmt(totals.publications_per_minute, 2))}${this._metric(this._t("publishing.suppressed_unchanged"), totals.suppressed_unchanged ?? 0)}${this._metric(this._t("publishing.suppressed_policy"), totals.suppressed_policy ?? 0)}${this._metric(this._t("publishing.suppressed_attributes"), totals.suppressed_attribute_only ?? 0)}${this._metric(this._t("publishing.critical"), totals.critical_publications ?? 0)}${this._metric(this._t("publishing.processing_failures"), totals.processing_failures ?? 0)}${this._metric(this._t("publishing.faulted_entities"), (totals.faulted_entities || []).length)}${this._metric(this._t("publishing.current_interval"), totals.effective_current_measurement_interval_seconds ?? "—", totals.effective_current_measurement_interval_seconds == null ? "" : "s")}${this._metric(this._t("publishing.quarter_interval"), totals.effective_quarter_accumulation_interval_seconds ?? "—", totals.effective_quarter_accumulation_interval_seconds == null ? "" : "s")}${this._metric(this._t("publishing.last_success"), totals.last_successful_publication_utc ? new Date(totals.last_successful_publication_utc).toLocaleString(this._language === "sl" ? "sl-SI" : "en-GB", {timeZone: "Europe/Ljubljana"}) : "—")}${this._metric(this._t("publishing.annual_estimate"), estimateReady ? fmt(Number(installationTotals.estimated_total_bytes_per_year) / 1000000, 1) : "—", estimateReady ? "MB/year" : "")}${this._metric(this._t("publishing.budget_use"), estimateReady ? fmt(installationTotals.budget_utilization_pct, 1) : "—", estimateReady ? "%" : "")}</div>${notices}${warning ? `<p class="error">${esc(warning)}</p>` : ""}<details><summary>${esc(this._t("publishing.top_entities"))}</summary>${top.length ? `<table><thead><tr><th>${esc(this._t("publishing.meter"))}</th><th>${esc(this._t("publishing.entity"))}</th><th>${esc(this._t("publishing.publications"))}</th></tr></thead><tbody>${top.map(item => `<tr><td>${esc(item.meter)}</td><td><code>${esc(item.entity_key)}</code></td><td>${item.count}</td></tr>`).join("")}</tbody></table>` : `<p>${esc(this._t("publishing.no_events"))}</p>`}</details></section>`;
   }
 
   _transitionCard() {
@@ -852,13 +937,13 @@ export class SIGridMonitorPanel extends HTMLElement {
     const rows = data.transitions || [];
     const lower = data.next_lower_target;
     const forecastText = !lower ? "" : !lower.inside_sustained_horizon
-      ? "This lower limit is outside the sustained forecast horizon and is informational only."
+      ? this._t("transition.outside_horizon")
       : lower.forecast_status === "reduction_needed"
-        ? `Forecast reduction needed over the ${data.sustained_horizon_minutes}-minute horizon. Limiting quarter: ${esc(data.sustained_limiting_quarter_start_utc || "not identified")}.`
+        ? this._t("transition.reduction_needed", {horizon: data.sustained_horizon_minutes, quarter: data.sustained_limiting_quarter_start_utc || this._t("transition.not_identified")})
         : lower.forecast_status === "no_reduction_projected"
-          ? `No reduction projected over the ${data.sustained_horizon_minutes}-minute horizon; the threshold still becomes lower.`
-          : `Forecast unavailable: ${esc(lower.forecast_reason || "missing, stale or insufficient measurements")}.`;
-    return `<section class="card"><h2>Next tariff transition</h2><div class="grid">${this._metric("Current block", data.current_block ? `B${data.current_block}` : "Unknown")}${this._metric("Current contracted target", fmt(data.current_target_kw), "kW")}${this._metric("Sustained horizon", data.sustained_horizon_minutes ?? "—", "minutes")}</div><div class="transition-list">${rows.map(row => `<div><b>B${esc(row.from_block)} → B${esc(row.to_block)}</b><span>${esc(row.local_datetime?.replace("T", " ").slice(0, 16))} · ${fmt(row.seconds_until / 60, 0)} min</span><span>${fmt(row.from_target_kw)} → ${fmt(row.to_target_kw)} kW · ${esc(row.direction)} ${row.difference_kw == null ? "" : `(${row.difference_kw >= 0 ? "+" : ""}${fmt(row.difference_kw)} kW)`}</span></div>`).join("") || "No verified transition found"}</div><h3>Next lower contracted-power target</h3><p>${lower ? `B${esc(lower.to_block)} at ${esc(lower.local_datetime?.replace("T", " ").slice(0, 16))}: ${fmt(lower.from_target_kw)} → ${fmt(lower.to_target_kw)} kW. Limit decreases by ${fmt(lower.decrease_kw)} kW.` : "No verified lower target within the bounded lookahead."}</p>${lower ? `<p>${forecastText}</p>` : ""}</section>`;
+          ? this._t("transition.no_reduction", {horizon: data.sustained_horizon_minutes})
+          : this._t("transition.unavailable", {reason: this._reason(lower.forecast_reason || "insufficient_coverage")});
+    return `<section class="card"><h2>${esc(this._t("transition.title"))}</h2><div class="grid">${this._metric(this._t("transition.current_block"), data.current_block ? `B${data.current_block}` : this._t("common.unknown"))}${this._metric(this._t("transition.current_target"), fmt(data.current_target_kw), "kW")}${this._metric(this._t("transition.horizon"), data.sustained_horizon_minutes ?? "—", this._t("common.minutes"))}</div><div class="transition-list">${rows.map(row => `<div><b>B${esc(row.from_block)} → B${esc(row.to_block)}</b><span>${esc(row.local_datetime?.replace("T", " ").slice(0, 16))} · ${fmt(row.seconds_until / 60, 0)} min</span><span>${fmt(row.from_target_kw)} → ${fmt(row.to_target_kw)} kW · ${esc(this._t(`transition.direction_${row.direction}`))} ${row.difference_kw == null ? "" : `(${row.difference_kw >= 0 ? "+" : ""}${fmt(row.difference_kw)} kW)`}</span></div>`).join("") || esc(this._t("transition.none"))}</div><h3>${esc(this._t("transition.next_lower"))}</h3><p>${lower ? esc(this._t("transition.lower_detail", {block: lower.to_block, time: lower.local_datetime?.replace("T", " ").slice(0, 16), from: fmt(lower.from_target_kw), to: fmt(lower.to_target_kw), decrease: fmt(lower.decrease_kw)})) : esc(this._t("transition.no_lower"))}</p>${lower ? `<p>${esc(forecastText)}</p>` : ""}</section>`;
   }
 
   _historicalCard() {
@@ -1176,19 +1261,10 @@ export class SIGridMonitorPanel extends HTMLElement {
     const calendar = this._calendar;
     if (!calendar) return `<section class="card">${esc(this._t("error.calendar_loading"))}</section>`;
     const selected = calendar.hours.find(hour => hour.start_utc === this._selectedHourUtc) || calendar.hours[0];
-    const locale = this._hass?.language || this._hass?.locale?.language || "en";
-    const slovenian = String(locale).toLowerCase().startsWith("sl");
-    const classification = {
-      working_day: slovenian ? "delovni dan" : "Working day",
-      weekend: slovenian ? "konec tedna" : "Weekend",
-      public_holiday: slovenian ? "praznik" : "Public holiday",
-    }[calendar.day_classification] || calendar.day_classification || "Unknown";
-    const season = calendar.season === "higher"
-      ? slovenian ? "višja sezona" : "Higher season"
-      : calendar.season === "lower"
-        ? slovenian ? "nižja sezona" : "Lower season"
-        : "Unknown season";
-    return `<section class="card"><div class="row"><button data-day="-1">‹</button><input data-date type="date" min="2026-01-01" max="2030-12-31" value="${esc(this._selectedDate)}"><button data-day="1">›</button><button data-today>Today</button></div><h2>Tariff calendar · ${esc(calendarDateLabel(calendar.date, locale))}</h2><p>${esc(classification)} · ${esc(season)}${calendar.holiday_name ? ` · ${esc(calendar.holiday_name)}` : ""}</p><div class="timeline" role="listbox" aria-label="Tariff hours">${calendar.hours.map(hour => `<button type="button" data-hour="${esc(hour.start_utc)}" class="hour b${hour.block || 0} ${selected?.start_utc === hour.start_utc ? "selected" : ""}" aria-pressed="${selected?.start_utc === hour.start_utc}"><b>${esc(hour.local_datetime.slice(11, 16))}</b><span>${hour.block ? `B${hour.block}` : "Unknown"}</span><small>${hour.is_historical ? `${this._t("contracts.as_recorded")}: ${fmt(hour.display_target_kw)} kW` : `${fmt(hour.display_target_kw)} kW`}</small>${hour.is_historical ? `<small>${this._t("contracts.current_configuration")}: ${fmt(hour.current_configuration_target_kw)} kW</small>` : ""}<small>UTC${hour.utc_offset_seconds / 3600 >= 0 ? "+" : ""}${hour.utc_offset_seconds / 3600}${hour.fold ? " · fold 1" : ""}</small></button>`).join("")}</div><div class="legend">${[1, 2, 3, 4, 5].map(block => `<span class="chip b${block}">B${block}</span>`).join("")}</div><div data-calendar-details>${this._calendarDetails(selected)}</div></section>`;
+    const locale = this._language === "sl" ? "sl-SI" : "en-GB";
+    const classification = this._enum("day_type", calendar.day_classification);
+    const season = this._enum("season", calendar.season);
+    return `<section class="card"><div class="row"><button data-day="-1">‹</button><input data-date type="date" min="2026-01-01" max="2030-12-31" value="${esc(this._selectedDate)}"><button data-day="1">›</button><button data-today>${esc(this._t("calendar.today"))}</button></div><h2>${esc(this._t("calendar.title"))} · ${esc(calendarDateLabel(calendar.date, locale))}</h2><p>${esc(classification)} · ${esc(season)}${calendar.holiday_name ? ` · ${esc(calendar.holiday_name)}` : ""}</p><div class="timeline" role="listbox" aria-label="${esc(this._t("calendar.hours_aria"))}">${calendar.hours.map(hour => `<button type="button" data-hour="${esc(hour.start_utc)}" class="hour b${hour.block || 0} ${selected?.start_utc === hour.start_utc ? "selected" : ""}" aria-pressed="${selected?.start_utc === hour.start_utc}"><b>${esc(hour.local_datetime.slice(11, 16))}</b><span>${hour.block ? `B${hour.block}` : esc(this._t("common.unknown"))}</span><small>${hour.as_recorded_target_kw == null ? esc(this._t("calendar.not_archived")) : `${esc(this._t("contracts.as_recorded"))}: ${fmt(hour.as_recorded_target_kw)} kW`}</small>${hour.fold || (calendar.hours.filter(item => item.local_datetime?.slice(11, 13) === hour.local_datetime?.slice(11, 13)).length > 1) ? `<small>UTC${hour.utc_offset_seconds / 3600 >= 0 ? "+" : ""}${hour.utc_offset_seconds / 3600}</small>` : ""}</button>`).join("")}</div><div class="legend">${[1, 2, 3, 4, 5].map(block => `<span class="chip b${block}">B${block}</span>`).join("")}</div><div data-calendar-details>${this._calendarDetails(selected)}</div></section>`;
   }
 
   _contractsView() {
@@ -1218,20 +1294,25 @@ export class SIGridMonitorPanel extends HTMLElement {
       const schedules = (epoch.contracted_power_periods || []).map(period => `${period.effective_from} – ${period.effective_to}: ${period.block_targets_kw.map((value, index) => `B${index + 1} ${fmt(value)} kW`).join(" · ")}`).join(" | ");
       const fallback = (epoch.block_targets_kw || []).some(value => value != null)
         ? epoch.block_targets_kw.map((value, index) => `B${index + 1} ${fmt(value)} kW`).join(" · ") : this._t("contracts.target_unknown");
-      return `<article class="contract-evidence"><strong>${esc(epoch.effective_utc)}</strong><span>${esc(this._t("contracts.configuration_epoch"))} ${esc(epoch.epoch)}</span><span>${esc(schedules || fallback)}</span><small>${esc(this._t("contracts.historical_snapshot"))} · ${esc(epoch.source_id || "unknown")}</small></article>`;
+      return `<article class="contract-evidence"><strong>${esc(new Date(epoch.effective_utc).toLocaleString(this._language === "sl" ? "sl-SI" : "en-GB", {timeZone: "Europe/Ljubljana"}))}</strong><span>${esc(this._t("contracts.configuration_epoch"))} ${esc(epoch.epoch)}</span><span>${esc(schedules || fallback)}</span><small>${esc(this._t("contracts.historical_snapshot"))}</small><details><summary>${esc(this._t("contracts.details"))}</summary><code>${esc(epoch.effective_utc)}</code><code>${esc(epoch.source_id || "unknown")}</code></details></article>`;
     }).join("") || `<p>${esc(this._t("contracts.no_historical_configuration"))}</p>`;
-    const evidence = (report.archived_target_evidence || []).map(item => `<tr><td>${esc(item.first_start_utc)} – ${esc(item.last_start_utc)}</td><td>${item.tariff_block ? `B${item.tariff_block}` : "—"}</td><td>${fmt(item.contractual_target_kw)} kW</td><td>${esc(item.target_provenance || "unknown")}</td><td>${esc(item.contractual_status || "unknown")}</td><td>${item.quarter_count}</td></tr>`).join("") || `<tr><td colspan="6">${esc(this._t("contracts.no_archived_evidence"))}</td></tr>`;
-    const audit = (report.audit_events || []).map(event => `<tr><td>${esc(new Date(event.event_utc).toLocaleString())}</td><td>${esc(event.event_type)}</td><td>${esc(event.effective_from || "—")} – ${esc(event.effective_to || "—")}</td><td>${esc(event.provenance || "—")}</td><td>${esc(event.origin)}</td><td><details><summary>${esc(this._t("contracts.schedules"))}</summary><b>${esc(this._t("contracts.before"))}</b><code>${esc(event.old_schedule_json)}</code><b>${esc(this._t("contracts.after"))}</b><code>${esc(event.new_schedule_json)}</code><small>${esc(event.configuration_revision)}</small></details></td></tr>`).join("") || `<tr><td colspan="6">${esc(this._t("contracts.no_audit"))}</td></tr>`;
+    const evidence = (report.archived_target_evidence || []).map(item => `<tr><td>${esc(item.first_start_utc)} – ${esc(item.last_start_utc)}</td><td>${item.tariff_block ? `B${item.tariff_block}` : "—"}</td><td>${fmt(item.contractual_target_kw)} kW</td><td>${esc(item.target_provenance || "unknown")}</td><td>${esc(this._enum("contract_status", item.contractual_status))}</td><td>${item.quarter_count}</td></tr>`).join("") || `<tr><td colspan="6">${esc(this._t("contracts.no_archived_evidence"))}</td></tr>`;
+    const evidenceCards = (report.archived_target_evidence || []).map(item => `<article class="contract-mobile-card"><strong>${item.tariff_block ? `B${item.tariff_block}` : "—"} · ${fmt(item.contractual_target_kw)} kW</strong><span>${esc(this._t("contracts.evidence_range"))}: ${esc(localQuarterLabel(item.first_start_utc))} – ${esc(localQuarterLabel(item.last_start_utc))}</span><span>${esc(this._t("contracts.quarters"))}: ${item.quarter_count}</span><span>${esc(this._t("contracts.provenance"))}: ${esc(item.target_provenance || "unknown")}</span><span>${esc(this._t("contracts.status"))}: ${esc(this._enum("contract_status", item.contractual_status))}</span></article>`).join("") || `<p>${esc(this._t("contracts.no_archived_evidence"))}</p>`;
+    const audit = (report.audit_events || []).map(event => `<tr><td>${esc(new Date(event.event_utc).toLocaleString(this._language === "sl" ? "sl-SI" : "en-GB"))}</td><td>${esc(this._enum("contract_event", event.event_type))}</td><td>${esc(event.effective_from || "—")} – ${esc(event.effective_to || "—")}</td><td>${esc(event.provenance || "—")}</td><td>${esc(event.origin)}</td><td><details><summary>${esc(this._t("contracts.schedules"))}</summary><b>${esc(this._t("contracts.before"))}</b><code>${esc(event.old_schedule_json)}</code><b>${esc(this._t("contracts.after"))}</b><code>${esc(event.new_schedule_json)}</code><small>${esc(event.configuration_revision)}</small></details></td></tr>`).join("") || `<tr><td colspan="6">${esc(this._t("contracts.no_audit"))}</td></tr>`;
+    const auditCards = (report.audit_events || []).map(event => `<article class="contract-mobile-card"><strong>${esc(this._enum("contract_event", event.event_type))}</strong><time>${esc(new Date(event.event_utc).toLocaleString(this._language === "sl" ? "sl-SI" : "en-GB", {timeZone: "Europe/Ljubljana"}))}</time><span>${esc(this._t("contracts.effective_dates"))}: ${esc(event.effective_from || "—")} – ${esc(event.effective_to || "—")}</span><span>${esc(this._t("contracts.provenance"))}: ${esc(event.provenance || "—")}</span><span>${esc(this._t("contracts.source"))}: ${esc(event.origin)}</span>${event.actor ? `<span>${esc(event.actor)}</span>` : ""}<details><summary>${esc(this._t("contracts.details"))}</summary><b>${esc(this._t("contracts.before"))}</b><code>${esc(event.old_schedule_json)}</code><b>${esc(this._t("contracts.after"))}</b><code>${esc(event.new_schedule_json)}</code><small>${esc(event.configuration_revision)}</small></details></article>`).join("") || `<p>${esc(this._t("contracts.no_audit"))}</p>`;
     const auditPage = report.audit_pagination || {page: 1, pages: 1, total: (report.audit_events || []).length};
     const auditPagination = `<div class="pagination"><button data-contract-audit-page="${auditPage.page - 1}" ${auditPage.page <= 1 ? "disabled" : ""}>${esc(this._t("common.previous"))}</button><span>${esc(this._t("contracts.audit_page", {page: auditPage.page, pages: auditPage.pages, count: auditPage.total}))}</span><button data-contract-audit-page="${auditPage.page + 1}" ${auditPage.page >= auditPage.pages ? "disabled" : ""}>${esc(this._t("common.next"))}</button></div>`;
-    const warning = health.level && health.level !== "ok" ? `<div class="notice contract-warning" role="alert"><strong>${esc(String(health.level).toUpperCase())}</strong> · ${esc(readableReason(health.reason))}${health.gap_start ? ` · ${esc(health.gap_start)}` : ""}</div>` : "";
-    const buttons = report.is_admin ? `<div><button data-manage-contracts>${esc(this._t("contracts.open_settings"))}</button><p class="chart-key">${esc(report.management?.instruction || this._t("contracts.settings_instruction", {meter: report.meter_name}))}</p></div>` : `<p class="notice">${esc(this._t("contracts.admin_required"))}</p>`;
-    return `<section class="card contracts-status"><h2>${esc(this._t("contracts.current_status"))}</h2>${warning}<div class="metrics"><article><span>${esc(this._t("contracts.status"))}</span><strong>${esc(report.contract_status || "UNKNOWN")}</strong></article><article><span>${esc(this._t("contracts.current_block"))}</span><strong>${report.current_tariff_block ? `B${report.current_tariff_block}` : "—"}</strong></article><article><span>${esc(this._t("contracts.applicable_target"))}</span><strong>${fmt(report.applicable_target_kw)} kW</strong></article><article><span>${esc(this._t("contracts.days_remaining"))}</span><strong>${health.days_remaining ?? "—"}</strong></article></div>${active ? `<p><strong>${esc(active.effective_from)} – ${esc(active.effective_to)}</strong> · ${esc(active.provenance || this._t("contracts.user_configured"))}</p>` : `<p>${esc(this._t("contracts.no_current"))}</p>`}${health.successor ? `<p>${esc(this._t("contracts.next_assignment"))}: <strong>${esc(health.successor.effective_from)} – ${esc(health.successor.effective_to)}</strong></p>` : ""}${buttons}</section><section class="card"><h2>${esc(this._t("contracts.timeline"))}</h2><div class="contract-timeline">${timeline}</div></section><section class="card"><h2>${esc(this._t("contracts.comparison"))}</h2>${comparison}</section><section class="card"><h2>${esc(this._t("contracts.historical_configuration"))}</h2><p>${esc(this._t("contracts.historical_help"))}</p><div class="contract-timeline">${historical}</div></section><section class="card"><h2>${esc(this._t("contracts.archived_evidence"))}</h2><p>${esc(this._t("contracts.archived_help"))}</p><div class="table-wrap"><table><thead><tr><th>${esc(this._t("contracts.evidence_range"))}</th><th>${esc(this._t("contracts.block"))}</th><th>${esc(this._t("contracts.target"))}</th><th>${esc(this._t("contracts.provenance"))}</th><th>${esc(this._t("contracts.status"))}</th><th>${esc(this._t("contracts.quarters"))}</th></tr></thead><tbody>${evidence}</tbody></table></div></section><section class="card"><h2>${esc(this._t("contracts.audit"))}</h2><p>${esc(this._t("contracts.audit_help"))}</p><div class="table-wrap"><table><thead><tr><th>${esc(this._t("contracts.edit_time"))}</th><th>${esc(this._t("contracts.event"))}</th><th>${esc(this._t("contracts.effective_dates"))}</th><th>${esc(this._t("contracts.provenance"))}</th><th>${esc(this._t("contracts.source"))}</th><th>${esc(this._t("contracts.details"))}</th></tr></thead><tbody>${audit}</tbody></table></div>${auditPagination}</section>`;
+    const warning = health.level && health.level !== "ok" ? `<div class="notice contract-warning" role="alert"><strong>${esc(this._enum("contract_health", health.level))}</strong> · ${esc(this._reason(health.reason))}${health.gap_start ? ` · ${esc(health.gap_start)}` : ""}</div>` : "";
+    const buttons = report.is_admin ? `<div><button data-manage-contracts>${esc(this._t("contracts.open_settings"))}</button><p class="chart-key">${esc(this._t("contracts.settings_instruction", {meter: report.meter_name}))}</p></div>` : `<p class="notice">${esc(this._t("contracts.admin_required"))}</p>`;
+    return `<section class="card contracts-status"><h2>${esc(this._t("contracts.current_status"))}</h2>${warning}<div class="metrics"><article><span>${esc(this._t("contracts.status"))}</span><strong>${esc(this._enum("contract_status", report.contract_status))}</strong></article><article><span>${esc(this._t("contracts.current_block"))}</span><strong>${report.current_tariff_block ? `B${report.current_tariff_block}` : "—"}</strong></article><article><span>${esc(this._t("contracts.applicable_target"))}</span><strong>${fmt(report.applicable_target_kw)} kW</strong></article><article><span>${esc(this._t("contracts.days_remaining"))}</span><strong>${health.days_remaining ?? "—"}</strong></article></div>${active ? `<p><strong>${esc(active.effective_from)} – ${esc(active.effective_to)}</strong> · ${esc(active.provenance || this._t("contracts.user_configured"))}</p>` : `<p>${esc(this._t("contracts.no_current"))}</p>`}${health.successor ? `<p>${esc(this._t("contracts.next_assignment"))}: <strong>${esc(health.successor.effective_from)} – ${esc(health.successor.effective_to)}</strong></p>` : ""}${buttons}</section><section class="card"><h2>${esc(this._t("contracts.timeline"))}</h2><div class="contract-timeline">${timeline}</div></section><section class="card"><h2>${esc(this._t("contracts.comparison"))}</h2>${comparison}</section><section class="card"><h2>${esc(this._t("contracts.historical_configuration"))}</h2><p>${esc(this._t("contracts.historical_help"))}</p><div class="contract-timeline">${historical}</div></section><section class="card"><h2>${esc(this._t("contracts.archived_evidence"))}</h2><p>${esc(this._t("contracts.archived_help"))}</p><div class="table-wrap contract-desktop"><table><thead><tr><th>${esc(this._t("contracts.evidence_range"))}</th><th>${esc(this._t("contracts.block"))}</th><th>${esc(this._t("contracts.target"))}</th><th>${esc(this._t("contracts.provenance"))}</th><th>${esc(this._t("contracts.status"))}</th><th>${esc(this._t("contracts.quarters"))}</th></tr></thead><tbody>${evidence}</tbody></table></div><div class="contract-mobile-list">${evidenceCards}</div></section><section class="card"><h2>${esc(this._t("contracts.audit"))}</h2><p>${esc(this._t("contracts.audit_help"))}</p><div class="table-wrap contract-desktop"><table><thead><tr><th>${esc(this._t("contracts.edit_time"))}</th><th>${esc(this._t("contracts.event"))}</th><th>${esc(this._t("contracts.effective_dates"))}</th><th>${esc(this._t("contracts.provenance"))}</th><th>${esc(this._t("contracts.source"))}</th><th>${esc(this._t("contracts.details"))}</th></tr></thead><tbody>${audit}</tbody></table></div><div class="contract-mobile-list">${auditCards}</div>${auditPagination}</section>`;
   }
 
   _calendarDetails(selected) {
     if (!selected) return "";
-    return `<div class="selected-quarter"><h3>Selected hour · ${esc(selected.local_datetime?.slice(11, 16))}</h3><div class="grid">${this._metric("Tariff block", selected.block ? `B${selected.block}` : "Unknown")}${this._metric("As recorded target", fmt(selected.as_recorded_target_kw), "kW")}${this._metric("Recorded source", selected.as_recorded_source || "unknown")}${selected.historical_configuration_target_kw != null ? this._metric("Historical configuration inference", fmt(selected.historical_configuration_target_kw), "kW") : ""}${this._metric("Current configuration target", fmt(selected.current_configuration_target_kw), "kW")}${this._metric("Rule status", selected.rule_status || "Unknown")}${this._metric("Rule version", selected.rule_version || "Unknown")}${this._metric("Season", selected.season || "Unknown")}${this._metric("Day type", selected.day_type || "Unknown")}${this._metric("Holiday", selected.holiday_name || "None")}${this._metric("UTC offset", selected.utc_offset_seconds / 3600, "hours")}${this._metric("DST fold", selected.fold ?? 0)}${this._metric("Start (UTC)", selected.start_utc || "Unknown")}</div>${selected.as_recorded_reason ? `<p class="notice">${esc(selected.as_recorded_reason)}</p>` : ""}<button data-tab="contracts">Open Contracts</button></div>`;
+    const recordedReason = selected.as_recorded_source === "archived_quarter_unknown"
+      ? this._t("calendar.archived_target_unknown")
+      : selected.as_recorded_reason ? this._t("calendar.recorded_target_unavailable") : "";
+    return `<div class="selected-quarter"><h3>${esc(this._t("calendar.selected_hour"))} · ${esc(selected.local_datetime?.slice(11, 16))}</h3><div class="grid">${this._metric(this._t("calendar.tariff_block"), selected.block ? `B${selected.block}` : this._t("common.unknown"))}${this._metric(this._t("calendar.as_recorded_target"), fmt(selected.as_recorded_target_kw), "kW")}${this._metric(this._t("calendar.recorded_source"), selected.as_recorded_source || "unknown")}${selected.historical_configuration_target_kw != null ? this._metric(this._t("calendar.historical_inference"), fmt(selected.historical_configuration_target_kw), "kW") : ""}${this._metric(this._t("calendar.current_target"), fmt(selected.current_configuration_target_kw), "kW")}${this._metric(this._t("calendar.rule_status"), this._enum("rule_status", selected.rule_status))}${this._metric(this._t("calendar.rule_version"), selected.rule_version || this._t("common.unknown"))}${this._metric(this._t("calendar.season"), this._enum("season", selected.season))}${this._metric(this._t("calendar.day_type"), this._enum("day_type", selected.day_type))}${this._metric(this._t("calendar.holiday"), selected.holiday_name || this._t("common.none"))}${this._metric(this._t("calendar.utc_offset"), selected.utc_offset_seconds / 3600, this._t("common.hours"))}${this._metric(this._t("calendar.dst_fold"), selected.fold ?? 0)}${this._metric(this._t("calendar.start_utc"), selected.start_utc || this._t("common.unknown"))}</div>${recordedReason ? `<p class="notice">${esc(recordedReason)}</p>` : ""}<button data-tab="contracts">${esc(this._t("contracts.open"))}</button></div>`;
   }
 
   _selectCalendarHour(startUtc, focus = false) {
@@ -1294,6 +1375,9 @@ export class SIGridMonitorPanel extends HTMLElement {
     root.querySelector("select[data-entry]")?.addEventListener("change", event => {
       this._selectEntry(event.target.value);
     });
+    root.querySelectorAll("[data-dashboard-language]").forEach(element => {
+      element.addEventListener("click", () => this._selectLanguage(element.dataset.dashboardLanguage));
+    });
     root.querySelectorAll("[data-day]").forEach(element => {
       element.onclick = () => this._moveDay(Number(element.dataset.day));
     });
@@ -1330,6 +1414,10 @@ export class SIGridMonitorPanel extends HTMLElement {
     root.querySelector("[data-retry-day]")?.addEventListener("click", () => this._loadTab());
     root.querySelector("[data-retry-calendar]")?.addEventListener("click", () => this._loadTab());
     root.querySelector("[data-retry-contracts]")?.addEventListener("click", () => this._loadTab());
+    root.querySelector("[data-publishing-window]")?.addEventListener("change", event => {
+      this._publishingWindowSeconds = Number(event.target.value);
+      this._loadTab();
+    });
     root.querySelectorAll("[data-contract-period]").forEach(button => button.addEventListener("click", () => {
       const index = Number(button.dataset.contractPeriod);
       const selected = this._contractSelection.filter(value => value !== index);
@@ -1677,12 +1765,14 @@ export class SIGridMonitorPanel extends HTMLElement {
       : "";
     const meterNotice = this._meterNotice
       ? `<div class="notice meter-notice" role="status" aria-live="polite">${esc(this._meterNotice)}</div>` : "";
-    this.shadowRoot.innerHTML = `<style>${this._styles()}</style><style>${this._legendStyles()}</style><style>${this._mobileHistoryStyles()}</style><style>${this._contractStyles()}</style><main><header><div class="brand"><span>SI</span><div><h1>SI Grid Monitor</h1><p>Import-only contractual demand intelligence</p></div></div></header><nav>${tabs.map(id => `<button data-tab="${id}" class="${this._tab === id ? "active" : ""}">${esc(this._t(`nav.${id}`))}</button>`).join("")}</nav><section class="meter meter-toolbar" aria-label="${esc(this._t("meter.active"))}"><div class="meter-identity"><small>${esc(this._t("meter.active"))}</small><strong data-active-meter-name>${esc(activeMeterName)}</strong></div>${meterSelector}</section>${meterNotice}${this._error ? `<div class="error">${esc(this._t("error.connection", {message: this._error}))}</div>` : ""}${content}</main>`;
+    const languageButtonStyle = language => `min-width:44px;min-height:40px;padding:6px 10px;font-weight:700;${this._language === language ? "color:var(--primary-color,#03a9f4);border-color:var(--primary-color,#03a9f4);background:#0284c715" : ""}`;
+    const languageSwitcher = `<div class="language-switcher" role="group" aria-label="${esc(this._t("language.switcher"))}" style="display:inline-flex;gap:4px;padding:3px;border:1px solid var(--line);border-radius:10px"><button type="button" style="${languageButtonStyle("en")}" data-dashboard-language="en" aria-pressed="${this._language === "en"}" title="${esc(this._t("language.english"))}">EN</button><button type="button" style="${languageButtonStyle("sl")}" data-dashboard-language="sl" aria-pressed="${this._language === "sl"}" title="${esc(this._t("language.slovenian"))}">SL</button></div>`;
+    this.shadowRoot.innerHTML = `<style>${this._styles()}</style><style>${this._legendStyles()}</style><style>${this._mobileHistoryStyles()}</style><style>${this._contractStyles()}</style><main><header><div class="brand"><span>SI</span><div><h1>SI Grid Monitor</h1><p>Import-only contractual demand intelligence</p></div></div>${languageSwitcher}</header><nav>${tabs.map(id => `<button data-tab="${id}" class="${this._tab === id ? "active" : ""}">${esc(this._t(`nav.${id}`))}</button>`).join("")}</nav><section class="meter meter-toolbar" aria-label="${esc(this._t("meter.active"))}"><div class="meter-identity"><small>${esc(this._t("meter.active"))}</small><strong data-active-meter-name>${esc(activeMeterName)}</strong></div>${meterSelector}</section>${meterNotice}${this._error ? `<div class="error">${esc(this._t("error.connection", {message: this._error}))}</div>` : ""}${content}</main>`;
     const contractHealth = this._live?.contract_health;
     if (this._tab === "overview" && contractHealth?.level && contractHealth.level !== "ok") {
       this.shadowRoot.querySelector(".meter-toolbar")?.insertAdjacentHTML(
         "afterend",
-        `<div class="notice contract-warning" role="alert"><strong>${esc(this._t("contracts.attention"))}</strong> · ${esc(readableReason(contractHealth.reason))} <button data-tab="contracts">${esc(this._t("contracts.open"))}</button></div>`,
+        `<div class="notice contract-warning" role="alert"><strong>${esc(this._t("contracts.attention"))}</strong> · ${esc(this._reason(contractHealth.reason))} <button data-tab="contracts">${esc(this._t("contracts.open"))}</button></div>`,
       );
     }
     if (this._tab === "history" && this._historyPage) {
@@ -1703,13 +1793,25 @@ export class SIGridMonitorPanel extends HTMLElement {
         "beforeend", '<button data-open-history>Open this range in HISTORY</button>',
       );
     }
-    localizeDashboard(this.shadowRoot, dashboardLanguage(this._hass));
+    localizeDashboard(this.shadowRoot, this._language || "en");
     this._bind();
     restoreChartScrollState(
       this.shadowRoot, this._chartScrollPositions, chartView.focused,
     );
     const timeline = this.shadowRoot.querySelector(".timeline");
-    if (timeline) timeline.scrollLeft = this._calendarScrollLeft || 0;
+    if (timeline) {
+      timeline.scrollLeft = this._calendarScrollLeft || 0;
+      if (this._calendarAlignSelection) {
+        const selectedHour = [...timeline.querySelectorAll("[data-hour]")]
+          .find(element => element.dataset.hour === this._selectedHourUtc);
+        if (selectedHour) {
+          const desired = Math.max(0, selectedHour.offsetLeft - timeline.clientWidth / 3);
+          timeline.scrollLeft = desired;
+          this._calendarScrollLeft = desired;
+        }
+        this._calendarAlignSelection = false;
+      }
+    }
     const todayChart = this.shadowRoot.querySelector("[data-today-scroll]");
     if (todayChart) todayChart.scrollLeft = this._todayScrollLeft || 0;
     const focusTarget = focusState?.type === "today-control"
@@ -1745,7 +1847,7 @@ export class SIGridMonitorPanel extends HTMLElement {
   }
 
   _contractStyles() {
-    return `.contract-timeline{display:grid;gap:10px}.contract-period{display:grid;grid-template-columns:minmax(170px,.8fr) auto minmax(260px,2fr);gap:10px;align-items:center;text-align:left;width:100%}.contract-period.selected{outline:3px solid var(--primary-color,#03a9f4);outline-offset:1px}.contract-period small{grid-column:1/-1}.contract-gap{border:2px dashed var(--warning-color,#f59e0b);padding:12px;background:color-mix(in srgb,var(--warning-color,#f59e0b) 8%,transparent)}.contract-warning{border-left:4px solid #dc2626}.table-wrap{max-width:100%;overflow-x:auto}.contracts-status code{display:block;max-width:420px;white-space:pre-wrap;overflow-wrap:anywhere}@media(max-width:700px){.contract-period{grid-template-columns:1fr;min-height:64px}.contract-period small{grid-column:1}.contracts-status .row{align-items:stretch;flex-direction:column}.contracts-status .row button{min-height:44px}}`;
+    return `.contract-timeline{display:grid;gap:10px}.contract-period{display:grid;grid-template-columns:minmax(170px,.8fr) auto minmax(260px,2fr);gap:10px;align-items:center;text-align:left;width:100%}.contract-period.selected{outline:3px solid var(--primary-color,#03a9f4);outline-offset:1px}.contract-period small{grid-column:1/-1}.contract-gap{border:2px dashed var(--warning-color,#f59e0b);padding:12px;background:color-mix(in srgb,var(--warning-color,#f59e0b) 8%,transparent)}.contract-warning{border-left:4px solid #dc2626}.table-wrap{max-width:100%;overflow-x:auto}.contracts-status code,.contract-evidence code,.contract-mobile-card code{display:block;max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere}.contracts-status .metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.contracts-status .metrics article,.contract-mobile-card{display:flex;flex-direction:column;gap:5px;padding:12px;border:1px solid var(--line);border-radius:10px;overflow-wrap:anywhere}.contracts-status .metrics span,.contract-mobile-card span,.contract-mobile-card time{font-size:.78rem;color:var(--secondary-text-color)}.contracts-status .metrics strong{font-size:1.15rem}.contract-mobile-list{display:none;gap:10px}@media(max-width:700px){.contract-period{grid-template-columns:1fr;min-height:64px}.contract-period small{grid-column:1}.contracts-status .row{align-items:stretch;flex-direction:column}.contracts-status .row button{min-height:44px}.contracts-status .metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.contract-desktop{display:none}.contract-mobile-list{display:grid}}@media(max-width:340px){.contracts-status .metrics{grid-template-columns:1fr}}`;
   }
 
   _historyStyles() {

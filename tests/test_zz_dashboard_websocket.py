@@ -55,6 +55,7 @@ def _install_dashboard_import_stubs() -> None:
     voluptuous = types.ModuleType("voluptuous")
     voluptuous.Required = lambda key, **_kwargs: key  # type: ignore[attr-defined]
     voluptuous.Optional = lambda key, **_kwargs: key  # type: ignore[attr-defined]
+    voluptuous.In = lambda values: values  # type: ignore[attr-defined]
     sys.modules.update(
         {
             "homeassistant.components": components,
@@ -211,6 +212,75 @@ def _runtime(archive: QuarterArchive) -> Any:
         target_for_tariff=lambda tariff: 3.5 if tariff.block is not None else None,
         dashboard_current=lambda: {"available": False, "now_utc": "2026-01-02T12:00:00+00:00"},
     )
+
+
+def test_entries_command_exposes_each_meter_installation_language() -> None:
+    runtimes = {
+        "entry-a": SimpleNamespace(
+            entry=SimpleNamespace(title="Meter A", data={"preferred_language": "sl"}, options={})
+        ),
+        "entry-b": SimpleNamespace(entry=SimpleNamespace(title="Meter B", data={}, options={})),
+    }
+    hass = SimpleNamespace(data={DOMAIN: {dashboard.DATA_RUNTIMES: runtimes}})
+    connection = SimpleNamespace(
+        send_result=lambda _id, result: setattr(connection, "result", result)
+    )
+    dashboard.ws_entries(hass, connection, {"id": 1})
+    assert connection.result["entries"] == [
+        {"entry_id": "entry-a", "title": "Meter A", "preferred_language": "sl"},
+        {"entry_id": "entry-b", "title": "Meter B", "preferred_language": "en"},
+    ]
+
+
+def test_publishing_command_aggregates_selected_meter_without_recorder_scan() -> None:
+    metrics = {
+        "publishing_evaluations_per_minute": 62.0,
+        "internal_timer_ticks_per_minute": 60.0,
+        "publications_per_minute": 1.5,
+        "publications_in_window": 90,
+        "suppressed_unchanged": 1000,
+        "suppressed_policy": 200,
+        "suppressed_attribute_only": 25,
+        "critical_publications": 2,
+        "processing_failures": 1,
+        "faulted_entities": ["can_add_power"],
+        "effective_current_measurement_interval_seconds": 900,
+        "effective_quarter_accumulation_interval_seconds": 180,
+        "last_successful_publication_utc": "2026-10-25T12:00:00+00:00",
+        "estimated_total_bytes_per_year": 320_000_000,
+        "estimate_status": "ready",
+        "event_history_truncated": False,
+    }
+    runtimes = {
+        "entry-a": SimpleNamespace(
+            entry=SimpleNamespace(title="Meter A"),
+            publishing=SimpleNamespace(diagnostics=lambda _now, _window: dict(metrics)),
+        ),
+        "entry-b": SimpleNamespace(
+            entry=SimpleNamespace(title="Meter B"),
+            publishing=SimpleNamespace(diagnostics=lambda _now, _window: dict(metrics)),
+        ),
+    }
+    hass = SimpleNamespace(data={DOMAIN: {dashboard.DATA_RUNTIMES: runtimes}})
+    connection = _Connection()
+    dashboard.ws_publishing(
+        hass,
+        connection,
+        {"id": 2, "entry_id": "entry-b", "window_seconds": 86400},
+    )
+
+    assert connection.result["meter_count"] == 1
+    assert connection.result["meters"][0]["title"] == "Meter B"
+    assert connection.result["totals"]["publications_in_window"] == 90
+    assert connection.result["totals"]["budget_utilization_pct"] == 32.0
+    assert connection.result["totals"]["publishing_evaluations_per_minute"] == 62.0
+    assert connection.result["totals"]["internal_timer_ticks_per_minute"] == 60.0
+    assert connection.result["totals"]["influxdb_physical_storage_verified"] is False
+    assert connection.result["totals"]["processing_failures"] == 1
+    assert connection.result["totals"]["faulted_entities"] == [
+        {"meter": "Meter B", "entity_key": "can_add_power"}
+    ]
+    assert connection.result["totals"]["effective_quarter_accumulation_interval_seconds"] == 180
 
 
 def test_history_commands_use_real_sqlite_rows_and_preserve_archive(tmp_path: Path) -> None:

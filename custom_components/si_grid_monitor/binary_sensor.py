@@ -14,6 +14,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from .const import DOMAIN
 from .engine import EngineSnapshot
+from .publishing import PublicationState, PublishingClass
 from .runtime import GridMonitorRuntime
 
 
@@ -44,6 +45,12 @@ BINARY_SENSORS = (
     ),
 )
 
+BINARY_SENSOR_PUBLISHING_POLICIES: dict[str, PublishingClass] = {
+    "projected_exceedance": PublishingClass.CRITICAL,
+    "unrecoverable_interval": PublishingClass.CRITICAL,
+    "input_stale": PublishingClass.CRITICAL,
+}
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -62,6 +69,7 @@ class SIGridBinarySensor(BinarySensorEntity):
     """Representation of one boolean calculation output."""
 
     _attr_has_entity_name = True
+    _unrecorded_attributes = frozenset({"source_status_reason"})
 
     def __init__(
         self,
@@ -71,6 +79,7 @@ class SIGridBinarySensor(BinarySensorEntity):
     ) -> None:
         self.runtime = runtime
         self.entity_description = description
+        self._publication_faulted = False
         self._attr_unique_id = f"{entry.entry_id}_{description.key}"
         self._attr_device_info = DeviceInfo(
             identifiers={(DOMAIN, entry.entry_id)},
@@ -81,6 +90,8 @@ class SIGridBinarySensor(BinarySensorEntity):
 
     @property
     def available(self) -> bool:
+        if self._publication_faulted:
+            return False
         snapshot = self.runtime.snapshot
         if snapshot is None:
             return False
@@ -93,14 +104,32 @@ class SIGridBinarySensor(BinarySensorEntity):
             "projected_exceedance",
             "unrecoverable_interval",
         }:
+            if self.entity_description.key == "projected_exceedance" and (
+                not self.runtime.source_available or snapshot.input_stale
+            ):
+                return False
+            if (
+                self.entity_description.key == "unrecoverable_interval"
+                and not snapshot.projection.unrecoverable
+                and (not self.runtime.source_available or snapshot.input_stale)
+            ):
+                # Once observed imported energy has already exhausted the
+                # quarter budget, TRUE remains proven. During an unknown gap,
+                # however, FALSE is not proof that recovery is still possible.
+                return False
             return self.runtime.current_contractual_available
-        return not (self.entity_description.requires_fresh_input and snapshot.input_stale)
+        return not (
+            self.entity_description.requires_fresh_input
+            and (not self.runtime.source_available or snapshot.input_stale)
+        )
 
     @property
     def is_on(self) -> bool | None:
         snapshot = self.runtime.snapshot
         if snapshot is None:
             return None
+        if self.entity_description.key == "input_stale" and not self.runtime.source_available:
+            return True
         return self.entity_description.value_fn(snapshot)
 
     @property
@@ -129,8 +158,35 @@ class SIGridBinarySensor(BinarySensorEntity):
         """Subscribe to runtime updates."""
 
         await super().async_added_to_hass()
-        self.async_on_remove(self.runtime.add_listener(self._handle_update))
+        self.async_on_remove(
+            self.runtime.add_publishing_listener(
+                self.entity_description.key,
+                BINARY_SENSOR_PUBLISHING_POLICIES[self.entity_description.key],
+                self._publication_state,
+                self._handle_update,
+                self._handle_publication_failure,
+            )
+        )
+
+    @callback
+    def _publication_state(self) -> PublicationState:
+        faulted = self._publication_faulted
+        self._publication_faulted = False
+        try:
+            return PublicationState(
+                value=self.is_on,
+                available=self.available,
+                attributes=self.extra_state_attributes,
+            )
+        finally:
+            self._publication_faulted = faulted
 
     @callback
     def _handle_update(self) -> None:
+        self._publication_faulted = False
+        self.async_write_ha_state()
+
+    @callback
+    def _handle_publication_failure(self) -> None:
+        self._publication_faulted = True
         self.async_write_ha_state()

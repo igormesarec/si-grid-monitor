@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 DOMAIN = "si_grid_monitor"
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 PANEL_URL_PATH = "si-grid-monitor"
 PANEL_TITLE = "SI Grid Monitor"
 PANEL_ICON = "mdi:transmission-tower"
@@ -15,6 +15,9 @@ CONF_IMPORT_POWER_ENTITY = "import_power_entity"
 CONF_EXPORT_POWER_ENTITY = "export_power_entity"
 CONF_POSITIVE_MEANS_IMPORT = "positive_means_import"
 CONF_METER_NAME = "meter_name"
+CONF_PREFERRED_LANGUAGE = "preferred_language"
+DEFAULT_PREFERRED_LANGUAGE = "en"
+SUPPORTED_LANGUAGES = ("en", "sl")
 CONF_ARCHIVE_REMOVAL_ACTION = "archive_removal_action"
 CONF_ARCHIVE_REMOVAL_BACKUP = "archive_removal_backup"
 CONF_ARCHIVE_REMOVAL_CONFIRMATION = "archive_removal_confirmation"
@@ -46,6 +49,14 @@ CONF_RETENTION = "retention"
 CONF_SIMULATION_ENABLED = "simulation_enabled"
 CONF_SIMULATION_TARGET_KW = "simulation_target_kw"
 CONF_SUSTAINED_HORIZON_MINUTES = "sustained_horizon_minutes"
+CONF_PUBLISHING_PROFILE = "publishing_profile"
+CONF_PUBLISHING_ROUTINE_INTERVAL_SECONDS = "publishing_routine_interval_seconds"
+CONF_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS = "publishing_actionable_interval_seconds"
+CONF_PUBLISHING_POWER_DEADBAND_KW = "publishing_power_deadband_kw"
+CONF_PUBLISHING_ENERGY_DEADBAND_KWH = "publishing_energy_deadband_kwh"
+CONF_PUBLISHING_ACTIONABLE_DELTA_KW = "publishing_actionable_delta_kw"
+CONF_PUBLISHING_ACTIONABLE_HYSTERESIS_KW = "publishing_actionable_hysteresis_kw"
+CONF_PUBLISHING_FAST_ENTITIES = "publishing_fast_entities"
 
 SOURCE_SIGNED_POWER = "signed_power"
 SOURCE_SEPARATE_POWER = "separate_power"
@@ -63,6 +74,33 @@ DEFAULT_SMOOTHING_SECONDS = 120
 DEFAULT_STALE_AFTER_SECONDS = 60
 DEFAULT_RETENTION = "forever"
 DEFAULT_SUSTAINED_HORIZON_MINUTES = 60
+PUBLISHING_PROFILE_STORAGE_OPTIMIZED = "storage_optimized"
+PUBLISHING_PROFILE_AUTOMATION = "automation_priority"
+PUBLISHING_PROFILE_CUSTOM = "custom"
+PUBLISHING_PROFILES = (
+    PUBLISHING_PROFILE_STORAGE_OPTIMIZED,
+    PUBLISHING_PROFILE_AUTOMATION,
+    PUBLISHING_PROFILE_CUSTOM,
+)
+DEFAULT_PUBLISHING_PROFILE = PUBLISHING_PROFILE_STORAGE_OPTIMIZED
+DEFAULT_PUBLISHING_ROUTINE_INTERVAL_SECONDS = 900
+DEFAULT_PUBLISHING_ACTIONABLE_INTERVAL_SECONDS = 900
+DEFAULT_PUBLISHING_POWER_DEADBAND_KW = 0.100
+DEFAULT_PUBLISHING_ENERGY_DEADBAND_KWH = 0.010
+DEFAULT_PUBLISHING_ACTIONABLE_DELTA_KW = 0.500
+DEFAULT_PUBLISHING_ACTIONABLE_HYSTERESIS_KW = 0.050
+PUBLISHING_INTERVAL_PRESETS = (15, 30, 60, 300, 600, 900)
+PUBLISHING_FAST_ENTITY_OPTIONS = (
+    "current_power",
+    "import_power",
+    "export_power",
+    "can_add_power",
+    "must_reduce_power",
+    "sustained_can_add_power",
+    "sustained_must_reduce_power",
+    "forecast_instant_kw",
+    "forecast_smoothed_kw",
+)
 DEFAULT_TARGET_MODE = "shared"
 TARGET_MODE_SHARED = "shared"
 TARGET_MODE_PER_BLOCK = "per_block"

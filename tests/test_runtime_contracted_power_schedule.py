@@ -63,12 +63,15 @@ from custom_components.si_grid_monitor.archive import (  # noqa: E402
 from custom_components.si_grid_monitor.const import (  # noqa: E402
     CONF_ALLOW_PROVISIONAL_TARIFF,
     CONF_CONTRACTED_POWER_PERIODS,
+    CONF_EXPORT_POWER_ENTITY,
+    CONF_IMPORT_POWER_ENTITY,
     CONF_POSITIVE_MEANS_IMPORT,
     CONF_POWER_ENTITY,
     CONF_SAFETY_MARGIN_KW,
     CONF_SIMULATION_ENABLED,
     CONF_SIMULATION_TARGET_KW,
     CONF_SMOOTHING_SECONDS,
+    CONF_SOURCE_MODE,
     CONF_SUSTAINED_HORIZON_MINUTES,
     CONF_TARGET_B1_KW,
     CONF_TARGET_B2_KW,
@@ -76,6 +79,8 @@ from custom_components.si_grid_monitor.const import (  # noqa: E402
     CONF_TARGET_B4_KW,
     CONF_TARGET_B5_KW,
     CONF_TARGET_KW,
+    SOURCE_IMPORT_ONLY,
+    SOURCE_SEPARATE_POWER,
 )
 from custom_components.si_grid_monitor.contracted_power import (  # noqa: E402
     ContractedPowerPeriod,
@@ -121,7 +126,9 @@ def _local_utc(year: int, month: int, day: int, hour: int, minute: int) -> datet
     return datetime(year, month, day, hour, minute, tzinfo=LJUBLJANA).astimezone(UTC)
 
 
-def _runtime(tmp_path: Path) -> tuple[GridMonitorRuntime, ContractedPowerSchedule]:
+def _runtime(
+    tmp_path: Path, **configured_overrides: object
+) -> tuple[GridMonitorRuntime, ContractedPowerSchedule]:
     targets = (3.50, 3.90, 4.10, 4.20, 4.20)
     schedule = ContractedPowerSchedule(
         (
@@ -150,6 +157,7 @@ def _runtime(tmp_path: Path) -> tuple[GridMonitorRuntime, ContractedPowerSchedul
         CONF_SUSTAINED_HORIZON_MINUTES: 15,
         CONF_SIMULATION_ENABLED: False,
         CONF_SIMULATION_TARGET_KW: 4.8,
+        **configured_overrides,
     }
     return GridMonitorRuntime(_Hass(tmp_path), _Entry(data)), schedule  # type: ignore[arg-type]
 
@@ -160,7 +168,268 @@ def _feed_fresh_history(runtime: GridMonitorRuntime, now: datetime) -> None:
     while cursor <= now:
         runtime.engine.ingest(PowerSample(cursor, 3.0))
         cursor += timedelta(seconds=30)
+    runtime.source_available = True
+    runtime.source_status_reason = None
     runtime._last_checkpoint_utc = now
+
+
+def test_explicit_source_failure_refreshes_availability_without_fake_sample(tmp_path) -> None:
+    runtime, _schedule = _runtime(tmp_path)
+    refreshed: list[datetime] = []
+    runtime._refresh = refreshed.append  # type: ignore[method-assign]
+    runtime.source_available = True
+    before_samples = len(runtime.engine.buffer.samples)
+    now = datetime.now(UTC)
+    unavailable = types.SimpleNamespace(
+        state="unavailable",
+        attributes={"unit_of_measurement": "W"},
+        last_reported=now,
+        last_updated=now,
+    )
+
+    runtime._ingest_power_states(unavailable, None)  # type: ignore[arg-type]
+
+    assert runtime.source_available is False
+    assert runtime.source_status_reason == "one or more source readings are unavailable"
+    assert len(runtime.engine.buffer.samples) == before_samples
+    assert len(refreshed) == 1
+
+
+def test_missing_mode_b_channel_is_immediately_unavailable(tmp_path) -> None:
+    runtime, _schedule = _runtime(
+        tmp_path,
+        **{
+            CONF_SOURCE_MODE: SOURCE_SEPARATE_POWER,
+            CONF_IMPORT_POWER_ENTITY: "sensor.import",
+            CONF_EXPORT_POWER_ENTITY: "sensor.export",
+        },
+    )
+    runtime.hass.states = types.SimpleNamespace(
+        get=lambda entity_id: object() if entity_id == "sensor.import" else None
+    )
+    refreshed: list[datetime] = []
+    runtime._refresh = refreshed.append  # type: ignore[method-assign]
+
+    runtime._ingest_current_sources()
+
+    assert runtime.source_available is False
+    assert "import/export" in str(runtime.source_status_reason)
+    assert len(refreshed) == 1
+
+
+def test_invalid_unit_is_immediately_unavailable_and_clean_sample_recovers(tmp_path) -> None:
+    runtime, _schedule = _runtime(
+        tmp_path,
+        **{
+            CONF_SOURCE_MODE: SOURCE_IMPORT_ONLY,
+            CONF_IMPORT_POWER_ENTITY: "sensor.import",
+        },
+    )
+    refreshed: list[datetime] = []
+    runtime._refresh = refreshed.append  # type: ignore[method-assign]
+    now = datetime.now(UTC)
+
+    invalid = types.SimpleNamespace(
+        state="12.3",
+        attributes={"unit_of_measurement": "kWh"},
+        last_reported=now,
+        last_updated=now,
+    )
+    runtime._ingest_power_states(invalid, None)  # type: ignore[arg-type]
+    assert runtime.source_available is False
+    assert "unsupported power unit" in str(runtime.source_status_reason)
+    assert len(runtime.engine.buffer.samples) == 0
+
+    valid = types.SimpleNamespace(
+        state="1230",
+        attributes={"unit_of_measurement": "W"},
+        last_reported=now + timedelta(seconds=1),
+        last_updated=now + timedelta(seconds=1),
+    )
+    runtime._ingest_power_states(valid, None)  # type: ignore[arg-type]
+    assert runtime.source_available is True
+    assert runtime.source_status_reason is None
+    assert runtime.engine.last_sample is not None
+    assert runtime.engine.last_sample.signed_kw == pytest.approx(1.23)
+    assert len(refreshed) == 2
+
+
+def test_mode_b_timestamp_skew_is_unavailable_without_pairing_stale_channel(tmp_path) -> None:
+    runtime, _schedule = _runtime(
+        tmp_path,
+        **{
+            CONF_SOURCE_MODE: SOURCE_SEPARATE_POWER,
+            CONF_IMPORT_POWER_ENTITY: "sensor.import",
+            CONF_EXPORT_POWER_ENTITY: "sensor.export",
+        },
+    )
+    refreshed: list[datetime] = []
+    runtime._refresh = refreshed.append  # type: ignore[method-assign]
+    now = datetime.now(UTC)
+    imported = types.SimpleNamespace(
+        state="800",
+        attributes={"unit_of_measurement": "W"},
+        last_reported=now,
+        last_updated=now,
+    )
+    stale_export = types.SimpleNamespace(
+        state="0",
+        attributes={"unit_of_measurement": "W"},
+        last_reported=now - timedelta(seconds=61),
+        last_updated=now - timedelta(seconds=61),
+    )
+
+    runtime._ingest_power_states(imported, stale_export)  # type: ignore[arg-type]
+
+    assert runtime.source_available is False
+    assert runtime.source_status_reason == "source timestamps are too far apart"
+    assert len(runtime.engine.buffer.samples) == 0
+    assert len(refreshed) == 1
+
+    recovered_export = types.SimpleNamespace(
+        state="0",
+        attributes={"unit_of_measurement": "W"},
+        last_reported=now + timedelta(seconds=1),
+        last_updated=now + timedelta(seconds=1),
+    )
+    recovered_import = types.SimpleNamespace(
+        state="800",
+        attributes={"unit_of_measurement": "W"},
+        last_reported=now + timedelta(seconds=1),
+        last_updated=now + timedelta(seconds=1),
+    )
+    runtime._ingest_power_states(  # type: ignore[arg-type]
+        recovered_import, recovered_export
+    )
+    assert runtime.source_available is True
+    assert runtime.source_status_reason is None
+    assert runtime.engine.last_sample is not None
+    assert runtime.engine.last_sample.import_kw == pytest.approx(0.8)
+    assert runtime.engine.last_sample.export_kw == pytest.approx(0.0)
+    assert len(refreshed) == 2
+
+
+def test_mode_b_duplicate_timestamp_cannot_recover_an_unavailable_channel(tmp_path) -> None:
+    runtime, _schedule = _runtime(
+        tmp_path,
+        **{
+            CONF_SOURCE_MODE: SOURCE_SEPARATE_POWER,
+            CONF_IMPORT_POWER_ENTITY: "sensor.import",
+            CONF_EXPORT_POWER_ENTITY: "sensor.export",
+        },
+    )
+    runtime._refresh = lambda _now: None  # type: ignore[method-assign]
+    now = datetime.now(UTC)
+
+    def state(value: str, timestamp: datetime):
+        return types.SimpleNamespace(
+            state=value,
+            attributes={"unit_of_measurement": "W"},
+            last_reported=timestamp,
+            last_updated=timestamp,
+        )
+
+    runtime._ingest_power_states(state("800", now), state("0", now))  # type: ignore[arg-type]
+    assert runtime.source_available is True
+
+    runtime._ingest_power_states(  # type: ignore[arg-type]
+        state("800", now + timedelta(seconds=1)),
+        state("unavailable", now + timedelta(seconds=1)),
+    )
+    assert runtime.source_available is False
+
+    # Replaying the previous paired timestamp is not new evidence and must not
+    # make the failed source look fresh again.
+    runtime._ingest_power_states(state("800", now), state("0", now))  # type: ignore[arg-type]
+    assert runtime.source_available is False
+
+    recovered = now + timedelta(seconds=2)
+    runtime._ingest_power_states(  # type: ignore[arg-type]
+        state("800", recovered), state("0", recovered)
+    )
+    assert runtime.source_available is True
+    assert runtime.engine.last_sample is not None
+    assert runtime.engine.last_sample.timestamp_utc == recovered
+
+
+def test_dashboard_masks_untrusted_live_advice_but_keeps_accumulated_energy(tmp_path) -> None:
+    runtime, _schedule = _runtime(tmp_path)
+    now = _local_utc(2026, 10, 18, 12, 5)
+    _feed_fresh_history(runtime, now)
+    runtime.source_available = True
+    runtime.source_status_reason = None
+    runtime._refresh(now)
+    before = runtime.dashboard_current()
+    assert before["power"]["signed_kw"] == pytest.approx(3.0)  # type: ignore[index]
+    imported = before["quarter"]["import_kwh"]  # type: ignore[index]
+
+    runtime.source_available = False
+    runtime.source_status_reason = "source unavailable"
+    unavailable = runtime.dashboard_current()
+
+    assert unavailable["quarter"]["import_kwh"] == imported  # type: ignore[index]
+    assert unavailable["power"]["signed_kw"] is None  # type: ignore[index]
+    assert unavailable["power"]["input_stale"] is True  # type: ignore[index]
+    assert unavailable["projection"]["can_add_kw"] is None  # type: ignore[index]
+    assert unavailable["projection"]["must_reduce_kw"] is None  # type: ignore[index]
+    assert unavailable["projection"]["projected_exceedance"] is None  # type: ignore[index]
+    assert unavailable["sustained"]["quality"] == "unavailable"  # type: ignore[index]
+
+
+@pytest.mark.parametrize(
+    "source_overrides",
+    (
+        {},
+        {
+            CONF_SOURCE_MODE: SOURCE_SEPARATE_POWER,
+            CONF_IMPORT_POWER_ENTITY: "sensor.import",
+            CONF_EXPORT_POWER_ENTITY: "sensor.export",
+        },
+        {
+            CONF_SOURCE_MODE: SOURCE_IMPORT_ONLY,
+            CONF_IMPORT_POWER_ENTITY: "sensor.import",
+        },
+    ),
+    ids=("mode-a", "mode-b", "mode-c"),
+)
+def test_silent_source_loss_becomes_stale_at_engine_boundary_and_recovers(
+    tmp_path, source_overrides
+) -> None:
+    runtime, _schedule = _runtime(tmp_path, **source_overrides)
+    start = _local_utc(2026, 10, 18, 12, 0)
+    runtime.engine = FixedQuarterEngine(stale_after_seconds=60, source_id=runtime.engine.source_id)
+    runtime.engine.ingest(PowerSample(start, 1.0, import_kw=1.0, export_kw=0.0, export_known=True))
+    runtime._checkpoint_if_due = lambda _now: None  # type: ignore[method-assign]
+    runtime.source_available = True
+    runtime.source_status_reason = None
+
+    for seconds, expected_stale in ((59, False), (60, False), (61, True)):
+        runtime._refresh(start + timedelta(seconds=seconds))
+        current = runtime.dashboard_current()
+        assert current["power"]["input_stale"] is expected_stale  # type: ignore[index]
+        if expected_stale:
+            assert current["projection"]["projected_exceedance"] is None  # type: ignore[index]
+
+    assert runtime.snapshot is not None
+    assert runtime.snapshot.quarter_import_kwh == pytest.approx(1.0 / 60)
+    assert runtime.snapshot.coverage_seconds == pytest.approx(60)
+    assert runtime.snapshot.gap_seconds == pytest.approx(1)
+
+    runtime.engine.ingest(
+        PowerSample(
+            start + timedelta(seconds=62),
+            1.0,
+            import_kw=1.0,
+            export_kw=0.0,
+            export_known=True,
+        )
+    )
+    runtime._refresh(start + timedelta(seconds=62))
+    recovered = runtime.dashboard_current()
+    assert recovered["power"]["input_stale"] is False  # type: ignore[index]
+    assert recovered["power"]["signed_kw"] == pytest.approx(1.0)  # type: ignore[index]
+    assert runtime.snapshot.gap_seconds == pytest.approx(2)
+    assert runtime.snapshot.quality == DataQuality.INCOMPLETE
 
 
 def test_dashboard_finds_real_fixture_b4_to_b3_lower_target(tmp_path) -> None:
