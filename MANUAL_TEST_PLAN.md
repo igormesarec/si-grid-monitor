@@ -840,6 +840,33 @@ instance before recommending a beta release. Preserve evidence for:
 Automated tests do not satisfy this gate. Record the HA version, HACS version,
 browser/app version, integration commit, source update cadence and database
 before/after counts with the results.
+
+## V1.0.3 final publication review
+
+1. In Mode A or B, hold a genuine 3.000 kW export for a full quarter. Confirm
+   current-quarter export shows approximately 0.050/0.250/0.500/0.700 kWh at
+   minutes 1/5/10/14 within the documented 180-second freshness bound, and the
+   completed archive contains 0.750 kWh export and 0.000 kWh import.
+2. Repeat with import → export → import. Confirm import/export energy remain
+   separate and contractual demand uses import only. Interrupt the source and
+   confirm evidenced energy remains while unknown time becomes incomplete; no
+   zero samples are manufactured. In Mode C, export must stay unavailable.
+3. Complete two consecutive quarters with the same demand and signed average.
+   Confirm both completed sensors emit once for each distinct UTC start/end and
+   remain quiet afterward. Restart between quarters and repeat across the two
+   local 02:00 hours on the autumn fallback day.
+4. Compare the dashboard with ordinary HA power entities under Storage
+   Optimized. The dashboard should follow internal live data; ordinary numeric
+   entity states may be up to 900 seconds old. Verify Automation Priority or a
+   measured Custom profile before using those numeric states in faster external
+   automations. Critical warnings and materially worsening advice must remain
+   prompt in every profile.
+5. Observe publication diagnostics for at least one complete hour. A truncated
+   window must show no annual estimate; after lost events age out and a complete
+   window exists, its estimate may recover. Repeat for day/week where practical.
+6. Measure physical Recorder and InfluxDB allocation for two meters for at
+   least 24 hours (seven days preferred). The synthetic 23/24/25-hour results
+   remain planning evidence only and do not satisfy this physical gate.
 # V1.0.2 contract-management acceptance
 
 1. Back up `.storage/si_grid_monitor_<entry-id>.db`, upgrade from V1.0.1 and

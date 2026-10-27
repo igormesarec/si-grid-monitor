@@ -65,6 +65,19 @@ All notable changes to SI Grid Monitor will be documented here.
 - Removed the lifetime-total state class from resetting current-quarter import
   and export energy entities. Entity IDs, values, archive precision and schema 7
   remain unchanged; no historical statistics are rewritten.
+- Gave current-quarter exported energy the same first-minute, 180-second and
+  canonical-rollover publication contract as imported energy while keeping
+  Mode C export unavailable and contractual import demand export-independent.
+- Added canonical UTC start/end metadata to both completed-quarter sensors so
+  identical consecutive numeric results still create one observable completion
+  event without a per-second heartbeat, including repeated DST hours.
+- Made bounded event-history truncation diagnostic-window specific. Hour/day/
+  week estimates recover after discarded events leave the requested window;
+  incomplete startup or truncated windows are never annualized as complete.
+- Repeated the real-entity two-meter benchmark with sustained export,
+  reversals, outages, safety changes and completion events: the 23/24/25-hour
+  projections are 938.4/917.2/939.4 MB/year. Physical Recorder/InfluxDB growth
+  remains an explicit manual acceptance gate.
 
 ## [1.0.2] - release candidate
 

@@ -451,7 +451,7 @@ SENSOR_PUBLISHING_POLICIES: dict[str, PublishingClass] = {
     "last_completed_15m_import_demand": PublishingClass.CONFIGURATION,
     "last_completed_15m_signed_average": PublishingClass.CONFIGURATION,
     "quarter_import_kwh_so_far": PublishingClass.QUARTER_ACCUMULATION,
-    "quarter_export_kwh_so_far": PublishingClass.MONITORING,
+    "quarter_export_kwh_so_far": PublishingClass.QUARTER_ACCUMULATION,
     "target_kw": PublishingClass.CONFIGURATION,
     "current_tariff_block": PublishingClass.CONFIGURATION,
     "current_tariff_season": PublishingClass.CONFIGURATION,
@@ -791,14 +791,26 @@ class SIGridSensor(SensorEntity):
             "last_completed_15m_import_demand",
             "last_completed_15m_signed_average",
         }:
+            completed = self.runtime.engine.completed
             archived = self.runtime.archived_last_completed
-            if not self.runtime.engine.completed and archived is not None:
+            if completed:
+                latest = completed[-1]
+                attributes.update(
+                    {
+                        "quality": latest.quality.value,
+                        "provenance": latest.source_id,
+                        "quarter_start_utc": latest.start_utc.isoformat(),
+                        "quarter_end_utc": latest.end_utc.isoformat(),
+                        "restored_from_archive": False,
+                    }
+                )
+            elif archived is not None:
                 attributes.update(
                     {
                         "quality": archived.quality,
                         "provenance": archived.provenance,
-                        "quarter_start_utc": archived.start_utc,
-                        "quarter_end_utc": archived.end_utc,
+                        "quarter_start_utc": archived.start_utc.isoformat(),
+                        "quarter_end_utc": archived.end_utc.isoformat(),
                         "restored_from_archive": True,
                     }
                 )

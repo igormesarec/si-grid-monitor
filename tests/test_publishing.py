@@ -816,6 +816,41 @@ def test_bounded_event_history_reports_truncation() -> None:
     assert metrics["publications_in_window"] == 2
 
 
+@pytest.mark.parametrize("window_seconds", (3600, 86_400, 7 * 86_400))
+def test_bounded_event_history_recovers_after_discarded_event_leaves_window(
+    window_seconds: int,
+) -> None:
+    """A bounded-history loss only invalidates windows that include the loss."""
+
+    controller = PublishingController(_settings())
+    mutable = {"value": -1}
+    controller.register(
+        "data_quality",
+        PublishingClass.CRITICAL,
+        lambda: PublicationState(mutable["value"], True, {}),
+        lambda: None,
+    )
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    controller.started_utc = start
+    event_step_seconds = 0.05
+    for sequence in range(50_001):
+        mutable["value"] = sequence
+        controller.process(start + timedelta(seconds=sequence * event_step_seconds))
+
+    final_event_at = start + timedelta(seconds=50_000 * event_step_seconds)
+    affected = controller.diagnostics(final_event_at, window_seconds=window_seconds)
+    assert affected["event_history_truncated"] is True
+    assert affected["estimate_status"] == "truncated"
+    assert affected["estimated_total_bytes_per_year"] is None
+
+    recovered_at = final_event_at + timedelta(seconds=window_seconds + 1)
+    controller.process(recovered_at)
+    recovered = controller.diagnostics(recovered_at, window_seconds=window_seconds)
+    assert recovered["event_history_truncated"] is False
+    assert recovered["estimate_status"] == "ready"
+    assert recovered["estimated_total_bytes_per_year"] is not None
+
+
 def test_profiles_and_default_two_meter_plan_are_bounded() -> None:
     automation = PublishingSettings.from_mapping(
         {CONF_PUBLISHING_PROFILE: PUBLISHING_PROFILE_AUTOMATION}

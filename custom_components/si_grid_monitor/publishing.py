@@ -220,7 +220,7 @@ class PublishingController:
         self.settings = settings
         self._registrations: dict[str, _Registration] = {}
         self._events: deque[_PublicationEvent] = deque(maxlen=50_000)
-        self._event_history_truncated = False
+        self._last_discarded_event_utc: datetime | None = None
         self.started_utc = datetime.now(UTC)
         self.publishing_evaluations = 0
         self.internal_timer_ticks = 0
@@ -293,9 +293,7 @@ class PublishingController:
                 self.last_successful_publication_utc = now_utc
                 self.critical_publications += int(critical)
                 event = _PublicationEvent(now_utc, registration.key, payload_bytes, critical)
-                if self._events.maxlen is not None and len(self._events) == self._events.maxlen:
-                    self._event_history_truncated = True
-                self._events.append(event)
+                self._append_event(event)
             except Exception:
                 # Reader, serialization, policy, callback and bookkeeping
                 # failures are all isolated. Reader/callback failures retain the
@@ -350,9 +348,7 @@ class PublishingController:
         self.critical_publications += 1
         self.last_successful_publication_utc = now_utc
         try:
-            if self._events.maxlen is not None and len(self._events) == self._events.maxlen:
-                self._event_history_truncated = True
-            self._events.append(_PublicationEvent(now_utc, registration.key, payload_bytes, True))
+            self._append_event(_PublicationEvent(now_utc, registration.key, payload_bytes, True))
         except Exception:
             # The HA unavailable state is already durable; diagnostics must not
             # turn that success into a retry storm or block another entity.
@@ -574,20 +570,26 @@ class PublishingController:
 
         now_utc = now_utc.astimezone(UTC)
         self._discard_old_events(now_utc)
-        cutoff = now_utc - timedelta(seconds=max(60, window_seconds))
+        requested_window_seconds = max(60, window_seconds)
+        cutoff = now_utc - timedelta(seconds=requested_window_seconds)
         events = [event for event in self._events if event.timestamp_utc >= cutoff]
         observed_seconds = max(
             1.0,
             min(
-                float(window_seconds),
+                float(requested_window_seconds),
                 (now_utc - self.started_utc).total_seconds(),
             ),
         )
         payload = sum(event.payload_bytes for event in events)
         event_count = len(events)
+        discarded_in_window = (
+            self._last_discarded_event_utc is not None and self._last_discarded_event_utc >= cutoff
+        )
+        full_observation_window = self.started_utc <= cutoff
         estimate_ready = (
             observed_seconds >= MIN_ESTIMATE_OBSERVATION_SECONDS
-            and not self._event_history_truncated
+            and full_observation_window
+            and not discarded_in_window
         )
         annual_factor = SECONDS_PER_YEAR / observed_seconds if estimate_ready else 0.0
         # Recorder estimate includes a conservative row/index allowance; the
@@ -603,7 +605,7 @@ class PublishingController:
         top = Counter(event.key for event in events).most_common(10)
         return {
             "profile": self.settings.profile,
-            "window_seconds": window_seconds,
+            "window_seconds": requested_window_seconds,
             "publishing_evaluations": self.publishing_evaluations,
             "publishing_evaluations_per_minute": self.publishing_evaluations
             / max(1.0, (now_utc - self.started_utc).total_seconds())
@@ -651,13 +653,10 @@ class PublishingController:
                 else None
             ),
             "estimate_status": (
-                "truncated"
-                if self._event_history_truncated
-                else "ready"
-                if estimate_ready
-                else "warming_up"
+                "truncated" if discarded_in_window else "ready" if estimate_ready else "warming_up"
             ),
-            "event_history_truncated": self._event_history_truncated,
+            "event_history_truncated": discarded_in_window,
+            "event_history_window_complete": full_observation_window and not discarded_in_window,
             "influxdb_physical_storage_verified": False,
             "estimate_method": (
                 "observed entity payload plus Recorder-like SQLite allocation; "
@@ -665,6 +664,15 @@ class PublishingController:
             ),
             "policy_active_since_utc": self.started_utc.isoformat(),
         }
+
+    def _append_event(self, event: _PublicationEvent) -> None:
+        """Append one event and retain the newest discarded-event boundary."""
+
+        if self._events.maxlen is not None and len(self._events) == self._events.maxlen:
+            discarded = self._events[0].timestamp_utc
+            if self._last_discarded_event_utc is None or discarded > self._last_discarded_event_utc:
+                self._last_discarded_event_utc = discarded
+        self._events.append(event)
 
     def _discard_old_events(self, now_utc: datetime) -> None:
         cutoff = now_utc - timedelta(days=7)

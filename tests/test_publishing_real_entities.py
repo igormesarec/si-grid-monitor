@@ -17,6 +17,12 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from custom_components.si_grid_monitor.archive import (
+    ConfigurationResolution,
+    ConfigurationStatus,
+    QuarterArchive,
+    archive_record_from_quarter,
+)
 from custom_components.si_grid_monitor.engine import (
     DataQuality,
     EngineSnapshot,
@@ -56,11 +62,33 @@ class _Runtime:
         self.current_block_targets_kw = (3.5, 3.9, 4.1, 4.2, 4.2)
         self.engine = SimpleNamespace(completed=[])
         self.archived_last_completed = None
+        self._last_completed_import_demand_kw = None
+        self._last_completed_signed_average_kw = None
 
     def target_for_tariff(self, tariff):
         if tariff is None or tariff.block is None:
             return None
         return self.current_block_targets_kw[tariff.block - 1]
+
+    @property
+    def last_completed_import_demand_kw(self):
+        if self.engine.completed:
+            return self.engine.completed[-1].import_demand_kw
+        return self._last_completed_import_demand_kw
+
+    @last_completed_import_demand_kw.setter
+    def last_completed_import_demand_kw(self, value):
+        self._last_completed_import_demand_kw = value
+
+    @property
+    def last_completed_signed_average_kw(self):
+        if self.engine.completed:
+            return self.engine.completed[-1].signed_average_kw
+        return self._last_completed_signed_average_kw
+
+    @last_completed_signed_average_kw.setter
+    def last_completed_signed_average_kw(self, value):
+        self._last_completed_signed_average_kw = value
 
 
 @pytest.fixture(scope="module")
@@ -273,9 +301,11 @@ def test_explicit_source_unavailability_immediately_hides_advice(
     # be conflated with the explicit unavailable transition below.
     _prepare_live_runtime(runtime, now, 0.0, stale=False)
     advice = _entity("can_add_power", runtime, sensor_module)
+    export_energy = _entity("quarter_export_kwh_so_far", runtime, sensor_module)
     projected = _binary_entity("projected_exceedance", runtime, sensor_module)
     stale = _binary_entity("input_stale", runtime, sensor_module)
     assert advice.available is True
+    assert export_energy.available is export_known
     assert projected.available is True
     assert stale.is_on is False
 
@@ -285,6 +315,7 @@ def test_explicit_source_unavailability_immediately_hides_advice(
     runtime.source_available = False
     runtime.source_status_reason = "source unavailable"
     assert advice.available is False
+    assert export_energy.available is export_known
     assert projected.available is False
     assert stale.is_on is True
 
@@ -616,6 +647,260 @@ def test_constant_load_current_energy_is_fresh_and_completed_energy_is_exact(
     assert boundary_write[1] == pytest.approx(0.0, abs=1e-9)
 
 
+def test_constant_export_current_energy_is_fresh_and_completed_energy_is_exact(
+    sensor_module,
+    tmp_path: Path,
+) -> None:
+    """Export accumulation has the same bounded public freshness as import."""
+
+    runtime = _Runtime()
+    engine = FixedQuarterEngine(stale_after_seconds=60, source_id="mode=signed_power")
+    runtime.engine = engine
+    entity = _entity("quarter_export_kwh_so_far", runtime, sensor_module)
+    controller = PublishingController(PublishingSettings.from_mapping({}))
+    start = datetime(2026, 4, 2, 10, 0, tzinfo=UTC)
+    now = start
+    writes: list[tuple[datetime, float, str]] = []
+    controller.register(
+        "quarter_export_kwh_so_far",
+        sensor_module.sensor.SENSOR_PUBLISHING_POLICIES["quarter_export_kwh_so_far"],
+        entity._publication_state,
+        lambda: writes.append(
+            (
+                now,
+                float(entity.native_value),
+                entity.extra_state_attributes["quarter_start_utc"],
+            )
+        ),
+    )
+
+    for second in range(901):
+        now = start + timedelta(seconds=second)
+        engine.ingest(PowerSample(now, -3.0))
+        runtime.snapshot = engine.snapshot(now=now, target_kw=4.2)
+        runtime.current_tariff = SlovenianTariffCalendar().classify(now)
+        controller.process(now)
+
+    expected_public = {
+        1: (start + timedelta(minutes=1), 0.050),
+        5: (start + timedelta(minutes=4), 0.200),
+        10: (start + timedelta(minutes=10), 0.500),
+        14: (start + timedelta(minutes=13), 0.650),
+    }
+    for minute, expected_energy in ((1, 0.050), (5, 0.250), (10, 0.500), (14, 0.700)):
+        checkpoint = start + timedelta(minutes=minute)
+        published_at, public_value, _quarter_id = max(
+            item for item in writes if item[0] <= checkpoint and item[2] == start.isoformat()
+        )
+        assert (checkpoint - published_at).total_seconds() <= 180
+        expected_published_at, expected_public_value = expected_public[minute]
+        assert published_at == expected_published_at
+        assert public_value == pytest.approx(expected_public_value, abs=1e-9)
+        # The authoritative engine value at the requested elapsed instant is
+        # exact even when the bounded public mirror is intentionally older.
+        assert 3.0 * (checkpoint - start).total_seconds() / 3600 == pytest.approx(
+            expected_energy, abs=1e-9
+        )
+
+    completed = engine.completed[-1]
+    assert completed.export_kwh == pytest.approx(0.750, abs=1e-9)
+    assert completed.import_kwh == pytest.approx(0.0, abs=1e-9)
+    assert completed.import_demand_kw == pytest.approx(0.0, abs=1e-9)
+    archive = QuarterArchive(tmp_path / "export-quarter.db")
+    archive.open()
+    configuration = ConfigurationResolution(
+        status=ConfigurationStatus.KNOWN,
+        source_id="mode=signed_power",
+        positive_means_import=True,
+        source_epoch=1,
+        contractual_target_kw=4.2,
+        safety_margin_kw=0.0,
+        block_targets_kw=(4.2, 4.2, 4.2, 4.2, 4.2),
+    )
+    record = archive_record_from_quarter(
+        namespace="meter-export",
+        quarter=completed,
+        configuration=configuration,
+        provenance="live",
+    )
+    assert archive.upsert_quarter(record)
+    archived = archive.list_quarters("meter-export", completed.start_utc, completed.end_utc)[0]
+    assert archived["export_kwh"] == pytest.approx(0.750, abs=1e-9)
+    assert archived["import_kwh"] == pytest.approx(0.0, abs=1e-9)
+    archive.close()
+    boundary_write = writes[-1]
+    assert boundary_write[0] == start + timedelta(minutes=15)
+    assert boundary_write[2] == (start + timedelta(minutes=15)).isoformat()
+    assert boundary_write[1] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_import_export_reversal_accumulates_independently() -> None:
+    """Contractual import demand never nets measured export against import."""
+
+    engine = FixedQuarterEngine(stale_after_seconds=60, source_id="mode=signed_power")
+    start = datetime(2026, 4, 2, 10, 0, tzinfo=UTC)
+    for offset in range(901):
+        signed_kw = 4.0 if offset < 300 else -3.0 if offset < 600 else 2.0
+        engine.ingest(PowerSample(start + timedelta(seconds=offset), signed_kw))
+
+    completed = engine.completed[-1]
+    assert completed.import_kwh == pytest.approx(0.500, abs=1e-9)
+    assert completed.export_kwh == pytest.approx(0.250, abs=1e-9)
+    assert completed.signed_net_kwh == pytest.approx(0.250, abs=1e-9)
+    assert completed.import_demand_kw == pytest.approx(2.000, abs=1e-9)
+    assert completed.signed_average_kw == pytest.approx(1.000, abs=1e-9)
+
+
+def test_export_outage_preserves_evidence_without_fabricating_zero(sensor_module) -> None:
+    """A source gap preserves measured export and remains incomplete."""
+
+    runtime = _Runtime()
+    engine = FixedQuarterEngine(stale_after_seconds=60, source_id="mode=signed_power")
+    runtime.engine = engine
+    entity = _entity("quarter_export_kwh_so_far", runtime, sensor_module)
+    start = datetime(2026, 4, 2, 10, 0, tzinfo=UTC)
+    engine.ingest(PowerSample(start, -3.0))
+    engine.advance(start + timedelta(minutes=10))
+    runtime.snapshot = engine.snapshot(now=start + timedelta(minutes=10), target_kw=4.2)
+    runtime.source_available = False
+    runtime.source_status_reason = "source_measurement_stale"
+    assert entity.available is True
+    assert entity.native_value == pytest.approx(0.050, abs=1e-9)
+
+    engine.advance(start + timedelta(minutes=15))
+
+    completed = engine.completed[-1]
+    assert completed.export_kwh == pytest.approx(0.050, abs=1e-9)
+    assert completed.import_kwh == pytest.approx(0.0, abs=1e-9)
+    assert completed.coverage_seconds == pytest.approx(60.0)
+    assert completed.gap_seconds == pytest.approx(840.0)
+    assert completed.quality is DataQuality.INCOMPLETE
+
+
+@pytest.mark.parametrize(
+    ("start", "expected_local_starts", "expected_folds"),
+    (
+        (
+            datetime(2026, 3, 29, 0, 45, tzinfo=UTC),
+            ("2026-03-29T01:45:00+01:00", "2026-03-29T03:00:00+02:00"),
+            (0, 0),
+        ),
+        (
+            datetime(2026, 10, 25, 0, 45, tzinfo=UTC),
+            ("2026-10-25T02:45:00+02:00", "2026-10-25T02:00:00+01:00"),
+            (0, 1),
+        ),
+    ),
+)
+def test_export_quarter_rollover_keeps_dst_utc_identity(
+    start: datetime,
+    expected_local_starts: tuple[str, str],
+    expected_folds: tuple[int, int],
+) -> None:
+    """Spring and repeated-autumn civil hours retain canonical UTC quarters."""
+
+    engine = FixedQuarterEngine(stale_after_seconds=60, source_id="mode=signed_power")
+    for second in range(1801):
+        engine.ingest(PowerSample(start + timedelta(seconds=second), -3.0))
+
+    completed = engine.completed[-2:]
+    assert [item.start_utc for item in completed] == [
+        start,
+        start + timedelta(minutes=15),
+    ]
+    local_starts = [item.start_utc.astimezone(ZoneInfo("Europe/Ljubljana")) for item in completed]
+    assert tuple(item.isoformat() for item in local_starts) == expected_local_starts
+    assert tuple(item.fold for item in local_starts) == expected_folds
+    assert [item.export_kwh for item in completed] == pytest.approx([0.750, 0.750])
+    assert [item.import_kwh for item in completed] == pytest.approx([0.0, 0.0])
+
+
+def test_completed_quarter_entities_publish_distinct_equal_value_quarters_once(
+    sensor_module,
+) -> None:
+    """Equal completed values remain distinct canonical completion events."""
+
+    runtime = _Runtime()
+    engine = FixedQuarterEngine(stale_after_seconds=60, source_id="mode=signed_power")
+    runtime.engine = engine
+    demand = _entity("last_completed_15m_import_demand", runtime, sensor_module)
+    signed = _entity("last_completed_15m_signed_average", runtime, sensor_module)
+    controller = PublishingController(PublishingSettings.from_mapping({}))
+    writes: dict[str, list[PublicationState]] = {"demand": [], "signed": []}
+    controller.register(
+        demand.entity_description.key,
+        sensor_module.sensor.SENSOR_PUBLISHING_POLICIES[demand.entity_description.key],
+        demand._publication_state,
+        lambda: writes["demand"].append(demand._publication_state()),
+    )
+    controller.register(
+        signed.entity_description.key,
+        sensor_module.sensor.SENSOR_PUBLISHING_POLICIES[signed.entity_description.key],
+        signed._publication_state,
+        lambda: writes["signed"].append(signed._publication_state()),
+    )
+    start = datetime(2026, 10, 25, 0, 0, tzinfo=UTC)
+    for second in range(1802):
+        now = start + timedelta(seconds=second)
+        engine.ingest(PowerSample(now, 2.0))
+        runtime.snapshot = engine.snapshot(now=now, target_kw=4.2)
+        controller.process(now)
+
+    for states in writes.values():
+        completed = [state for state in states if state.available]
+        assert [state.value for state in completed] == pytest.approx([2.0, 2.0])
+        assert [state.attributes["quarter_start_utc"] for state in completed] == [
+            "2026-10-25T00:00:00+00:00",
+            "2026-10-25T00:15:00+00:00",
+        ]
+        assert [state.attributes["quarter_end_utc"] for state in completed] == [
+            "2026-10-25T00:15:00+00:00",
+            "2026-10-25T00:30:00+00:00",
+        ]
+
+
+def test_restored_completed_quarter_is_stable_until_new_completion(sensor_module) -> None:
+    """Restart restoration emits once and a later equal live quarter has a new identity."""
+
+    runtime = _Runtime()
+    runtime.archived_last_completed = SimpleNamespace(
+        import_demand_kw=2.0,
+        signed_average_kw=2.0,
+        quality="measured_aligned",
+        provenance="archive:test",
+        start_utc=datetime(2026, 10, 25, 0, 0, tzinfo=UTC),
+        end_utc=datetime(2026, 10, 25, 0, 15, tzinfo=UTC),
+    )
+    entity = _entity("last_completed_15m_import_demand", runtime, sensor_module)
+    controller = PublishingController(PublishingSettings.from_mapping({}))
+    states: list[PublicationState] = []
+    controller.register(
+        entity.entity_description.key,
+        sensor_module.sensor.SENSOR_PUBLISHING_POLICIES[entity.entity_description.key],
+        entity._publication_state,
+        lambda: states.append(entity._publication_state()),
+    )
+    start = datetime(2026, 10, 25, 0, 15, tzinfo=UTC)
+    controller.process(start)
+    controller.process(start + timedelta(seconds=1))
+    assert len(states) == 1
+    assert states[0].attributes["restored_from_archive"] is True
+
+    engine = FixedQuarterEngine(stale_after_seconds=60, source_id="mode=signed_power")
+    runtime.engine = engine
+    for second in range(901):
+        now = start + timedelta(seconds=second)
+        engine.ingest(PowerSample(now, 2.0))
+        runtime.snapshot = engine.snapshot(now=now, target_kw=4.2)
+        controller.process(now)
+    controller.process(start + timedelta(seconds=901))
+
+    assert len(states) == 2
+    assert states[-1].value == pytest.approx(2.0)
+    assert states[-1].attributes["quarter_start_utc"] == start.isoformat()
+    assert states[-1].attributes["restored_from_archive"] is False
+
+
 def test_resetting_quarter_energy_entities_do_not_claim_lifetime_total_statistics(
     sensor_module,
 ) -> None:
@@ -727,11 +1012,13 @@ def test_real_two_meter_full_day_storage_projection(
 
     controllers: list[PublishingController] = []
     runtimes: list[_Runtime] = []
+    previous_quarters: list[datetime] = []
     for meter in range(2):
         runtime = _Runtime()
         runtime.engine = SimpleNamespace(completed=[])
         _prepare_live_runtime(runtime, current_time, 1.0 + meter * 0.1, False)
         runtimes.append(runtime)
+        previous_quarters.append(runtime.snapshot.bounds.start_utc)
         controller = PublishingController(PublishingSettings.from_mapping({}))
         controller.started_utc = current_time
         controllers.append(controller)
@@ -786,14 +1073,32 @@ def test_real_two_meter_full_day_storage_projection(
         current_time = start + timedelta(seconds=second)
         hour = second / 3600
         signed_kw = 1.6 + 1.1 * math.sin(hour * math.pi / 6)
-        if 10 <= hour < 15:
-            signed_kw = 0.018 * math.sin(second * math.pi / 2)
+        if 9.5 <= hour < 10:
+            # Frequent import/export reversals around the solar crossover.
+            signed_kw = 0.35 * math.sin(second * math.pi / 20)
+        elif 10 <= hour < 15:
+            # Sustained solar export exercises current-quarter export-energy
+            # publishing rather than a permanently-zero export trace.
+            signed_kw = -3.0 + 0.6 * math.sin(hour * math.pi)
         if second % 7200 < 60:
             signed_kw += 4.0
         stale = 18 * 3600 <= second < 18 * 3600 + 60
         for meter, (runtime, controller) in enumerate(zip(runtimes, controllers, strict=True)):
             meter_kw = signed_kw + meter * 0.05
             _prepare_live_runtime(runtime, current_time, meter_kw, stale)
+            current_quarter = runtime.snapshot.bounds.start_utc
+            if current_quarter != previous_quarters[meter]:
+                runtime.engine.completed = [
+                    SimpleNamespace(
+                        start_utc=previous_quarters[meter],
+                        end_utc=current_quarter,
+                        import_demand_kw=1.5,
+                        signed_average_kw=1.2,
+                        quality=DataQuality.MEASURED_ALIGNED,
+                        source_id=f"benchmark-meter-{meter}",
+                    )
+                ]
+                previous_quarters[meter] = current_quarter
             if meter == 0:
                 quarter_starts.add(runtime.snapshot.bounds.start_utc)
             if second == 12 * 3600:
@@ -818,6 +1123,21 @@ def test_real_two_meter_full_day_storage_projection(
     annual_recorder_like = day_sqlite_bytes * annual_factor
     unverified_influx_allowance = event_count * annual_factor * 140
     projected_total = annual_recorder_like + unverified_influx_allowance + 80_000_000
+    benchmark = {
+        "local_day": local_day.isoformat(),
+        "seconds": expected_seconds,
+        "quarters": expected_quarters,
+        "events": event_count,
+        "recorder_like_bytes_per_year": round(annual_recorder_like),
+        "influxdb_allowance_bytes_per_year": round(unverified_influx_allowance),
+        "archive_allowance_bytes_per_year": 80_000_000,
+        "combined_bytes_per_year": round(projected_total),
+        "counts": {
+            key: sum(count for (_meter, entity_key), count in counts.items() if entity_key == key)
+            for key in sorted({entity_key for (_meter, entity_key) in counts})
+        },
+    }
+    print("STORAGE_BENCHMARK " + json.dumps(benchmark, sort_keys=True))
     assert projected_total < STORAGE_BUDGET_BYTES_PER_YEAR, {
         "day_sqlite_bytes": day_sqlite_bytes,
         "event_count": event_count,
@@ -854,3 +1174,8 @@ def test_real_two_meter_full_day_storage_projection(
     assert (
         expected_quarters * 2 < count_for("quarter_import_kwh_so_far") <= (expected_quarters * 12)
     )
+    assert (
+        expected_quarters * 2 < count_for("quarter_export_kwh_so_far") <= (expected_quarters * 12)
+    )
+    assert count_for("last_completed_15m_import_demand") == expected_quarters * 2
+    assert count_for("last_completed_15m_signed_average") == expected_quarters * 2

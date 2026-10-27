@@ -34,8 +34,8 @@ V1.0.3 gives every sensor and binary sensor an explicit class:
   seconds. Loss of availability or natural staleness is always immediate;
   recovery requires 30 seconds of continuously fresh evidence. The dashboard continues
   to use the internal current value, not a Recorder-paced mirror.
-- **Quarter accumulation:** current-quarter imported energy. It publishes a
-  meaningful first-minute value, then stays within a 180-second public-age
+- **Quarter accumulation:** current-quarter imported and, when known, exported
+  energy. Each publishes a meaningful first-minute value, then stays within a 180-second public-age
   bound under Storage Optimized, and resets immediately at the canonical
   quarter boundary. Exact completed results remain in the schema-7 archive.
   This within-quarter value resets and therefore deliberately has no Home
@@ -57,9 +57,10 @@ rounding or `_unrecorded_attributes` alone would not.
 **Storage Optimized** is the default and the only profile covered by the 1 GB
 two-meter engineering benchmark. Critical/availability transitions remain
 immediate. Routine states are coalesced and stable configuration states have no
-heartbeat. The 180-second exception applies only to current-quarter imported
-energy; redundant derived mirrors retain the routine cadence to keep the
-two-meter storage plan bounded.
+heartbeat. The 180-second exception applies to both current-quarter import and
+export energy. Mode C export remains unavailable rather than measured zero.
+Redundant derived mirrors retain the routine cadence to keep the two-meter
+storage plan bounded.
 
 **Automation Priority** shortens normal publication intervals. Use it only when
 an external automation needs fresher numeric state events; it can exceed the
@@ -74,8 +75,14 @@ internal results. A third-party Home Assistant numeric-state automation sees the
 last published entity value. SI Grid Monitor publishes its own critical status
 transitions promptly, but cannot promise immediate evaluation of an arbitrary
 third-party threshold unless its relevant value is configured for that cadence.
-The current-quarter imported-energy entity is a bounded live view, not the
-immutable completed-quarter record.
+Under Storage Optimized, ordinary `current_power`, `import_power` and
+`export_power` entities can be up to 900 seconds old even though the SI Grid
+Monitor dashboard reads the current internal runtime value. Storage Optimized
+is therefore not suitable for one-second numeric-state automations. Use
+Automation Priority or a carefully measured Custom profile when an external HA
+automation needs fresher numeric states, and account for the additional
+Recorder/InfluxDB events. Current-quarter energy entities are bounded live
+views, not immutable completed-quarter records.
 
 ## Complete entity policy matrix
 
@@ -89,9 +96,10 @@ Assistant scheduler latency.
 | Critical | `projected_exceedance`, `unrecoverable_interval`, `input_stale`, `sustained_forecast_quality`, `data_quality` | Danger/availability/quality transitions immediate; projected-exceedance safe clear after 30 continuously safe seconds |
 | Actionable | `quarter_budget_remaining_kwh`, `allowed_import_until_end_kw`, `forecast_instant_kw`, `forecast_smoothed_kw`, `forecast_utilization_pct`, `forecast_instant_utilization_pct`, `current_utilization_pct`, `can_add_power`, `must_reduce_power`, `sustained_can_add_power`, `sustained_must_reduce_power` | Stale/unknown input makes these unavailable immediately; worsening advice is immediate when material; safety improvements need 30 seconds and remain cadence-coalesced; otherwise 900 seconds |
 | Current measurement | `current_power`, `import_power`, `export_power` | Meaningful change at 900 seconds; availability immediate |
-| Quarter accumulation | `quarter_import_kwh_so_far` | First-minute update, then at most 180 seconds old, immediate quarter reset |
-| Monitoring | `net_power_15m_rolling`, `import_power_15m_rolling`, `smoothed_signed_power`, `smoothed_import_power`, `current_interval_import_average`, `current_interval_signed_average`, `quarter_export_kwh_so_far` | Meaningful change/attribute update at 900 seconds; observed values keep their quality rather than becoming fabricated zero during a gap |
-| Configuration/event | `source_mode`, both last-completed demand values, `target_kw`, current/next tariff and season/day metadata, all B1–B5 targets, `operational_target_kw` | Change only; no heartbeat |
+| Quarter accumulation | `quarter_import_kwh_so_far`, `quarter_export_kwh_so_far` when export is known | First-minute update, then at most 180 seconds old, immediate canonical-quarter reset; Mode C export unavailable |
+| Monitoring | `net_power_15m_rolling`, `import_power_15m_rolling`, `smoothed_signed_power`, `smoothed_import_power`, `current_interval_import_average`, `current_interval_signed_average` | Meaningful change/attribute update at 900 seconds; observed values keep their quality rather than becoming fabricated zero during a gap |
+| Completed-quarter event | `last_completed_15m_import_demand`, `last_completed_15m_signed_average` | One publication for every distinct canonical UTC completed quarter, even when its numeric value equals the preceding quarter; no heartbeat afterward |
+| Configuration/event | `source_mode`, `target_kw`, current/next tariff and season/day metadata, all B1–B5 targets, `operational_target_kw` | Change only; no heartbeat |
 | Diagnostic/countdown | `time_to_next_tariff_block`, `interval_elapsed_seconds`, `interval_remaining_seconds` | At least 900 seconds under the default |
 
 Automation Priority changes normal/current/quarter cadence to 60 seconds and
@@ -109,9 +117,11 @@ suppressions, critical events, top entity keys, payload estimates and annual
 budget use for the last hour/day/week. Counters are bounded in memory and reset
 when the runtime restarts. Annual estimates remain unavailable during the first
 hour, and the panel warns if its 50,000-event history truncated the selected
-window. When the bounded event buffer truncates, annual values become unknown
-instead of annualizing incomplete evidence. Diagnostics do not scan Recorder or
-create HA diagnostic entities.
+window. Truncation is window-scoped: annual values remain unknown while a lost
+event falls inside the requested hour/day/week, then recover after that loss is
+older than the window and the controller has observed the complete window.
+Startup and other partial windows remain warming up and are not annualized.
+Diagnostics do not scan Recorder or create HA diagnostic entities.
 
 Diagnostics also expose processing-failure count, last successful publication
 time, currently faulted entity keys and the effective interval for current, quarter, actionable and monitoring
@@ -134,8 +144,9 @@ databases. Warnings at 80% and 100% refer to the 1,000,000,000-byte annual budge
 `tests/test_publishing_real_entities.py` runs complete 82,800-, 86,400-, and
 90,000-second Europe/Ljubljana days for two meters using the real `SENSORS`, `BINARY_SENSORS`,
 native values, availability and extra-state attributes. It includes a burst of
-two source reports per second, import, near-zero PV reversals, quarter/tariff
-and contract boundaries, stale/recovery, and the UTC-offset/fold transition.
+two source reports per second, sustained solar export, frequent import/export
+reversals, completed-quarter events, quarter/tariff and contract boundaries,
+stale/recovery, and the UTC-offset/fold transition.
 Every controller also receives the real one-second timer evaluation. Published
 states are written to a Recorder-like SQLite schema with shared attributes,
 standard HA attributes, metadata/timestamp/context fields and three indexes;
@@ -145,21 +156,23 @@ Measured development results:
 
 | Day | Recorder-like | Unverified Influx allowance | Archive allowance | Combined planning result |
 |---|---:|---:|---:|---:|
-| Spring DST (23 h) | 408.7 MB | 297.1 MB | 80.0 MB | **785.8 MB/year** |
-| Normal (24 h) | 397.7 MB | 296.4 MB | 80.0 MB | **774.1 MB/year** |
-| Autumn DST (25 h) | 411.9 MB | 297.3 MB | 80.0 MB | **789.2 MB/year** |
+| Spring DST (23 h) | 489.9 MB | 368.6 MB | 80.0 MB | **938.4 MB/year** |
+| Normal (24 h) | 469.4 MB | 367.7 MB | 80.0 MB | **917.2 MB/year** |
+| Autumn DST (25 h) | 490.9 MB | 368.5 MB | 80.0 MB | **939.4 MB/year** |
 
-The SQLite part uses allocated pages in the synthetic databases: 1,073,152 bytes
-and 5,572 rows, 1,089,536 bytes and 5,800 rows, and 1,175,552 bytes and 6,060 rows.
+The SQLite part uses allocated pages in the synthetic databases: 1,286,144 bytes
+and 6,912 rows, 1,286,144 bytes and 7,196 rows, and 1,400,832 bytes and 7,512 rows.
 This is closer to Recorder than the earlier simplified table, but it remains a
 test model rather than a physical Home Assistant Recorder measurement.
 
 | Real entity | Uncontrolled ceiling per meter | Published per meter |
 |---|---:|---:|
-| Sustained CAN ADD | 87,600 | 108 |
-| Sustained MUST REDUCE | 87,600 | 108 |
+| Sustained CAN ADD | 87,600 | 84 |
+| Sustained MUST REDUCE | 87,600 | 105 |
 | Current interval import average | 87,600 | 96 |
 | Current-quarter imported energy | 87,600 | 576 |
+| Current-quarter exported energy | 87,600 | 576 |
+| Each completed-quarter event sensor | 87,600 | 96 |
 
 The focused 3,600-second, 1 Hz actionable stress test runs all four advice
 entities on two meters while alternating between `0.000` and `0.051 kW`:

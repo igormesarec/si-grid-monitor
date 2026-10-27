@@ -38,9 +38,10 @@ load controller.
   become unavailable rather than retaining an optimistic value; optimistic
   clears/recovery require stable evidence. Per-entity processing faults also
   attempt a bounded unavailable publication and remain visible in diagnostics.
-  Current-quarter imported energy stays bounded without turning the rest of the
-  integration back into a high-frequency Recorder stream; because it resets
-  every quarter, it is not advertised as a lifetime-total statistics source.
+  Current-quarter import and known export energy stay bounded without turning
+  the rest of the integration back into a high-frequency Recorder stream;
+  because they reset every quarter, they are not advertised as lifetime-total
+  statistics sources.
 
 Exported energy is recorded separately where the selected source measures it.
 It never offsets imported energy when calculating contractual quarter demand.
@@ -155,6 +156,11 @@ never manufactured as zero.
   permission to exceed breaker, phase, cable, inverter or connection ratings.
 - Forecasts repeat recent or current behavior; they do not predict weather,
   appliance schedules or PV production.
+- The dashboard reads live internal runtime data, while Storage Optimized may
+  publish ordinary `current_power`, `import_power` and `export_power` HA entity
+  states only every 900 seconds. Use Automation Priority or a measured Custom
+  profile for numeric-state automations that require fresher states; critical
+  SI Grid Monitor warnings and material adverse advice remain prompt.
 - Home Assistant samples can produce reconstructed estimates that differ from
   official distributor measurements.
 - Official 2026/2027 tariff tables are versioned. Unverified future years are
