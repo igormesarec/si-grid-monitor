@@ -916,6 +916,65 @@ def test_resetting_quarter_energy_entities_do_not_claim_lifetime_total_statistic
         "quarter_export_kwh_so_far",
     }
     assert all(item.state_class is None for item in descriptions.values())
+    assert all(item.device_class == "energy" for item in descriptions.values())
+    assert all(item.native_unit_of_measurement == "kWh" for item in descriptions.values())
+
+    runtime = _Runtime()
+    for key in descriptions:
+        entity = _entity(key, runtime, sensor_module)
+        assert entity._attr_unique_id == f"entry-real_{key}"
+
+
+def test_coalesced_quarter_energy_cannot_safely_claim_reset_aware_statistics(
+    sensor_module,
+) -> None:
+    """The public series can omit energy accumulated just before the reset."""
+
+    runtime = _Runtime()
+    engine = FixedQuarterEngine(stale_after_seconds=60, source_id="mode=signed_power")
+    entity = _entity("quarter_import_kwh_so_far", runtime, sensor_module)
+    controller = PublishingController(PublishingSettings.from_mapping({}))
+    start = datetime(2026, 4, 2, 10, 0, tzinfo=UTC)
+    now = start
+    writes: list[tuple[datetime, float, str]] = []
+    controller.register(
+        "quarter_import_kwh_so_far",
+        PublishingClass.QUARTER_ACCUMULATION,
+        entity._publication_state,
+        lambda: writes.append(
+            (
+                now,
+                float(entity.native_value),
+                entity.extra_state_attributes["quarter_start_utc"],
+            )
+        ),
+    )
+
+    for second in range(901):
+        now = start + timedelta(seconds=second)
+        engine.ingest(PowerSample(now, 3.0))
+        runtime.snapshot = engine.snapshot(now=now, target_kw=4.2)
+        runtime.current_tariff = SlovenianTariffCalendar().classify(now)
+        controller.process(now)
+
+    completed = engine.completed[-1]
+    prior_quarter_publications = [
+        value for _when, value, quarter_id in writes if quarter_id == start.isoformat()
+    ]
+    assert completed.import_kwh == pytest.approx(0.750, abs=1e-9)
+    assert max(prior_quarter_publications) < completed.import_kwh
+    assert writes[-1][2] == (start + timedelta(minutes=15)).isoformat()
+    assert writes[-1][1] == pytest.approx(0.0, abs=1e-9)
+
+
+def test_integration_never_mutates_home_assistant_statistics_tables() -> None:
+    """Legacy Recorder statistics cleanup remains a native HA UI action."""
+
+    integration = Path("custom_components/si_grid_monitor")
+    forbidden = ("statistics_meta", "statistics_short_term")
+    for source in integration.rglob("*.py"):
+        text = source.read_text(encoding="utf-8")
+        assert all(table not in text for table in forbidden), source
 
 
 @pytest.mark.parametrize(

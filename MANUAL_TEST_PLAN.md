@@ -1,4 +1,25 @@
-# SI Grid Monitor V1.0.3 Localization Release-Candidate Manual Test Plan
+# SI Grid Monitor V1.0.4 Release-Candidate Manual Test Plan
+
+## Legacy statistics repair acceptance
+
+Use a backed-up Home Assistant installation that previously ran V1.0.2 or older.
+This gate cannot be completed by the local simulated-HA tests.
+
+Before the upgrade, record the Home Assistant and integration versions; affected
+entity/statistics IDs, state, unit, device class and state class; Statistics
+repair entries and historical coverage; schema-7 archive quarter count/file
+size; current contract; and one recent completed-quarter demand.
+
+After upgrading, confirm the live current-quarter value still updates in `kWh`,
+has no state class and resets at the canonical 15-minute boundary. In **Developer
+tools → Statistics**, review only the affected old series. After backup and an
+explicit administrator decision, delete the obsolete series through Home
+Assistant's UI if it is not useful. Confirm the repair disappears, unrelated
+statistics remain, all eight dashboard pages still work, and the archive count,
+size, contract and recent quarter remain unchanged. Repeat with Recorder
+included, excluded, then re-enabled, and with two meters. A warning that returns
+immediately is a failure: capture the live entity metadata and do not edit the
+database manually.
 
 ## Installation and dashboard language
 
