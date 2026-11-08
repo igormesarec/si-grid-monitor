@@ -8,10 +8,11 @@ contracted-power target, and preserves auditable quarter history. It is useful
 for homes and small sites with heat pumps, EV charging, solar PV or other loads
 that need clearer visibility into quarter-hour grid import.
 
-**Release status:** V1.0.4 is a draft maintenance release candidate based on
-V1.0.3. It preserves contract management and English/Slovenian localization,
-and adds safe guidance for legacy Home Assistant statistics repairs. Real Home
-Assistant and Android acceptance is still required.
+**Release status:** V1.0.5 is a draft maintenance release candidate based on
+V1.0.4. It preserves the statistics guidance, contract management and
+English/Slovenian localization while aligning the live chart's historical
+smoothing with the backend across fixed-quarter boundaries. Real Home Assistant
+and Android acceptance is still required.
 
 This is monitoring and decision-support software—not a distributor-certified
 meter, guaranteed bill calculation, physical protection device or automatic

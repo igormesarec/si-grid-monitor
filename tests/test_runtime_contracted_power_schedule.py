@@ -610,6 +610,34 @@ def test_dashboard_keeps_contractual_operational_and_simulation_targets_distinct
     assert "not contractual" in dashboard["contractual_status_reason"]
 
 
+@pytest.mark.parametrize("window_seconds", [30, 60, 90, 120, 180])
+def test_dashboard_smoothing_context_crosses_quarter_but_trace_does_not(
+    tmp_path, window_seconds: int
+) -> None:
+    runtime, _schedule = _runtime(tmp_path)
+    runtime.entry.options = {CONF_SMOOTHING_SECONDS: window_seconds}
+    boundary = _local_utc(2026, 1, 5, 19, 0)
+    runtime.engine = FixedQuarterEngine(stale_after_seconds=60, source_id="sensor.grid")
+    cursor = boundary - timedelta(seconds=window_seconds)
+    while cursor <= boundary:
+        runtime.engine.ingest(PowerSample(cursor, 3.0))
+        cursor += timedelta(seconds=15)
+    runtime._stored_completed = len(runtime.engine.completed)
+    runtime._last_checkpoint_utc = boundary
+    runtime.source_available = True
+    runtime.source_status_reason = None
+    runtime._refresh(boundary)
+
+    dashboard = runtime.dashboard_current()
+    assert dashboard["smoothing_window_seconds"] == window_seconds
+    assert dashboard["trace"] == [{"timestamp": boundary.isoformat(), "signed_kw": 3.0}]
+    context = dashboard["smoothing_context"]
+    assert context[0]["timestamp"] == (boundary - timedelta(seconds=window_seconds)).isoformat()
+    assert context[-1]["timestamp"] == boundary.isoformat()
+    assert dashboard["quarter"]["import_kwh"] == pytest.approx(0.0)
+    assert dashboard["projection"]["smoothed_future_import_kw"] == pytest.approx(3.0)
+
+
 def test_dashboard_keeps_provisional_target_separate_from_confirmed_contract(
     tmp_path,
 ) -> None:

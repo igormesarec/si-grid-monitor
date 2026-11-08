@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
 import test from "node:test";
 
 import {
@@ -27,6 +28,7 @@ import {
   quarterEnergyModel,
   quarterNavigation,
   restoreChartScrollState,
+  safetyMarginDisplay,
   selectTimelineHour,
   smoothedImportSeries,
   todayChartModel,
@@ -509,6 +511,71 @@ test("quarter rollover keeps inherited backend smoothing as a detached anchor", 
     {timestamp: "2026-01-01T00:16:00.000Z", kw: 2.75},
     {timestamp: "2026-01-01T00:30:00.000Z", kw: 2.75},
   ]);
+});
+
+test("quarter rollover uses bounded previous-quarter context without moving actual traces", () => {
+  const model = livePowerChartModel({
+    trace: [{timestamp: "2026-01-01T19:00:00Z", signed_kw: 4}],
+    smoothingContext: [
+      {timestamp: "2026-01-01T18:58:00Z", signed_kw: 2},
+      {timestamp: "2026-01-01T18:58:30Z", signed_kw: 2},
+      {timestamp: "2026-01-01T18:59:00Z", signed_kw: 4},
+      {timestamp: "2026-01-01T18:59:30Z", signed_kw: 4},
+      {timestamp: "2026-01-01T19:00:00Z", signed_kw: 4},
+    ],
+    quarterStartUtc: "2026-01-01T19:00:00Z",
+    nowUtc: "2026-01-01T19:00:00Z",
+    quarterEndUtc: "2026-01-01T19:15:00Z",
+    windowSeconds: 120,
+    staleAfterSeconds: 60,
+    futureImportPowerKw: 3,
+    futureAnchorUtc: "2026-01-01T19:00:00Z",
+    forecastQuality: "estimated",
+  });
+  assert.ok(model.actualImportSegments.flat().every(
+    point => Date.parse(point.timestamp) >= Date.parse("2026-01-01T19:00:00Z"),
+  ));
+  assert.deepEqual(model.smoothedImportSegments.flat().at(0), {
+    timestamp: "2026-01-01T19:00:00.000Z", kw: 3,
+  });
+  assert.equal(model.detachedForecastAnchor, null);
+  assert.deepEqual(model.futureForecast, [
+    {timestamp: "2026-01-01T19:00:00.000Z", kw: 3},
+    {timestamp: "2026-01-01T19:15:00.000Z", kw: 3},
+  ]);
+});
+
+test("JavaScript smoothing matches the shared Python contract fixtures", () => {
+  const fixtures = JSON.parse(readFileSync(
+    new URL("../tests/fixtures/smoothing_parity.json", import.meta.url), "utf8",
+  ));
+  for (const fixture of fixtures) {
+    const series = smoothedImportSeries(
+      fixture.samples.map(([timestamp, signed_kw]) => ({timestamp, signed_kw})),
+      fixture.window_seconds,
+      fixture.stale_seconds,
+      fixture.end,
+    );
+    const result = series.at(-1);
+    assert.ok(Math.abs(result.import_kw - fixture.expected_import_kw) <= 1e-9, fixture.name);
+    assert.ok(
+      Math.abs(result.coverage_seconds - fixture.expected_coverage_seconds) <= 1e-9,
+      fixture.name,
+    );
+    assert.equal(result.complete, fixture.expected_complete, fixture.name);
+  }
+});
+
+test("safety margin display distinguishes zero, positive, and missing contracts", () => {
+  assert.deepEqual(safetyMarginDisplay(3.9, 0), {
+    contractKnown: true, marginKw: 0, operationalTargetKw: 3.9,
+  });
+  assert.deepEqual(safetyMarginDisplay(3.9, 0.2), {
+    contractKnown: true, marginKw: 0.2, operationalTargetKw: 3.6999999999999997,
+  });
+  assert.deepEqual(safetyMarginDisplay(null, 0), {
+    contractKnown: false, marginKw: null, operationalTargetKw: null,
+  });
 });
 
 test("time-weighted smoothing reaches the backend anchor at varied sensor intervals", () => {

@@ -201,6 +201,9 @@ function importPower(sample) {
 }
 
 const ENERGY_RECONCILIATION_TOLERANCE_KWH = 0.001;
+// Python's TimeWeightedBuffer marks a window complete only when its uncovered
+// duration is <= EPSILON (1e-9 seconds). Times here are milliseconds.
+const SMOOTHING_COMPLETENESS_EPSILON_MS = 1e-6;
 
 function timeWeightedImportAverage(trace, end, windowMs, staleMs) {
   const start = end - windowMs;
@@ -221,21 +224,37 @@ function timeWeightedImportAverage(trace, end, windowMs, staleMs) {
   return {
     import_kw: coverageMs > 0 ? energyKwMs / coverageMs : null,
     coverage_seconds: coverageMs / 1000,
-    complete: windowMs - coverageMs <= 1,
+    complete: windowMs - coverageMs <= SMOOTHING_COMPLETENESS_EPSILON_MS,
+  };
+}
+
+export function safetyMarginDisplay(contractualTargetKw, safetyMarginKw) {
+  if (contractualTargetKw == null) {
+    return {contractKnown: false, marginKw: null, operationalTargetKw: null};
+  }
+  const marginKw = Math.max(0, Number(safetyMarginKw) || 0);
+  return {
+    contractKnown: true,
+    marginKw,
+    operationalTargetKw: Math.max(0, Number(contractualTargetKw) - marginKw),
   };
 }
 
 export function smoothedImportSeries(
   trace, windowSeconds = 120, staleAfterSeconds = 60, anchorUtc = null,
+  visibleStartUtc = null,
 ) {
   if (!trace.length) return [];
   const windowMs = Math.max(1, Number(windowSeconds)) * 1000;
   const staleMs = Math.max(1, Number(staleAfterSeconds)) * 1000;
   const sorted = [...trace].sort((left, right) => sampleTime(left) - sampleTime(right));
   const ends = sorted.map(sample => sampleTime(sample));
+  const visibleStart = visibleStartUtc ? new Date(visibleStartUtc).getTime() : NaN;
+  if (Number.isFinite(visibleStart) && !ends.includes(visibleStart)) ends.push(visibleStart);
   const anchor = anchorUtc ? new Date(anchorUtc).getTime() : NaN;
   if (Number.isFinite(anchor) && anchor >= ends.at(-1) && !ends.includes(anchor)) ends.push(anchor);
-  return ends.map(end => ({
+  ends.sort((left, right) => left - right);
+  return [...new Set(ends)].map(end => ({
     timestamp: new Date(end).toISOString(),
     ...timeWeightedImportAverage(sorted, end, windowMs, staleMs),
   }));
@@ -284,7 +303,9 @@ function splitTimedPoints(points, staleAfterSeconds) {
 
 export function livePowerChartModel({
   trace,
+  smoothingContext = trace,
   nowUtc,
+  quarterStartUtc = null,
   quarterEndUtc,
   contractualTargetKw = null,
   contractualSafetyTargetKw = null,
@@ -297,16 +318,19 @@ export function livePowerChartModel({
   forecastQuality = "unavailable",
   forecastReason = null,
 }) {
+  const quarterStart = quarterStartUtc ? new Date(quarterStartUtc).getTime() : -Infinity;
+  const visibleTrace = trace.filter(sample => sampleTime(sample) >= quarterStart);
   const actualImportSegments = powerSegments(
-    trace, nowUtc, staleAfterSeconds, sample => importPower(sample),
+    visibleTrace, nowUtc, staleAfterSeconds, sample => importPower(sample),
   );
-  const actualExportSegments = powerSegments(trace, nowUtc, staleAfterSeconds, sample => {
+  const actualExportSegments = powerSegments(visibleTrace, nowUtc, staleAfterSeconds, sample => {
     const signed = Number(sample.signed_kw);
     return signed < 0 ? signed : 0;
   }, true);
   const smoothedImport = smoothedImportSeries(
-    trace, windowSeconds, staleAfterSeconds, nowUtc,
+    smoothingContext, windowSeconds, staleAfterSeconds, nowUtc, quarterStartUtc,
   )
+    .filter(sample => sampleTime(sample) >= quarterStart)
     .filter(sample => sample.complete)
     .map(sample => ({timestamp: sample.timestamp, kw: sample.import_kw}));
   const smoothedImportSegments = splitTimedPoints(smoothedImport, staleAfterSeconds);

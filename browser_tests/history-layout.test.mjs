@@ -157,6 +157,87 @@ async function calendarFixture(page, {width, dark = false}) {
   }, dark);
 }
 
+async function overviewFixture(page, {width, dark = false, language = "en"}) {
+  await page.setViewportSize({width, height: 900});
+  await page.goto(origin);
+  await page.evaluate(async ({darkMode, dashboardLanguage}) => {
+    await import("/custom_components/si_grid_monitor/frontend/dashboard.js");
+    document.documentElement.style.cssText = `font-size:18px;--primary-text-color:${darkMode ? "#eee" : "#222"};--secondary-text-color:${darkMode ? "#ccc" : "#555"};--card-background-color:${darkMode ? "#222" : "#fff"};--primary-background-color:${darkMode ? "#111" : "#fafafa"}`;
+    const panel = document.createElement("si-grid-monitor-panel");
+    panel._loaded = true;
+    panel._hass = {language: dashboardLanguage};
+    panel._language = dashboardLanguage;
+    panel._entries = [{entry_id: "meter", title: "Main Grid"}];
+    panel._entryId = "meter";
+    panel._tab = "overview";
+    panel._transitions = {};
+    panel._live = {
+      available: true,
+      now_utc: "2026-10-25T01:00:30Z",
+      quarter: {start_utc: "2026-10-25T01:00:00Z", end_utc: "2026-10-25T01:15:00Z",
+        start_local: "2026-10-25T02:00:00+01:00", end_local: "2026-10-25T02:15:00+01:00",
+        import_kwh: 0, export_kwh: 0, import_average_kw: 0, quality: "measured_aligned"},
+      power: {signed_kw: 4, import_kw: 4, export_kw: 0, export_known: true,
+        source_age_seconds: 0},
+      tariff: {block: 4, target_kw: 3.9, contractual_target_kw: 3.9,
+        contractual_operational_target_kw: 3.9, safety_margin_kw: 0,
+        simulation_enabled: false, simulation_target_kw: null},
+      projection: {operational_target_kw: 3.9, forecast_instant_kw: 4,
+        forecast_smoothed_kw: 3.5, smoothed_future_import_kw: 3.5,
+        smoothed_future_anchor_utc: "2026-10-25T01:00:30Z",
+        smoothed_future_quality: "estimated", smoothed_future_reason: null,
+        budget_remaining_kwh: 0.975, allowed_remaining_import_kw: 3.9,
+        current_utilization_pct: 0, can_add_kw: 0, must_reduce_kw: 0},
+      sustained: {quality: "available", coverage_seconds: 120, horizon_minutes: 60,
+        can_add_kw: 0, must_reduce_kw: 0},
+      trace: [
+        {timestamp: "2026-10-25T01:00:00Z", signed_kw: 4},
+        {timestamp: "2026-10-25T01:00:30Z", signed_kw: 4},
+      ],
+      smoothing_context: [
+        {timestamp: "2026-10-25T00:58:00Z", signed_kw: 2},
+        {timestamp: "2026-10-25T00:59:00Z", signed_kw: 4},
+        {timestamp: "2026-10-25T01:00:00Z", signed_kw: 4},
+        {timestamp: "2026-10-25T01:00:30Z", signed_kw: 4},
+      ],
+      smoothing_window_seconds: 120,
+      trace_stale_after_seconds: 60,
+    };
+    document.body.append(panel);
+    window.testPanel = panel;
+  }, {darkMode: dark, dashboardLanguage: language});
+}
+
+for (const width of [320, 360, 390, 430, 768, 1280]) {
+  for (const dark of [false, true]) {
+    test(`rendered live rollover chart at ${width}px, ${dark ? "dark" : "light"}`, async () => {
+      const page = await browser.newPage();
+      try {
+        await overviewFixture(page, {width, dark, language: width === 390 ? "sl" : "en"});
+        const result = await page.evaluate(() => {
+          const root = window.testPanel.shadowRoot;
+          const charts = [...root.querySelectorAll(".chart-scroll")];
+          return {
+            pageWidth: document.documentElement.scrollWidth,
+            viewportWidth: document.documentElement.clientWidth,
+            charts: charts.map(chart => ({client: chart.clientWidth, scroll: chart.scrollWidth})),
+            smoothingPaths: root.querySelectorAll(".smoothed-trace").length,
+            text: root.textContent,
+          };
+        });
+        assert.ok(result.pageWidth <= result.viewportWidth);
+        assert.ok(result.charts.length >= 2);
+        assert.ok(result.charts.every(chart => chart.scroll >= chart.client));
+        assert.ok(result.smoothingPaths >= 1);
+        assert.match(result.text, width === 390
+          ? /Brez dodatne varnostne rezerve/ : /No additional safety margin/);
+      } finally {
+        await page.close();
+      }
+    });
+  }
+}
+
 for (const width of [320, 360, 390, 430, 768, 1280]) {
   for (const dark of [false, true]) {
     test(`rendered HISTORY geometry at ${width}px, ${dark ? "dark" : "light"}`, async () => {
