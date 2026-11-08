@@ -1,5 +1,16 @@
 # Troubleshooting — symptoms, checks and safe remedies
 
+## “The entity no longer has a state class”
+
+V1.0.2 and older versions exposed current-quarter imported/exported energy as a
+Home Assistant `total`. V1.0.3 corrected that metadata because the live value
+resets every fixed quarter and its coalesced public states are not a safe
+lifetime-energy series. Home Assistant can retain the old statistics metadata
+and show a repair even though the live sensor and SI Grid Monitor archive work.
+
+Do not edit Recorder tables or recreate the entity. Follow the backup-first
+[Home Assistant statistics repair guide](home-assistant-statistics-repairs.md).
+
 Start with **Settings → Devices & services → SI Grid Monitor** to identify the correct meter entry and source entity. In **Developer Tools → States**, inspect the sensor's value, unit, state class, and timestamps. Keep screenshots and logs free of secrets.
 
 | Symptom | Likely explanation | Check / remedy |

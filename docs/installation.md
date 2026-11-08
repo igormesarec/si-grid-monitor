@@ -1,5 +1,14 @@
 # Installation, upgrade and first validation
 
+## V1.0.3 to V1.0.4 statistics metadata note
+
+V1.0.4 keeps all entity identities, meter configuration, contracts and the
+schema-7 archive. If Home Assistant reports that a current-quarter energy entity
+no longer has a state class, the warning concerns statistics metadata retained
+from V1.0.2 or older—not missing live energy. Make a complete backup, then use
+the supported procedure in [Home Assistant statistics repairs](home-assistant-statistics-repairs.md).
+Do not delete the SI Grid Monitor archive or remove/re-add the integration.
+
 ## Installation language
 
 The first integration step is **Language / Jezik**. Choose English (default) or

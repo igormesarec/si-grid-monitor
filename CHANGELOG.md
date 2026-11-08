@@ -4,6 +4,20 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+### V1.0.4 statistics compatibility draft
+
+- Confirmed that V0.1–V1.0.2 exposed resetting current-quarter import/export
+  energy as `total`, while V1.0.3 correctly removed that state class without
+  changing entity identities.
+- Kept the live `kWh` values non-statistical: coalesced publication can omit the
+  exact final pre-reset value, so `total`/`total_increasing` could create
+  inaccurate Home Assistant sums.
+- Added backup-first guidance for reviewing retained legacy series in Home
+  Assistant's Statistics tool. No Recorder tables or statistics are changed
+  automatically, and the schema-7 quarter archive is unaffected.
+- Added metadata, boundary-publication and no-direct-statistics-SQL regressions;
+  bumped integration and frontend cache versions to V1.0.4.
+
 ### V1.0.3 localization draft
 
 - Added a first native ConfigFlow **Language / Jezik** selector with English as

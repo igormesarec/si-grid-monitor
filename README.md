@@ -8,10 +8,10 @@ contracted-power target, and preserves auditable quarter history. It is useful
 for homes and small sites with heat pumps, EV charging, solar PV or other loads
 that need clearer visibility into quarter-hour grid import.
 
-**Release status:** V1.0.3 is a draft release candidate that integrates the
-complete V1.0.2 contract-management system with English/Slovenian installation,
-dashboard and reporting localization. Real Home Assistant and Android acceptance
-is still required.
+**Release status:** V1.0.4 is a draft maintenance release candidate based on
+V1.0.3. It preserves contract management and English/Slovenian localization,
+and adds safe guidance for legacy Home Assistant statistics repairs. Real Home
+Assistant and Android acceptance is still required.
 
 This is monitoring and decision-support software—not a distributor-certified
 meter, guaranteed bill calculation, physical protection device or automatic
@@ -87,6 +87,8 @@ their original quality and provenance.
   **[troubleshooting](docs/troubleshooting.md)**.
 - **[Data publishing and storage](docs/data-publishing-and-storage.md)** — profiles,
   automation trade-offs, diagnostics and the measured two-meter budget.
+- **[Home Assistant statistics repairs](docs/home-assistant-statistics-repairs.md)** —
+  backup-first handling of legacy current-quarter energy statistics warnings.
 - **[Manual legacy-data cleanup](docs/manual-storage-cleanup.md)** — backup-first
   guidance for data created by older releases; V1.0.3 never deletes it automatically.
 - **[Slovenščina: hiter začetek](docs/sl/zacetek.md)** and
