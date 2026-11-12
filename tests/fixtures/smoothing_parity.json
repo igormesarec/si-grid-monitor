@@ -1,0 +1,57 @@
+[
+  {
+    "name": "irregular_import_export_reversal",
+    "window_seconds": 120,
+    "stale_seconds": 60,
+    "end": "2026-01-01T19:00:00Z",
+    "samples": [
+      ["2026-01-01T18:58:00Z", 1.0],
+      ["2026-01-01T18:58:30Z", -2.0],
+      ["2026-01-01T18:59:10Z", 3.0],
+      ["2026-01-01T18:59:50Z", 5.0]
+    ],
+    "expected_import_kw": 1.6666666666666667,
+    "expected_coverage_seconds": 120.0,
+    "expected_complete": true
+  },
+  {
+    "name": "continuous_zero_import_export",
+    "window_seconds": 90,
+    "stale_seconds": 60,
+    "end": "2026-01-01T19:00:00Z",
+    "samples": [
+      ["2026-01-01T18:58:30Z", -3.0],
+      ["2026-01-01T18:59:00Z", -3.0],
+      ["2026-01-01T18:59:30Z", -3.0]
+    ],
+    "expected_import_kw": 0.0,
+    "expected_coverage_seconds": 90.0,
+    "expected_complete": true
+  },
+  {
+    "name": "stale_gap_before_rollover",
+    "window_seconds": 120,
+    "stale_seconds": 60,
+    "end": "2026-01-01T19:00:00Z",
+    "samples": [
+      ["2026-01-01T18:57:00Z", 2.0],
+      ["2026-01-01T18:59:30Z", 4.0]
+    ],
+    "expected_import_kw": 4.0,
+    "expected_coverage_seconds": 30.0,
+    "expected_complete": false
+  },
+  {
+    "name": "short_window_irregular",
+    "window_seconds": 30,
+    "stale_seconds": 60,
+    "end": "2026-01-01T19:00:00Z",
+    "samples": [
+      ["2026-01-01T18:59:20Z", 2.0],
+      ["2026-01-01T18:59:50Z", 4.0]
+    ],
+    "expected_import_kw": 2.6666666666666665,
+    "expected_coverage_seconds": 30.0,
+    "expected_complete": true
+  }
+]

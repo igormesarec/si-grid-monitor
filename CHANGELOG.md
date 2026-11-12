@@ -4,6 +4,21 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+### V1.0.5 cross-quarter smoothing draft
+
+- Added a bounded dashboard-only smoothing context so valid observations from
+  immediately before a fixed-quarter boundary can support the solid historical
+  smoothing trace from the new boundary.
+- Kept actual import/export traces and imported-energy accumulation strictly
+  within the current quarter; stale gaps and source-epoch boundaries remain
+  unavailable rather than being bridged.
+- Aligned JavaScript time-weighted coverage completeness with the Python engine
+  and added shared numerical fixtures for irregular updates and export periods.
+- Clarified zero safety margin as **No additional safety margin (0.000 kW)**;
+  no redundant reference line is drawn over the distributor limit.
+- Bumped integration and frontend cache versions to V1.0.5 without changing
+  entity identities, archive schema 7, contracts, or historical rows.
+
 ### V1.0.4 statistics compatibility draft
 
 - Confirmed that V0.1–V1.0.2 exposed resetting current-quarter import/export

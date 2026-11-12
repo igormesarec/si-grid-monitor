@@ -15,6 +15,23 @@ SI Grid Monitor offers **current-quarter** and, for suitable live-power sources,
 
 A current-quarter number is **not** automatically a supported long-horizon recommendation. A high allowed-remainder number near the end of a quarter can be mathematically valid while exceeding physical connection capacity.
 
+## Live chart smoothing contract
+
+The backend and dashboard interpret a timestamped power sample as constant from
+its timestamp until the next sample, the 60-second freshness limit, or the
+window end—whichever occurs first. The rolling window is `[end - window, end)`;
+import smoothing uses `max(0, signed power)`. Coverage is the sum of those
+supported pieces and a smoothing result is available only when the full window
+is covered (with the engine's 1 ns floating-point tolerance).
+
+The dashboard receives only a bounded pre-quarter context: the configured
+30/60/90/120/180-second window plus one earlier sample when it is still valid
+at the cutoff. This lets the solid light-blue historical smoothing line begin
+at a new quarter boundary without moving red/green measured traces or energy
+from the previous quarter. A stale gap remains a gap. The dashed blue future
+line is a backend assumption beginning at its actual forecast timestamp and
+ending at the current quarter boundary; it is not measured history.
+
 ## Sustained fields
 
 The **15, 30, 60 or 120-minute horizon** checks every intersected fixed quarter; it is not simply the current 15-minute allowance multiplied by four. For Mode A/B/C it compares a repeated recent-power-path scenario against a constant-latest-power scenario and uses the restrictive output. Additional load during export is applied to signed power before nonnegative import is calculated.

@@ -33,7 +33,7 @@ def test_rolling_signed_and_import_only_are_time_weighted() -> None:
     assert imported.value_kw == pytest.approx(1.0)
 
 
-@pytest.mark.parametrize("window", [5, 30, 60, 120])
+@pytest.mark.parametrize("window", [5, 30, 60, 90, 120, 180])
 def test_supported_smoothing_window_design(window: int) -> None:
     buffer = TimeWeightedBuffer(stale_after_seconds=300)
     buffer.add(PowerSample(utc(8, 0), 2.0))

@@ -33,6 +33,13 @@ different graphs: kW is a rate, kWh is accumulated energy. Missing traces must
 not be read as measured zero. Values use three decimals while axes remain
 adaptively scaled.
 
+At a quarter rollover, the solid light-blue smoothing trace may use the bounded
+valid tail of the previous quarter. The red/green measured paths and cumulative
+energy never do. The dashed blue future assumption starts at the forecast's
+actual generation time, not at the quarter start. With a configured margin of
+zero the dashboard says **No additional safety margin (0.000 kW)**; this is
+different from an unavailable contract.
+
 Other Overview fields:
 
 | Field | Interpretation |

@@ -370,6 +370,7 @@ class GridMonitorRuntime:
                 or self.contractual_status_reason
                 or "waiting_for_valid_measurement",
                 "trace": [],
+                "smoothing_context": [],
             }
         projection = snapshot.projection
         sustained = self.sustained_forecast
@@ -417,10 +418,36 @@ class GridMonitorRuntime:
                 f"{snapshot.smoothed_import.coverage_seconds:.1f}/"
                 f"{int(settings[CONF_SMOOTHING_SECONDS])} seconds"
             )
+        buffer_samples = self.engine.buffer.samples
         trace = [
             {"timestamp": sample.timestamp_utc.isoformat(), "signed_kw": sample.signed_kw}
-            for sample in self.engine.buffer.samples
+            for sample in buffer_samples
             if sample.timestamp_utc >= quarter_start
+        ]
+        smoothing_seconds = int(settings[CONF_SMOOTHING_SECONDS])
+        smoothing_cutoff = quarter_start - timedelta(seconds=smoothing_seconds)
+        smoothing_start = next(
+            (
+                index
+                for index, sample in enumerate(buffer_samples)
+                if sample.timestamp_utc >= smoothing_cutoff
+            ),
+            len(buffer_samples),
+        )
+        # A sample immediately before the nominal cutoff can still support the
+        # first part of the window under the engine's piecewise-constant,
+        # stale-bounded contract. Include it only when it is actually valid at
+        # the cutoff; this keeps the dashboard context strictly bounded.
+        if smoothing_start > 0 and (
+            buffer_samples[smoothing_start - 1].timestamp_utc
+            + timedelta(seconds=DEFAULT_STALE_AFTER_SECONDS)
+            > smoothing_cutoff
+        ):
+            smoothing_start -= 1
+        smoothing_context = [
+            {"timestamp": sample.timestamp_utc.isoformat(), "signed_kw": sample.signed_kw}
+            for sample in buffer_samples[smoothing_start:]
+            if sample.timestamp_utc <= snapshot.now_utc
         ]
         age_reference = snapshot.now_utc
         source_age_seconds = (
@@ -593,6 +620,8 @@ class GridMonitorRuntime:
             "last_completed_import_demand_kw": self.last_completed_import_demand_kw,
             "last_completed_signed_average_kw": self.last_completed_signed_average_kw,
             "trace": trace,
+            "smoothing_context": smoothing_context,
+            "smoothing_window_seconds": smoothing_seconds,
             "trace_stale_after_seconds": DEFAULT_STALE_AFTER_SECONDS,
             "detailed_trace_provenance": "bounded_runtime_samples",
         }

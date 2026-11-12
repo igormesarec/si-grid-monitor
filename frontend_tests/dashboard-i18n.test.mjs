@@ -33,6 +33,17 @@ test("parameterized translations keep values and use English fallback", () => {
   assert.equal(translateDashboard("unknown.explicit.key", "sl"), "unknown.explicit.key");
 });
 
+test("zero safety margin is explicit in both dashboard languages", () => {
+  assert.equal(
+    translateDashboard("safety.no_additional", "en", {margin: "0.000"}),
+    "No additional safety margin (0.000 kW)",
+  );
+  assert.match(
+    translateDashboard("safety.no_additional", "sl", {margin: "0.000"}),
+    /0\.000 kW/,
+  );
+});
+
 test("meter persistence and fallback messages are localized", () => {
   assert.equal(translateDashboard("meter.active", "en"), "Active meter");
   assert.equal(translateDashboard("meter.select", "sl"), "Izberite merilnik");

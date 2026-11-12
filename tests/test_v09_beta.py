@@ -953,9 +953,9 @@ def test_beta_version_frontend_and_hacs_package_are_consistent() -> None:
         encoding="utf-8"
     )
     hacs = json.loads((ROOT / "hacs.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == VERSION == "1.0.4"
-    assert "dashboard-model.mjs?v=1.0.4" in dashboard
-    assert "dashboard-i18n.mjs?v=1.0.4" in dashboard
+    assert manifest["version"] == VERSION == "1.0.5"
+    assert "dashboard-model.mjs?v=1.0.5" in dashboard
+    assert "dashboard-i18n.mjs?v=1.0.5" in dashboard
     assert hacs["name"] == "SI Grid Monitor"
     assert not any(ROOT.joinpath(name).exists() for name in ("release.zip", "dist.zip"))
 

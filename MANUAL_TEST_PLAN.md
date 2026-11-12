@@ -1,4 +1,4 @@
-# SI Grid Monitor V1.0.4 Release-Candidate Manual Test Plan
+# SI Grid Monitor V1.0.5 Release-Candidate Manual Test Plan
 
 ## Legacy statistics repair acceptance
 
@@ -694,15 +694,27 @@ software behavior only; distributor readings remain authoritative.
 17. Select quarters around the 25 October 2026 rollback. Confirm the two local
     02:xx intervals show different `GMT+2` and `GMT+1` labels (or CEST/CET),
     including at chart endpoints.
-18. During the first 120 seconds after a quarter rollover, verify that inherited
-    backend smoothing is shown as an outlined forecast anchor and dashed future
-    assumption when the current-quarter trace cannot support a solid smoothing
-    trajectory. The UI must not connect that anchor to unsupported history.
-19. Scroll the live power and cumulative energy charts to different horizontal
+18. During the first 120 seconds after a quarter rollover, verify that valid
+    pre-quarter observations support the solid light-blue smoothing trace from
+    the new boundary and that it reaches a matching backend forecast anchor.
+    Red/green actual paths and cumulative energy must still begin in the new
+    quarter. Repeat with a stale pre-boundary gap: solid smoothing must remain
+    absent and the outlined detached anchor may appear until a complete fresh
+    window is available.
+19. Test safety margins of 0.000 kW and 0.200 kW with a known 3.900 kW
+    contract, then remove the applicable assignment. Confirm the zero case says
+    “No additional safety margin (0.000 kW)”, the positive case distinguishes
+    3.900 kW distributor and 3.700 kW operational targets, and the missing
+    contract remains unavailable rather than being interpreted as zero margin.
+20. Repeat Overview at 320, 360, 390, 430, 768 and 1280 px in English and
+    Slovenian, light and dark themes. Confirm chart scrolling is deliberate,
+    legends wrap, safety text remains readable, and the page itself does not
+    overflow horizontally.
+21. Scroll the live power and cumulative energy charts to different horizontal
     positions. Leave keyboard focus on each chart in turn and wait through at
     least two automatic 10-second refreshes. Confirm both positions remain
     independent and the focused chart remains focused without page jumping.
-20. Immediately after rollover, while the live trace is empty, horizontally
+22. Immediately after rollover, while the live trace is empty, horizontally
     scroll the cumulative energy chart and wait for refresh. Confirm it remains
     styled and scrollable. Switching meters must reset both chart positions;
     ordinary refreshes within the same meter and quarter must not.
