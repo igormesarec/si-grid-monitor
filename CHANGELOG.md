@@ -4,6 +4,29 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+### V1.0.6 source-health diagnostics draft
+
+- Added durable per-meter, transition-only source-health intervals for healthy,
+  stale, unavailable, invalid, missing-entity, timestamp-mismatch, lifecycle and
+  configuration states. Repeated state reports do not create event chatter.
+- Added an atomic schema-7 to schema-8 migration. Existing quarters, source
+  epochs, checkpoints, contract audits, targets and provenance are untouched.
+- Added the Source Health dashboard page, quarter drill-down evidence, separate
+  quarter-completeness and measured-time-coverage metrics, descriptive recurring
+  patterns and administrator-only bounded CSV exports.
+- Explicit source interruptions now stop the live smoothing trace without
+  fabricating a zero sample or bridging an unavailable interval.
+- Incident timing remains explanatory evidence and is never equated to the
+  aggregate gap seconds stored with a completed quarter.
+- Preserved intermediate health transitions that arrive during a blocked
+  archive write, using ordered timestamps and bounded retries.
+- Made source-health summary metrics complete across the full filtered range;
+  visible pages remain bounded without limiting totals or durations.
+- Applied state/source-epoch filters to CSV, paged complete exports beyond 200
+  rows and rejected results that exceed the explicit export contract.
+- Kept brief observed outages visible after recovery by splitting measured and
+  smoothed chart segments without changing energy or forecast calculations.
+
 ### V1.0.5 cross-quarter smoothing draft
 
 - Added a bounded dashboard-only smoothing context so valid observations from

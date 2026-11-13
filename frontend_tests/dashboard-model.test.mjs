@@ -929,3 +929,51 @@ test("today selector handles archived, live, missing, upcoming and DST-sized day
     assert.equal(todayQuarterAction(quarters[6]), "upcoming");
   }
 });
+
+test("explicit unavailability clips measured and smoothed traces before staleness expiry", () => {
+  const model = livePowerChartModel({
+    trace: [{timestamp: "2026-01-01T00:00:00Z", signed_kw: 2}],
+    smoothingContext: [
+      {timestamp: "2025-12-31T23:59:00Z", signed_kw: 2},
+      {timestamp: "2026-01-01T00:00:00Z", signed_kw: 2},
+    ],
+    nowUtc: "2026-01-01T00:00:40Z",
+    quarterStartUtc: "2026-01-01T00:00:00Z",
+    quarterEndUtc: "2026-01-01T00:15:00Z",
+    staleAfterSeconds: 60,
+    explicitInterruptionUtc: "2026-01-01T00:00:10Z",
+  });
+  assert.equal(model.actualImportSegments[0].at(-1).timestamp, "2026-01-01T00:00:10.000Z");
+  assert.ok(model.smoothedImportSegments.flat().every(
+    point => new Date(point.timestamp) <= new Date("2026-01-01T00:00:10Z"),
+  ));
+});
+
+test("brief unavailability remains a visible break after recovery inside freshness window", () => {
+  const outageStart = "2026-01-01T00:00:10Z";
+  const recovery = "2026-01-01T00:00:20Z";
+  const model = livePowerChartModel({
+    trace: [
+      {timestamp: "2026-01-01T00:00:00Z", signed_kw: 2},
+      {timestamp: recovery, signed_kw: 3},
+    ],
+    smoothingContext: [
+      {timestamp: "2025-12-31T23:59:00Z", signed_kw: 2},
+      {timestamp: "2026-01-01T00:00:00Z", signed_kw: 2},
+      {timestamp: recovery, signed_kw: 3},
+    ],
+    nowUtc: "2026-01-01T00:00:40Z",
+    quarterStartUtc: "2026-01-01T00:00:00Z",
+    quarterEndUtc: "2026-01-01T00:15:00Z",
+    staleAfterSeconds: 60,
+    interruptionWindows: [{start_utc: outageStart, end_utc: recovery}],
+  });
+  assert.equal(model.actualImportSegments.length, 2);
+  assert.equal(model.actualImportSegments[0].at(-1).timestamp, "2026-01-01T00:00:10.000Z");
+  assert.equal(model.actualImportSegments[1][0].timestamp, "2026-01-01T00:00:20.000Z");
+  for (const segment of model.smoothedImportSegments) {
+    const times = segment.map(point => new Date(point.timestamp).getTime());
+    assert.ok(!(Math.min(...times) < Date.parse(outageStart)
+      && Math.max(...times) >= Date.parse(recovery)));
+  }
+});

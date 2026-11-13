@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sqlite3
 import sys
 import types
+from collections import deque
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -692,7 +694,7 @@ def test_setup_timeout_defers_then_reopens_archive_on_successful_retry(
         rows = reopened.list_quarters(entry.entry_id, start, start + timedelta(minutes=15))
         assert len(rows) == 1
         assert rows[0]["import_kwh"] == pytest.approx(0.25)
-        assert reopened.schema_version == 7
+        assert reopened.schema_version == 8
         reopened.close()
 
     _Runtime.instances.clear()
@@ -816,7 +818,7 @@ def test_upgrade_reopen_and_reinstall_preserve_each_meter_namespace(tmp_path: Pa
 
     reopened = QuarterArchive(path)
     reopened.open()
-    assert reopened.schema_version == 7
+    assert reopened.schema_version == 8
     meter_a = reopened.list_quarters("meter-a", start, start + timedelta(hours=1))
     assert len(meter_a) == 1
     assert len(reopened.list_quarters("meter-b", start, start + timedelta(hours=1))) == 1
@@ -912,7 +914,7 @@ def test_v096_mode_d_schema6_archive_survives_disable_and_source_migration(
 
     migrated = QuarterArchive(path)
     migrated.open()
-    assert migrated.schema_version == 7
+    assert migrated.schema_version == 8
     assert dict(migrated.list_quarters(namespace, start, start + timedelta(minutes=15))[0]) == (
         original_row
     )
@@ -953,9 +955,9 @@ def test_beta_version_frontend_and_hacs_package_are_consistent() -> None:
         encoding="utf-8"
     )
     hacs = json.loads((ROOT / "hacs.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == VERSION == "1.0.5"
-    assert "dashboard-model.mjs?v=1.0.5" in dashboard
-    assert "dashboard-i18n.mjs?v=1.0.5" in dashboard
+    assert manifest["version"] == VERSION == "1.0.6"
+    assert "dashboard-model.mjs?v=1.0.6" in dashboard
+    assert "dashboard-i18n.mjs?v=1.0.6" in dashboard
     assert hacs["name"] == "SI Grid Monitor"
     assert not any(ROOT.joinpath(name).exists() for name in ("release.zip", "dist.zip"))
 
@@ -1639,6 +1641,98 @@ def test_migrated_mode_a_keeps_the_v09_configuration_epoch_identity(tmp_path: Pa
     archive.close()
 
 
+@pytest.mark.skipif(
+    REAL_LOOP_UNAVAILABLE,
+    reason="the managed Windows runtime cannot create asyncio's socketpair",
+)
+def test_source_health_transitions_remain_ordered_while_first_write_is_blocked() -> None:
+    """An in-flight executor write must not collapse unavailable/recovery transitions."""
+
+    _ensure_homeassistant_stubs()
+    from custom_components.si_grid_monitor.runtime import GridMonitorRuntime
+
+    async def scenario() -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        persisted: list[tuple[str, datetime]] = []
+        attempts: dict[str, int] = {}
+
+        class Archive:
+            @staticmethod
+            def transition_source_health(**kwargs: Any) -> None:
+                state = kwargs["health_state"]
+                attempts[state] = attempts.get(state, 0) + 1
+                if state == "unavailable" and attempts[state] < 3:
+                    raise sqlite3.OperationalError("temporarily locked")
+                persisted.append((kwargs["health_state"], kwargs["observed_utc"]))
+
+        class Hass:
+            calls = 0
+
+            @staticmethod
+            def async_create_task(coroutine: Any, name: str) -> asyncio.Task[Any]:
+                return asyncio.create_task(coroutine, name=name)
+
+            @classmethod
+            async def async_add_executor_job(cls, function: Any) -> Any:
+                cls.calls += 1
+                if cls.calls == 1:
+                    started.set()
+                    await release.wait()
+                return function()
+
+        class Tasks:
+            @staticmethod
+            def track(task: asyncio.Task[Any]) -> asyncio.Task[Any]:
+                return task
+
+        runtime = object.__new__(GridMonitorRuntime)
+        runtime.hass = Hass()
+        runtime.archive = Archive()
+        runtime.namespace = "meter"
+        runtime.configuration_epoch = SimpleNamespace(epoch=7)
+        runtime.configuration_source_id = "sensor.grid"
+        runtime.engine = SimpleNamespace(last_sample=SimpleNamespace(timestamp_utc=None))
+        runtime._source_health_state = "unknown"
+        runtime._source_health_reason = "runtime_not_started"
+        runtime._source_health_observed_utc = datetime(2026, 1, 1, tzinfo=UTC)
+        runtime._source_health_lock = asyncio.Lock()
+        runtime._source_health_pending = deque()
+        runtime._source_health_interruption_windows = deque(maxlen=64)
+        runtime._source_health_task = None
+        runtime._persisted_health_signature = None
+        runtime._shutdown_complete = False
+        runtime._archive_tasks = Tasks()
+
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        runtime._set_source_health("healthy", "valid_measurement", start)
+        await asyncio.wait_for(started.wait(), timeout=2)
+        runtime._set_source_health(
+            "unavailable", "source_state_unavailable", start + timedelta(seconds=5)
+        )
+        runtime._set_source_health("healthy", "valid_measurement", start + timedelta(seconds=9))
+        release.set()
+        task = runtime._source_health_task
+        assert task is not None
+        assert await asyncio.wait_for(task, timeout=2) is True
+
+        assert persisted == [
+            ("healthy", start),
+            ("unavailable", start + timedelta(seconds=5)),
+            ("healthy", start + timedelta(seconds=9)),
+        ]
+        assert not runtime._source_health_pending
+        assert attempts["unavailable"] == 3
+        assert list(runtime._source_health_interruption_windows) == [
+            {
+                "start_utc": start + timedelta(seconds=5),
+                "end_utc": start + timedelta(seconds=9),
+            }
+        ]
+
+    asyncio.run(scenario())
+
+
 def test_meter_archive_removal_is_entry_scoped_and_backup_is_reopenable(tmp_path: Path) -> None:
     storage = tmp_path / ".storage"
     storage.mkdir()
@@ -1662,7 +1756,7 @@ def test_meter_archive_removal_is_entry_scoped_and_backup_is_reopenable(tmp_path
     assert other.exists()
     restored = QuarterArchive(backup)
     restored.open()
-    assert restored.schema_version == 7
+    assert restored.schema_version == 8
     assert len(restored.list_quarters("meter-a", start, start + timedelta(minutes=15))) == 1
     restored.close()
 
@@ -2157,7 +2251,7 @@ def test_real_loop_shutdown_cancellation_finishes_archive_and_reopens(
         rows = runtime.archive.list_quarters(entry.entry_id, start, start + timedelta(minutes=15))
         assert len(rows) == 1
         assert rows[0]["import_kwh"] == pytest.approx(0.25)
-        assert runtime.archive.schema_version == 7
+        assert runtime.archive.schema_version == 8
         runtime.archive.close()
 
     asyncio.run(scenario())

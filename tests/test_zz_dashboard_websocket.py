@@ -206,11 +206,22 @@ def _runtime(archive: QuarterArchive) -> Any:
         entry=SimpleNamespace(entry_id="entry-a", title="Meter A"),
         archive=archive,
         namespace="meter-a",
+        source_mode="signed_power",
+        source_entities=("sensor.grid",),
         tariff_calendar=calendar,
         contracted_power_schedule=schedule,
         _contracted_power_configuration_error=None,
         target_for_tariff=lambda tariff: 3.5 if tariff.block is not None else None,
-        dashboard_current=lambda: {"available": False, "now_utc": "2026-01-02T12:00:00+00:00"},
+        dashboard_current=lambda: {
+            "available": False,
+            "now_utc": "2026-01-02T12:00:00+00:00",
+            "source_health": {
+                "state": "healthy",
+                "reason_code": "valid_measurement",
+                "observed_utc": "2026-01-02T11:59:30+00:00",
+                "last_valid_sample_utc": "2026-01-02T11:59:30+00:00",
+            },
+        },
     )
 
 
@@ -338,11 +349,11 @@ def test_history_commands_use_real_sqlite_rows_and_preserve_archive(tmp_path: Pa
             {"id": 3, "entry_id": "entry-a", "start_utc": starts[20].isoformat()},
         )
     )
-    assert empty_connection.result == {
-        "status": "not_found",
-        "quarter": None,
-        "detailed_trace_available": False,
-    }
+    assert empty_connection.result["status"] == "not_found"
+    assert empty_connection.result["quarter"] is None
+    assert empty_connection.result["detailed_trace_available"] is False
+    assert empty_connection.result["source_health_incidents"] == []
+    assert empty_connection.result["incident_logging_available"] is True
 
     day_connection = _Connection()
     _run(
@@ -434,7 +445,7 @@ def test_history_commands_use_real_sqlite_rows_and_preserve_archive(tmp_path: Pa
 
     after = [dict(row) for row in archive.list_quarters("meter-a", starts[0], starts[8])]
     assert after == before
-    assert archive.schema_version == 7
+    assert archive.schema_version == 8
     archive.close()
 
 
@@ -609,8 +620,92 @@ def test_history_command_pages_real_rows_and_serializes_storage(tmp_path: Path) 
     assert connection.result["summary"]["completed_expected_count"] == 52
     assert connection.result["summary"]["future_or_uncompleted_count"] == 44
     assert connection.result["summary"]["missing_count"] == 45
-    assert connection.result["storage"]["schema_version"] == 7
+    assert connection.result["storage"]["schema_version"] == 8
     json.dumps(connection.result)
+    archive.close()
+
+
+def test_source_health_and_quality_commands_are_namespaced_and_csv_is_admin_only(
+    tmp_path: Path,
+) -> None:
+    archive = QuarterArchive(tmp_path / "source-health-ws.db")
+    archive.open()
+    observed = datetime(2026, 1, 2, 8, 0, tzinfo=UTC)
+    archive.transition_source_health(
+        namespace="meter-a",
+        source_epoch=1,
+        source_id="sensor.grid",
+        health_state="unavailable",
+        reason_code="source_state_unavailable",
+        observed_utc=observed,
+        last_valid_sample_utc=observed - timedelta(seconds=30),
+    )
+    archive.transition_source_health(
+        namespace="other-meter",
+        source_epoch=1,
+        source_id="sensor.other",
+        health_state="invalid_value",
+        reason_code="source_value_rejected",
+        observed_utc=observed,
+        last_valid_sample_utc=None,
+    )
+    runtime = _runtime(archive)
+    connection = _Connection()
+    _run(
+        dashboard.ws_source_health(
+            _Hass(runtime),
+            connection,
+            {
+                "id": 90,
+                "entry_id": "entry-a",
+                "start_date": "2026-01-02",
+                "end_date": "2026-01-02",
+                "page": 1,
+                "page_size": 50,
+            },
+        )
+    )
+    assert connection.error is None
+    assert len(connection.result["items"]) == 1
+    assert connection.result["items"][0]["source_id"] == "sensor.grid"
+    assert connection.result["current"]["state"] == "healthy"
+
+    non_admin = _Connection(is_admin=False)
+    _run(
+        dashboard.ws_diagnostic_csv(
+            _Hass(runtime),
+            non_admin,
+            {
+                "id": 91,
+                "entry_id": "entry-a",
+                "kind": "incidents",
+                "start_date": "2026-01-02",
+                "end_date": "2026-01-02",
+            },
+        )
+    )
+    assert non_admin.error == (91, "unauthorized", "Administrator access is required")
+    admin = _Connection(is_admin=True)
+    _run(
+        dashboard.ws_diagnostic_csv(
+            _Hass(runtime),
+            admin,
+            {
+                "id": 92,
+                "entry_id": "entry-a",
+                "kind": "incidents",
+                "start_date": "2026-01-02",
+                "end_date": "2026-01-02",
+                "states": ["unavailable"],
+                "source_epoch": 1,
+            },
+        )
+    )
+    assert admin.error is None
+    assert admin.result["complete"] is True
+    assert admin.result["total_rows"] == admin.result["exported_rows"] == 1
+    assert "sensor.grid" in admin.result["csv"]
+    assert "sensor.other" not in admin.result["csv"]
     archive.close()
 
 
