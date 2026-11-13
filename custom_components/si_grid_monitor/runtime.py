@@ -247,9 +247,8 @@ class GridMonitorRuntime:
 
     @property
     def source_measurement_timestamp_utc(self) -> datetime | None:
-        return (
-            self.engine.last_sample.timestamp_utc if self.engine.last_sample is not None else None
-        )
+        sample = getattr(self.engine, "last_sample", None)
+        return getattr(sample, "timestamp_utc", None)
 
     @property
     def settings(self) -> dict[str, Any]:
