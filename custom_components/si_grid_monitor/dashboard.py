@@ -42,6 +42,7 @@ from .source_health import (
     HEALTH_STATES,
     diagnostic_csv,
     incident_dict,
+    incident_export_report,
     incomplete_quarter_report,
     quality_report,
     source_health_report,
@@ -897,6 +898,8 @@ async def ws_quality_report(hass: HomeAssistant, connection: Any, msg: dict[str,
         vol.Required("kind"): vol.In(("incidents", "quality", "incomplete_quarters")),
         vol.Required("start_date"): str,
         vol.Required("end_date"): str,
+        vol.Optional("states"): [vol.In(sorted(HEALTH_STATES))],
+        vol.Optional("source_epoch"): int,
     }
 )
 @websocket_api.async_response
@@ -914,13 +917,13 @@ async def ws_diagnostic_csv(hass: HomeAssistant, connection: Any, msg: dict[str,
         start, end = _local_date_range(msg)
         if msg["kind"] == "incidents":
             report = await hass.async_add_executor_job(
-                lambda: source_health_report(
+                lambda: incident_export_report(
                     runtime.archive,
                     runtime.namespace,
                     start,
                     end,
-                    page=1,
-                    page_size=200,
+                    states=tuple(msg.get("states", ())),
+                    source_epoch=msg.get("source_epoch"),
                     now_utc=datetime.now(UTC),
                 )
             )
@@ -932,11 +935,18 @@ async def ws_diagnostic_csv(hass: HomeAssistant, connection: Any, msg: dict[str,
                     start,
                     end,
                     now_utc=datetime.now(UTC),
+                    source_epoch=msg.get("source_epoch"),
                 )
             )
         else:
             report = await hass.async_add_executor_job(
-                lambda: incomplete_quarter_report(runtime.archive, runtime.namespace, start, end)
+                lambda: incomplete_quarter_report(
+                    runtime.archive,
+                    runtime.namespace,
+                    start,
+                    end,
+                    source_epoch=msg.get("source_epoch"),
+                )
             )
         payload = diagnostic_csv(msg["kind"], report)
     except (KeyError, TypeError, ValueError):
@@ -958,11 +968,12 @@ async def ws_diagnostic_csv(hass: HomeAssistant, connection: Any, msg: dict[str,
             "filename": f"si-grid-monitor-{msg['kind']}-{msg['start_date']}-{msg['end_date']}.csv",
             "content_type": "text/csv;charset=utf-8",
             "csv": payload,
-            "row_limit": {
-                "incidents": 200,
-                "quality": 367,
-                "incomplete_quarters": 10_000,
-            }[msg["kind"]],
+            "row_limit": report.get("row_limit", 367),
+            "total_rows": report.get("total", len(report.get("daily", []))),
+            "exported_rows": report.get(
+                "exported_rows", len(report.get("items", report.get("daily", [])))
+            ),
+            "complete": not report.get("truncated", False),
         },
     )
 

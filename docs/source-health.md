@@ -43,8 +43,32 @@ router, inverter, integration, network or power-supply cause.
 Administrators can export a bounded date range as incident, daily-quality or
 incomplete-quarter CSV. Values that spreadsheet software could interpret as a
 formula are neutralized. Exports are generated from the selected meter only,
-contain no write operation and are limited to one year. Do not publish exports
-without reviewing source entity IDs and provenance fields.
+contain no write operation and are limited to one year. The selected health
+state and source epoch are applied to incident exports; the source epoch is
+also applied to quality and incomplete-quarter exports. Incident rows are read
+in bounded 200-row SQLite pages, while the resulting CSV is complete up to the
+explicit 10,000-row export ceiling. A larger or concurrently changing result is
+rejected with instructions to narrow the filters or retry; it is never returned
+as a silently truncated CSV. Do not publish exports without reviewing source
+entity IDs and provenance fields.
+
+Dashboard pages remain bounded, but their summary counts, observed durations
+and affected-quarter metrics use the complete filtered range. A page containing
+50 or 200 visible incidents therefore does not limit the period summary.
+
+## Brief outage and recovery
+
+The runtime queues health changes in observation order. If the database write
+for one state is still running, a later unavailable and recovery transition
+retain their individual timestamps and are written afterward. Each write has a
+bounded retry sequence; an unsuccessful transition remains queued ahead of
+newer states instead of being skipped.
+
+The live chart retains bounded interruption windows after recovery. A recovery
+inside the normal 60-second sample-validity allowance therefore starts a new
+measured/smoothed visual segment and does not reconnect the pre-outage trace
+across the observed unavailable interval. This affects visualization and
+diagnostic provenance only; calculation and energy integration are unchanged.
 
 ## Troubleshooting sequence
 

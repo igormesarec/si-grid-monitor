@@ -18,6 +18,14 @@ All notable changes to SI Grid Monitor will be documented here.
   fabricating a zero sample or bridging an unavailable interval.
 - Incident timing remains explanatory evidence and is never equated to the
   aggregate gap seconds stored with a completed quarter.
+- Preserved intermediate health transitions that arrive during a blocked
+  archive write, using ordered timestamps and bounded retries.
+- Made source-health summary metrics complete across the full filtered range;
+  visible pages remain bounded without limiting totals or durations.
+- Applied state/source-epoch filters to CSV, paged complete exports beyond 200
+  rows and rejected results that exceed the explicit export contract.
+- Kept brief observed outages visible after recovery by splitting measured and
+  smoothed chart segments without changing energy or forecast calculations.
 
 ### V1.0.5 cross-quarter smoothing draft
 

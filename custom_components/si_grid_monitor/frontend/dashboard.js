@@ -790,6 +790,7 @@ export class SIGridMonitorPanel extends HTMLElement {
         ? forecast.smoothed_future_reason
         : "projected final energy is below energy already imported",
       explicitInterruptionUtc: live.source_health?.explicit_interruption_utc,
+      interruptionWindows: live.source_health?.interruption_windows || [],
     });
     const x = timestamp => 44 + (Date.parse(timestamp) - start) / (end - start) * 1036;
     const plotTop = 24;
@@ -1472,7 +1473,13 @@ export class SIGridMonitorPanel extends HTMLElement {
         kind,
         start_date: this._sourceHealthStartDate,
         end_date: this._sourceHealthEndDate,
+        ...(this._sourceHealthState === "all" ? {} : {states: [this._sourceHealthState]}),
+        ...(this._sourceHealthEpoch === "all"
+          ? {} : {source_epoch: Number(this._sourceHealthEpoch)}),
       });
+      if (result.complete !== true || result.exported_rows !== result.total_rows) {
+        throw new Error(this._t("source_health.export_incomplete_error"));
+      }
       const blob = new Blob([result.csv], {type: result.content_type});
       const url = URL.createObjectURL(blob);
       const link = document.createElement("a");

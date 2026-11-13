@@ -262,12 +262,15 @@ export function smoothedImportSeries(
 
 function powerSegments(
   trace, nowUtc, staleAfterSeconds, valueForSample, omitZero = false,
-  explicitInterruptionUtc = null,
+  interruptionWindows = [],
 ) {
   const now = new Date(nowUtc).getTime();
-  const interruption = explicitInterruptionUtc
-    ? new Date(explicitInterruptionUtc).getTime() : Number.POSITIVE_INFINITY;
   const staleMs = Math.max(1, Number(staleAfterSeconds)) * 1000;
+  const windows = interruptionWindows.map(item => ({
+    start: new Date(item.start_utc).getTime(),
+    end: item.end_utc ? new Date(item.end_utc).getTime() : now,
+  })).filter(item => Number.isFinite(item.start) && Number.isFinite(item.end))
+    .sort((left, right) => left.start - right.start);
   const sorted = [...trace].sort((left, right) => sampleTime(left) - sampleTime(right));
   const segments = [];
   let previousEnd = null;
@@ -275,8 +278,16 @@ function powerSegments(
     const sample = sorted[index];
     const start = sampleTime(sample);
     if (start > now) break;
+    if (windows.some(item => start >= item.start && start < item.end)) {
+      previousEnd = null;
+      continue;
+    }
     const next = index + 1 < sorted.length ? sampleTime(sorted[index + 1]) : now;
-    const end = Math.min(now, next, start + staleMs, interruption);
+    const nextInterruption = windows.find(item => item.start > start && item.start < next);
+    const end = Math.min(
+      now, next, start + staleMs,
+      nextInterruption?.start ?? Number.POSITIVE_INFINITY,
+    );
     const value = valueForSample(sample);
     if (omitZero && Math.abs(value) <= 1e-12) {
       previousEnd = null;
@@ -293,11 +304,21 @@ function powerSegments(
   return segments;
 }
 
-function splitTimedPoints(points, staleAfterSeconds) {
+function splitTimedPoints(points, staleAfterSeconds, interruptionWindows = []) {
   const staleMs = Math.max(1, Number(staleAfterSeconds)) * 1000;
+  const windows = interruptionWindows.map(item => ({
+    start: new Date(item.start_utc).getTime(),
+    end: item.end_utc ? new Date(item.end_utc).getTime() : Number.POSITIVE_INFINITY,
+  })).filter(item => Number.isFinite(item.start));
   const segments = [];
   for (const point of points) {
-    if (!segments.length || sampleTime(point) - sampleTime(segments.at(-1).at(-1)) > staleMs) {
+    const timestamp = sampleTime(point);
+    if (windows.some(item => timestamp >= item.start && timestamp < item.end)) continue;
+    const previous = segments.at(-1)?.at(-1);
+    const crossesInterruption = previous && windows.some(
+      item => item.start >= sampleTime(previous) && item.end <= timestamp,
+    );
+    if (!segments.length || timestamp - sampleTime(previous) > staleMs || crossesInterruption) {
       segments.push([point]);
     } else {
       segments.at(-1).push(point);
@@ -323,26 +344,32 @@ export function livePowerChartModel({
   forecastQuality = "unavailable",
   forecastReason = null,
   explicitInterruptionUtc = null,
+  interruptionWindows = [],
 }) {
+  const observedInterruptions = interruptionWindows.length
+    ? interruptionWindows
+    : explicitInterruptionUtc
+      ? [{start_utc: explicitInterruptionUtc, end_utc: null}]
+      : [];
   const quarterStart = quarterStartUtc ? new Date(quarterStartUtc).getTime() : -Infinity;
   const visibleTrace = trace.filter(sample => sampleTime(sample) >= quarterStart);
   const actualImportSegments = powerSegments(
     visibleTrace, nowUtc, staleAfterSeconds, sample => importPower(sample),
-    false, explicitInterruptionUtc,
+    false, observedInterruptions,
   );
   const actualExportSegments = powerSegments(visibleTrace, nowUtc, staleAfterSeconds, sample => {
     const signed = Number(sample.signed_kw);
     return signed < 0 ? signed : 0;
-  }, true, explicitInterruptionUtc);
+  }, true, observedInterruptions);
   const smoothedImport = smoothedImportSeries(
     smoothingContext, windowSeconds, staleAfterSeconds, nowUtc, quarterStartUtc,
   )
     .filter(sample => sampleTime(sample) >= quarterStart)
-    .filter(sample => !explicitInterruptionUtc
-      || sampleTime(sample) <= new Date(explicitInterruptionUtc).getTime())
     .filter(sample => sample.complete)
     .map(sample => ({timestamp: sample.timestamp, kw: sample.import_kw}));
-  const smoothedImportSegments = splitTimedPoints(smoothedImport, staleAfterSeconds);
+  const smoothedImportSegments = splitTimedPoints(
+    smoothedImport, staleAfterSeconds, observedInterruptions,
+  );
   const anchor = futureAnchorUtc ? new Date(futureAnchorUtc).getTime() : NaN;
   const quarterEnd = new Date(quarterEndUtc).getTime();
   const futureForecast = (

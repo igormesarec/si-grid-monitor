@@ -20,6 +20,16 @@
    and can differ. Check a 92-, 96- and 100-quarter local day.
 8. Confirm an explicit unavailable transition breaks the solid smoothing trace;
    no zero sample or connected line is invented across the interruption.
+9. Delay one diagnostic SQLite write and trigger healthy → unavailable → healthy.
+   Confirm all three timestamps remain ordered in the incident timeline.
+10. Select a range containing more than 200 transitions. Confirm the visible
+    page remains bounded while summary counts and durations cover the full range.
+11. Export more than 200 incidents with a health-state and source-epoch filter.
+    Confirm downloaded rows match the reported total. An over-limit export must
+    fail clearly instead of producing a partial file.
+12. Recover less than 60 seconds after explicit unavailability. Confirm actual
+    and smoothed traces resume in a new segment while accumulated quarter energy
+    and forecast calculations remain unchanged.
 
 Real source timing, Android Companion rendering and restart behavior remain
 manual gates; automated tests do not constitute live Home Assistant acceptance.

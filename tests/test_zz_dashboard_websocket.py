@@ -685,6 +685,27 @@ def test_source_health_and_quality_commands_are_namespaced_and_csv_is_admin_only
         )
     )
     assert non_admin.error == (91, "unauthorized", "Administrator access is required")
+    admin = _Connection(is_admin=True)
+    _run(
+        dashboard.ws_diagnostic_csv(
+            _Hass(runtime),
+            admin,
+            {
+                "id": 92,
+                "entry_id": "entry-a",
+                "kind": "incidents",
+                "start_date": "2026-01-02",
+                "end_date": "2026-01-02",
+                "states": ["unavailable"],
+                "source_epoch": 1,
+            },
+        )
+    )
+    assert admin.error is None
+    assert admin.result["complete"] is True
+    assert admin.result["total_rows"] == admin.result["exported_rows"] == 1
+    assert "sensor.grid" in admin.result["csv"]
+    assert "sensor.other" not in admin.result["csv"]
     archive.close()
 
 

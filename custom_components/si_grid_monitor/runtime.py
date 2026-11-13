@@ -6,7 +6,9 @@ import asyncio
 import json
 import logging
 import uuid
+from collections import deque
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from functools import partial
 from typing import Any
@@ -113,6 +115,24 @@ from .tariffs import SlovenianTariffCalendar, TariffClassification
 from .tariffs.models import RuleStatus
 from .task_queue import ArchiveTaskQueue
 
+SOURCE_HEALTH_RETRY_LIMIT = 3
+SOURCE_HEALTH_RETRY_DELAY_SECONDS = 0.05
+SOURCE_HEALTH_INTERRUPTION_STATES = frozenset(
+    {"stale", "unavailable", "invalid_value", "missing_source_entity", "source_timestamp_mismatch"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _PendingSourceHealthTransition:
+    state: str
+    reason_code: str
+    observed_utc: datetime
+    source_epoch: int | None
+    source_id: str
+    last_valid_sample_utc: datetime | None
+    recovery_code: str | None = None
+
+
 _LOGGER = logging.getLogger(__name__)
 
 SHUTDOWN_CANCELLATION_GRACE_SECONDS = 10.0
@@ -213,7 +233,11 @@ class GridMonitorRuntime:
         self._source_health_observed_utc = dt_util.utcnow()
         self._source_health_lock = asyncio.Lock()
         self._persisted_health_signature: tuple[str, str, int | None] | None = None
-        self._source_health_task: asyncio.Task[None] | None = None
+        self._source_health_task: asyncio.Task[bool] | None = None
+        self._source_health_pending: deque[_PendingSourceHealthTransition] = deque()
+        self._source_health_interruption_windows: deque[dict[str, datetime | None]] = deque(
+            maxlen=64
+        )
 
     @property
     def source_entities(self) -> tuple[str, ...]:
@@ -648,6 +672,16 @@ class GridMonitorRuntime:
                     if self._source_health_state not in {"healthy", "stale"}
                     else None
                 ),
+                "interruption_windows": [
+                    {
+                        "start_utc": item["start_utc"].isoformat(),
+                        "end_utc": (
+                            item["end_utc"].isoformat() if item["end_utc"] is not None else None
+                        ),
+                    }
+                    for item in self._source_health_interruption_windows
+                    if item["end_utc"] is None or item["end_utc"] >= quarter_start
+                ],
             },
             "detailed_trace_provenance": "bounded_runtime_samples",
         }
@@ -1005,15 +1039,10 @@ class GridMonitorRuntime:
         publishing = getattr(self, "publishing", None)
         if publishing is not None:
             publishing.clear()
-        health_transition = getattr(self, "_async_transition_source_health", None)
-        if health_transition is not None:
+        set_health = getattr(self, "_set_source_health", None)
+        if set_health is not None:
             try:
-                await health_transition(
-                    "runtime_stopped",
-                    "clean_runtime_shutdown",
-                    observed_utc=dt_util.utcnow(),
-                    recovery_code="clean_shutdown",
-                )
+                set_health("runtime_stopped", "clean_runtime_shutdown", dt_util.utcnow())
             except Exception as err:
                 errors.append(err)
                 _LOGGER.exception("Failed to record SI Grid Monitor source-health shutdown")
@@ -1246,27 +1275,112 @@ class GridMonitorRuntime:
         )
         if signature == self._health_signature:
             return
+        previous_state = self._source_health_state
+        observed = observed_utc.astimezone(UTC)
+        if (
+            state in SOURCE_HEALTH_INTERRUPTION_STATES
+            and previous_state not in SOURCE_HEALTH_INTERRUPTION_STATES
+        ):
+            self._source_health_interruption_windows.append(
+                {"start_utc": observed, "end_utc": None}
+            )
+        elif (
+            state not in SOURCE_HEALTH_INTERRUPTION_STATES
+            and previous_state in SOURCE_HEALTH_INTERRUPTION_STATES
+            and self._source_health_interruption_windows
+            and self._source_health_interruption_windows[-1]["end_utc"] is None
+        ):
+            self._source_health_interruption_windows[-1]["end_utc"] = observed
         self._source_health_state = state
         self._source_health_reason = reason_code
-        self._source_health_observed_utc = observed_utc.astimezone(UTC)
+        self._source_health_observed_utc = observed
+        epoch = self.configuration_epoch.epoch if self.configuration_epoch is not None else None
+        self._source_health_pending.append(
+            _PendingSourceHealthTransition(
+                state=state,
+                reason_code=reason_code,
+                observed_utc=observed,
+                source_epoch=epoch,
+                source_id=self.configuration_source_id,
+                last_valid_sample_utc=self.source_measurement_timestamp_utc,
+            )
+        )
         self._schedule_source_health_persistence()
 
     @callback
     def _schedule_source_health_persistence(self) -> None:
-        if self.configuration_epoch is None or self._shutdown_complete:
+        if (
+            self.configuration_epoch is None
+            or not self._source_health_pending
+            or self._shutdown_complete
+        ):
             return
         if self._source_health_task is not None and not self._source_health_task.done():
             return
         self._source_health_task = self._archive_tasks.track(
             self.hass.async_create_task(
-                self._async_transition_source_health(
-                    self._source_health_state,
-                    self._source_health_reason,
-                    observed_utc=self._source_health_observed_utc,
-                ),
+                self._async_drain_source_health_transitions(),
                 "SI Grid Monitor persist source health",
             )
         )
+        self._source_health_task.add_done_callback(self._source_health_persistence_done)
+
+    @callback
+    def _source_health_persistence_done(self, task: asyncio.Task[bool]) -> None:
+        """Restart a successfully drained worker if a transition arrived at task completion."""
+
+        if self._source_health_task is task:
+            self._source_health_task = None
+        if task.cancelled():
+            return
+        try:
+            drained = task.result()
+        except Exception:
+            return
+        if drained and self._source_health_pending and not self._shutdown_complete:
+            self._schedule_source_health_persistence()
+
+    async def _async_drain_source_health_transitions(self) -> bool:
+        """Persist every queued transition in observation order with bounded retries."""
+
+        while self._source_health_pending:
+            item = self._source_health_pending[0]
+            for attempt in range(1, SOURCE_HEALTH_RETRY_LIMIT + 1):
+                try:
+                    async with self._source_health_lock:
+                        await self.hass.async_add_executor_job(
+                            partial(
+                                self.archive.transition_source_health,
+                                namespace=self.namespace,
+                                source_epoch=item.source_epoch,
+                                source_id=item.source_id,
+                                health_state=item.state,
+                                reason_code=item.reason_code,
+                                observed_utc=item.observed_utc,
+                                last_valid_sample_utc=item.last_valid_sample_utc,
+                                recovery_code=item.recovery_code,
+                            )
+                        )
+                except asyncio.CancelledError:
+                    raise
+                except Exception:
+                    if attempt == SOURCE_HEALTH_RETRY_LIMIT:
+                        _LOGGER.exception(
+                            "Source-health transition persistence failed after %d attempts; "
+                            "the ordered transition remains queued",
+                            SOURCE_HEALTH_RETRY_LIMIT,
+                        )
+                        return False
+                    await asyncio.sleep(SOURCE_HEALTH_RETRY_DELAY_SECONDS)
+                else:
+                    self._source_health_pending.popleft()
+                    self._persisted_health_signature = (
+                        item.state,
+                        item.reason_code,
+                        item.source_epoch,
+                    )
+                    break
+        return True
 
     async def _async_transition_source_health(
         self,

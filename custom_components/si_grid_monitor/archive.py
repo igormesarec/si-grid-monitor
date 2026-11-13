@@ -786,14 +786,133 @@ class QuarterArchive:
             ).fetchall()
         return [_source_health_from_row(row) for row in rows], total
 
+    def source_health_aggregate(
+        self,
+        namespace: str,
+        start_utc: datetime,
+        end_utc: datetime,
+        *,
+        health_states: tuple[str, ...] = (),
+        source_epoch: int | None = None,
+    ) -> dict[str, Any]:
+        """Return complete filtered counts and observed durations using SQLite aggregates."""
+
+        where = ["namespace=?", "started_utc<?", "COALESCE(ended_utc,?)>?"]
+        params: list[Any] = [
+            namespace,
+            _utc_iso(end_utc),
+            _utc_iso(end_utc),
+            _utc_iso(start_utc),
+        ]
+        if health_states:
+            where.append(f"health_state IN ({','.join('?' for _ in health_states)})")
+            params.extend(health_states)
+        if source_epoch is not None:
+            where.append("source_epoch=?")
+            params.append(source_epoch)
+        clause = " AND ".join(where)
+        start = _utc_iso(start_utc)
+        end = _utc_iso(end_utc)
+        with self._lock:
+            summary = self._db.execute(
+                f"""SELECT COUNT(*) AS matching_transition_count,
+                           SUM(CASE WHEN health_state<>'healthy' THEN 1 ELSE 0 END)
+                               AS incident_count,
+                           SUM(CASE WHEN health_state<>'healthy' AND
+                               (ended_utc IS NULL OR recovery_code='end_unknown_at_restart')
+                               THEN 1 ELSE 0 END) AS unknown_duration_count,
+                           MIN(started_utc) AS first_transition_utc,
+                           MAX(started_utc) AS last_transition_utc
+                    FROM source_health_incidents WHERE {clause}""",
+                params,
+            ).fetchone()
+            durations = self._db.execute(
+                f"""SELECT health_state,
+                           COALESCE(SUM(CASE WHEN ended_utc IS NOT NULL
+                                  AND COALESCE(recovery_code,'')<>'end_unknown_at_restart'
+                               THEN MAX(0, unixepoch(MIN(ended_utc,?))
+                                           - unixepoch(MAX(started_utc,?)))
+                               ELSE 0 END),0) AS observed_seconds
+                    FROM source_health_incidents WHERE {clause}
+                    GROUP BY health_state""",
+                (end, start, *params),
+            ).fetchall()
+        return {
+            "matching_transition_count": int(summary["matching_transition_count"] or 0),
+            "incident_count": int(summary["incident_count"] or 0),
+            "unknown_duration_count": int(summary["unknown_duration_count"] or 0),
+            "first_transition_utc": summary["first_transition_utc"],
+            "last_transition_utc": summary["last_transition_utc"],
+            "observed_seconds_by_state": {
+                str(row["health_state"]): float(row["observed_seconds"] or 0) for row in durations
+            },
+        }
+
+    def source_health_metric_intervals(
+        self,
+        namespace: str,
+        start_utc: datetime,
+        end_utc: datetime,
+        *,
+        health_states: tuple[str, ...] = (),
+        source_epoch: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return the minimal complete interruption projection used for patterns/quarters."""
+
+        where = [
+            "namespace=?",
+            "started_utc<?",
+            "COALESCE(ended_utc,?)>?",
+            "health_state<>'healthy'",
+        ]
+        params: list[Any] = [
+            namespace,
+            _utc_iso(end_utc),
+            _utc_iso(end_utc),
+            _utc_iso(start_utc),
+        ]
+        if health_states:
+            where.append(f"health_state IN ({','.join('?' for _ in health_states)})")
+            params.extend(health_states)
+        if source_epoch is not None:
+            where.append("source_epoch=?")
+            params.append(source_epoch)
+        with self._lock:
+            rows = self._db.execute(
+                f"""SELECT health_state,started_utc,ended_utc,recovery_code
+                    FROM source_health_incidents WHERE {" AND ".join(where)}
+                    ORDER BY started_utc,incident_id""",
+                params,
+            ).fetchall()
+        return [
+            {key: row[key] for key in row.keys()}  # noqa: SIM118
+            for row in rows
+        ]
+
     def source_health_overlaps(
         self, namespace: str, start_utc: datetime, end_utc: datetime
     ) -> list[SourceHealthIncident]:
         """Return all recorded state intervals overlapping one fixed quarter."""
 
-        rows, _ = self.list_source_health_incidents(
+        rows, total = self.list_source_health_incidents(
             namespace, start_utc, end_utc, page_size=200, newest_first=False
         )
+        page = 2
+        while len(rows) < total:
+            next_rows, confirmed_total = self.list_source_health_incidents(
+                namespace,
+                start_utc,
+                end_utc,
+                page=page,
+                page_size=200,
+                newest_first=False,
+            )
+            if confirmed_total != total or not next_rows:
+                raise sqlite3.OperationalError(
+                    "source-health incidents changed during quarter evidence query"
+                )
+            rows.extend(next_rows)
+            page += 1
         return rows
 
     def source_health_epochs(
@@ -1078,24 +1197,54 @@ class QuarterArchive:
         end_utc: datetime,
         *,
         limit: int = 10_000,
+        source_epoch: int | None = None,
     ) -> list[sqlite3.Row]:
         """Return a bounded diagnostic list of incomplete/unavailable quarters."""
 
         bounded = min(max(int(limit), 1), 10_000)
+        epoch_clause = " AND source_epoch=?" if source_epoch is not None else ""
+        params: list[Any] = [namespace, _utc_iso(start_utc), _utc_iso(end_utc)]
+        if source_epoch is not None:
+            params.append(source_epoch)
+        params.append(bounded)
         with self._lock:
             return list(
                 self._db.execute(
-                    """SELECT start_utc,end_utc,quality,coverage_seconds,gap_seconds,
+                    f"""SELECT start_utc,end_utc,quality,coverage_seconds,gap_seconds,
                               import_kwh,export_kwh,source_id,source_epoch,provenance,
                               configuration_status,contractual_status,tariff_block
                        FROM quarters
                        WHERE namespace=? AND start_utc>=? AND start_utc<?
                          AND quality IN ('incomplete','unavailable')
-                         AND simulation=0
+                         AND simulation=0{epoch_clause}
                        ORDER BY start_utc DESC LIMIT ?""",
-                    (namespace, _utc_iso(start_utc), _utc_iso(end_utc), bounded),
+                    params,
                 ).fetchall()
             )
+
+    def count_incomplete_quarters(
+        self,
+        namespace: str,
+        start_utc: datetime,
+        end_utc: datetime,
+        *,
+        source_epoch: int | None = None,
+    ) -> int:
+        """Count filtered incomplete/unavailable quarters for complete export contracts."""
+
+        epoch_clause = " AND source_epoch=?" if source_epoch is not None else ""
+        params: list[Any] = [namespace, _utc_iso(start_utc), _utc_iso(end_utc)]
+        if source_epoch is not None:
+            params.append(source_epoch)
+        with self._lock:
+            row = self._db.execute(
+                f"""SELECT COUNT(*) FROM quarters
+                    WHERE namespace=? AND start_utc>=? AND start_utc<?
+                      AND quality IN ('incomplete','unavailable')
+                      AND simulation=0{epoch_clause}""",
+                params,
+            ).fetchone()
+        return int(row[0])
 
     def query_history(
         self,

@@ -5,7 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import math
-from collections import Counter, defaultdict
+from collections import defaultdict
 from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
@@ -102,36 +102,37 @@ def source_health_report(
         page=page,
         page_size=page_size,
     )
-    all_incidents, _ = archive.list_source_health_incidents(
+    aggregate = archive.source_health_aggregate(
         namespace,
         start_utc,
         end_utc,
         health_states=states,
         source_epoch=source_epoch,
-        page=1,
-        page_size=200,
-        newest_first=False,
     )
-    # Metrics are deliberately limited to the first 200 matching transitions;
-    # the response states this bound rather than silently pretending completeness.
-    durations: Counter[str] = Counter()
-    unknown_duration = 0
+    metric_intervals = archive.source_health_metric_intervals(
+        namespace,
+        start_utc,
+        end_utc,
+        health_states=states,
+        source_epoch=source_epoch,
+    )
     affected_quarters: set[str] = set()
-    pattern_groups: dict[tuple[str, str], list[SourceHealthIncident]] = defaultdict(list)
-    for item in all_incidents:
-        if item.health_state == "healthy":
-            continue
-        local = item.started_utc.astimezone(LJUBLJANA)
+    pattern_groups: dict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    for item in metric_intervals:
+        started = datetime.fromisoformat(str(item["started_utc"])).astimezone(UTC)
+        ended = (
+            datetime.fromisoformat(str(item["ended_utc"])).astimezone(UTC)
+            if item["ended_utc"] is not None
+            else None
+        )
+        local = started.astimezone(LJUBLJANA)
         bucket = f"{local.hour:02d}:{0 if local.minute < 30 else 30:02d}"
-        pattern_groups[(item.health_state, bucket)].append(item)
-        uncertain_restart_end = item.recovery_code == "end_unknown_at_restart"
-        interval_end = item.ended_utc or min(now, end_utc)
-        if item.ended_utc is None or uncertain_restart_end:
-            unknown_duration += 1
-        supported_start = max(start_utc, item.started_utc)
+        pattern_groups[(str(item["health_state"]), bucket)].append(item)
+        uncertain_restart_end = item["recovery_code"] == "end_unknown_at_restart"
+        interval_end = ended or min(now, end_utc)
+        supported_start = max(start_utc, started)
         supported_end = min(end_utc, interval_end)
         if supported_end > supported_start and not uncertain_restart_end:
-            durations[item.health_state] += (supported_end - supported_start).total_seconds()
             cursor = quarter_bounds(supported_start).start_utc
             while cursor < supported_end:
                 affected_quarters.add(cursor.isoformat())
@@ -142,14 +143,23 @@ def source_health_report(
     recurring_patterns = []
     for (state, bucket), grouped in sorted(pattern_groups.items()):
         dates = sorted(
-            {item.started_utc.astimezone(LJUBLJANA).date().isoformat() for item in grouped}
+            {
+                datetime.fromisoformat(str(item["started_utc"]))
+                .astimezone(LJUBLJANA)
+                .date()
+                .isoformat()
+                for item in grouped
+            }
         )
         if len(dates) < 2:
             continue
         closed_durations = [
-            (item.ended_utc - item.started_utc).total_seconds()
+            (
+                datetime.fromisoformat(str(item["ended_utc"]))
+                - datetime.fromisoformat(str(item["started_utc"]))
+            ).total_seconds()
             for item in grouped
-            if item.ended_utc is not None and item.recovery_code != "end_unknown_at_restart"
+            if item["ended_utc"] is not None and item["recovery_code"] != "end_unknown_at_restart"
         ]
         recurring_patterns.append(
             {
@@ -168,15 +178,18 @@ def source_health_report(
     today_starts = quarter_starts_for_local_day(local_today)
     today_start = today_starts[0]
     today_end = today_starts[-1] + timedelta(minutes=15)
-    today_incidents, today_total = archive.list_source_health_incidents(
-        namespace, today_start, today_end, page=1, page_size=200, newest_first=False
-    )
+    today_aggregate = archive.source_health_aggregate(namespace, today_start, today_end)
+    today_intervals = archive.source_health_metric_intervals(namespace, today_start, today_end)
     today_affected: set[str] = set()
-    for item in today_incidents:
-        if item.health_state == "healthy":
-            continue
-        supported_start = max(today_start, item.started_utc)
-        supported_end = min(today_end, item.ended_utc or now)
+    for item in today_intervals:
+        started = datetime.fromisoformat(str(item["started_utc"])).astimezone(UTC)
+        ended = (
+            datetime.fromisoformat(str(item["ended_utc"])).astimezone(UTC)
+            if item["ended_utc"] is not None
+            else None
+        )
+        supported_start = max(today_start, started)
+        supported_end = min(today_end, ended or now)
         cursor = quarter_bounds(supported_start).start_utc
         while cursor < supported_end:
             today_affected.add(cursor.isoformat())
@@ -203,26 +216,29 @@ def source_health_report(
             "pages": math.ceil(total / page_size) if total else 0,
         },
         "summary": {
-            "incident_count": sum(item.health_state != "healthy" for item in all_incidents),
-            "matching_transition_count": total,
-            "unavailable_observed_seconds": durations["unavailable"],
-            "stale_observed_seconds": durations["stale"],
-            "unknown_duration_count": unknown_duration,
+            "incident_count": aggregate["incident_count"],
+            "matching_transition_count": aggregate["matching_transition_count"],
+            "unavailable_observed_seconds": aggregate["observed_seconds_by_state"].get(
+                "unavailable", 0.0
+            ),
+            "stale_observed_seconds": aggregate["observed_seconds_by_state"].get("stale", 0.0),
+            "unknown_duration_count": aggregate["unknown_duration_count"],
             "affected_quarter_count": len(affected_quarters),
             "incomplete_archived_quarter_count": incomplete,
             "quarter_record_missing_seconds": missing_seconds,
-            "metric_transition_limit": 200,
-            "metrics_truncated": total > 200,
+            "metrics_complete": True,
+            "metrics_truncated": False,
             "incident_duration_is_not_quarter_gap_seconds": True,
-            "first_transition_utc": all_incidents[0].started_utc if all_incidents else None,
-            "last_transition_utc": all_incidents[-1].started_utc if all_incidents else None,
+            "first_transition_utc": aggregate["first_transition_utc"],
+            "last_transition_utc": aggregate["last_transition_utc"],
         },
         "recurring_patterns": recurring_patterns,
         "facets": {"source_epochs": archive.source_health_epochs(namespace, start_utc, end_utc)},
         "today_summary": {
-            "matching_transition_count": today_total,
-            "metrics_truncated": today_total > 200,
-            "incident_count": sum(item.health_state != "healthy" for item in today_incidents),
+            "matching_transition_count": today_aggregate["matching_transition_count"],
+            "metrics_complete": True,
+            "metrics_truncated": False,
+            "incident_count": today_aggregate["incident_count"],
             "affected_quarter_count": len(today_affected),
             "incomplete_archived_quarter_count": sum(
                 str(row["quality"]) in {"incomplete", "unavailable"} for row in today_rows
@@ -364,11 +380,22 @@ def incomplete_quarter_report(
     namespace: str,
     start_utc: datetime,
     end_utc: datetime,
+    *,
+    source_epoch: int | None = None,
 ) -> dict[str, Any]:
     """Return bounded incomplete/unavailable quarter evidence for CSV export."""
 
     _validate_range(start_utc, end_utc)
-    rows = archive.list_incomplete_quarters(namespace, start_utc, end_utc, limit=MAX_CSV_ROWS)
+    total = archive.count_incomplete_quarters(
+        namespace, start_utc, end_utc, source_epoch=source_epoch
+    )
+    rows = archive.list_incomplete_quarters(
+        namespace,
+        start_utc,
+        end_utc,
+        limit=MAX_CSV_ROWS,
+        source_epoch=source_epoch,
+    )
     items = []
     for row in rows:
         item = {
@@ -381,13 +408,79 @@ def incomplete_quarter_report(
     return {
         "range": {"start_utc": start_utc, "end_utc": end_utc},
         "items": items,
+        "total": total,
+        "exported_rows": len(items),
         "row_limit": MAX_CSV_ROWS,
-        "truncated": len(items) >= MAX_CSV_ROWS,
+        "truncated": total > len(items),
+        "export_complete": total == len(items),
+    }
+
+
+def incident_export_report(
+    archive: QuarterArchive,
+    namespace: str,
+    start_utc: datetime,
+    end_utc: datetime,
+    *,
+    states: tuple[str, ...] = (),
+    source_epoch: int | None = None,
+    now_utc: datetime | None = None,
+) -> dict[str, Any]:
+    """Collect a complete filtered incident export through bounded SQLite pages."""
+
+    _validate_range(start_utc, end_utc)
+    if not set(states).issubset(HEALTH_STATES):
+        raise ValueError("unsupported source-health state")
+    first, total = archive.list_source_health_incidents(
+        namespace,
+        start_utc,
+        end_utc,
+        health_states=states,
+        source_epoch=source_epoch,
+        page=1,
+        page_size=200,
+        newest_first=False,
+    )
+    if total > MAX_CSV_ROWS:
+        raise ValueError(
+            f"filtered incident export contains {total} rows; narrow the date range or filters "
+            f"to at most {MAX_CSV_ROWS} rows"
+        )
+    incidents = list(first)
+    page = 2
+    while len(incidents) < total:
+        rows, confirmed_total = archive.list_source_health_incidents(
+            namespace,
+            start_utc,
+            end_utc,
+            health_states=states,
+            source_epoch=source_epoch,
+            page=page,
+            page_size=200,
+            newest_first=False,
+        )
+        if confirmed_total != total or not rows:
+            raise ValueError("source-health export changed while it was being paged; retry")
+        incidents.extend(rows)
+        page += 1
+    now = (now_utc or datetime.now(UTC)).astimezone(UTC)
+    return {
+        "range": {"start_utc": start_utc, "end_utc": end_utc},
+        "items": [incident_dict(item, now_utc=now) for item in incidents],
+        "total": total,
+        "exported_rows": len(incidents),
+        "row_limit": MAX_CSV_ROWS,
+        "truncated": False,
+        "export_complete": True,
+        "filters": {"states": list(states), "source_epoch": source_epoch},
     }
 
 
 def diagnostic_csv(kind: str, report: dict[str, Any]) -> str:
     """Create bounded UTF-8 CSV with spreadsheet-formula neutralization."""
+
+    if report.get("truncated") or report.get("export_complete") is False:
+        raise ValueError("diagnostic CSV export is incomplete; narrow the requested filters")
 
     if kind == "incidents":
         rows = report.get("items", [])[:MAX_CSV_ROWS]

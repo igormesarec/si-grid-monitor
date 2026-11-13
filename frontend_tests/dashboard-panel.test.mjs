@@ -1136,6 +1136,38 @@ test("Source Health renders explicit uncertainty, quality metrics, and mobile co
   assert.match(panel._sourceHealthStyles(), /max-width:430px/);
 });
 
+test("diagnostic CSV export sends the active state and source-epoch filters", async () => {
+  const panel = new SIGridMonitorPanel();
+  panel._language = "en";
+  panel._sourceHealthStartDate = "2026-10-01";
+  panel._sourceHealthEndDate = "2026-10-31";
+  panel._sourceHealthState = "unavailable";
+  panel._sourceHealthEpoch = "7";
+  let request = null;
+  panel._call = async (type, payload) => {
+    request = {type, payload};
+    return {csv: "\ufeffhealth_state\nunavailable\n", content_type: "text/csv;charset=utf-8",
+      filename: "health.csv", complete: true, total_rows: 1, exported_rows: 1};
+  };
+  const originalDocument = globalThis.document;
+  const originalCreate = URL.createObjectURL;
+  const originalRevoke = URL.revokeObjectURL;
+  globalThis.document = {createElement: () => ({click() {}})};
+  URL.createObjectURL = () => "blob:test";
+  URL.revokeObjectURL = () => {};
+  try {
+    await panel._downloadDiagnosticCsv("incidents");
+  } finally {
+    globalThis.document = originalDocument;
+    URL.createObjectURL = originalCreate;
+    URL.revokeObjectURL = originalRevoke;
+  }
+  assert.deepEqual(request, {type: "diagnostic_csv", payload: {
+    kind: "incidents", start_date: "2026-10-01", end_date: "2026-10-31",
+    states: ["unavailable"], source_epoch: 7,
+  }});
+});
+
 test("publishing diagnostics distinguish warmup, truncation, and unverified InfluxDB", () => {
   const panel = new SIGridMonitorPanel();
   panel._language = "en";

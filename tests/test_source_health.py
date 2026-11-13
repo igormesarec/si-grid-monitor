@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from typing import Any
 
 import pytest
 
 from custom_components.si_grid_monitor.archive import ArchiveRecord, QuarterArchive
 from custom_components.si_grid_monitor.source_health import (
     diagnostic_csv,
+    incident_export_report,
     incomplete_quarter_report,
     quality_report,
     source_health_report,
@@ -52,6 +56,48 @@ def _record(
         contractual_status="confirmed",
         confirmed_exceeded=False,
     )
+
+
+def _bulk_health_transitions(
+    archive: QuarterArchive,
+    start: datetime,
+    count: int,
+    *,
+    epoch_for: Any = lambda _index: 1,
+    source_for: Any = lambda _index: "sensor.grid",
+) -> None:
+    rows = []
+    for index in range(count):
+        observed = start + timedelta(minutes=index)
+        ended = observed + timedelta(minutes=1)
+        unavailable = index % 2 == 1
+        rows.append(
+            (
+                f"incident-{index}",
+                "meter",
+                epoch_for(index),
+                source_for(index),
+                "unavailable" if unavailable else "healthy",
+                "source_state_unavailable" if unavailable else "valid_measurement",
+                observed.isoformat(),
+                observed.isoformat(),
+                (observed - timedelta(minutes=1)).isoformat(),
+                ended.isoformat(),
+                "transition_to_healthy" if unavailable else "transition_to_unavailable",
+                "observed_live",
+                observed.isoformat(),
+                ended.isoformat(),
+            )
+        )
+    archive._db.executemany(
+        """INSERT INTO source_health_incidents(
+             incident_id,namespace,source_epoch,source_id,health_state,reason_code,
+             started_utc,detected_utc,last_valid_sample_utc,ended_utc,recovery_code,
+             evidence_type,created_utc,updated_utc)
+           VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        rows,
+    )
+    archive._db.commit()
 
 
 def test_schema8_transition_only_persistence_and_meter_isolation(tmp_path) -> None:
@@ -139,6 +185,58 @@ def test_repeated_state_reports_remain_one_storage_interval(tmp_path) -> None:
     )
     assert total == 1
     assert len(rows) == 1
+
+
+def test_source_health_summary_is_complete_beyond_first_200_transitions(tmp_path) -> None:
+    archive = _archive(tmp_path)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    _bulk_health_transitions(archive, start, 205)
+    report = source_health_report(
+        archive,
+        "meter",
+        start,
+        start + timedelta(minutes=206),
+        page=1,
+        page_size=50,
+        now_utc=start + timedelta(minutes=206),
+    )
+    assert len(report["items"]) == 50
+    assert report["pagination"]["total"] == 205
+    assert report["summary"]["matching_transition_count"] == 205
+    assert report["summary"]["incident_count"] == 102
+    assert report["summary"]["unavailable_observed_seconds"] == 102 * 60
+    assert report["summary"]["metrics_complete"] is True
+    assert report["summary"]["metrics_truncated"] is False
+
+
+def test_incident_csv_pages_all_rows_and_applies_state_and_epoch_filters(tmp_path) -> None:
+    archive = _archive(tmp_path)
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    expected = 201
+    _bulk_health_transitions(
+        archive,
+        start,
+        405,
+        epoch_for=lambda index: 2 if index >= 2 else 1,
+        source_for=lambda index: '=HYPERLINK("bad")' if index == 3 else "sensor.grid",
+    )
+    report = incident_export_report(
+        archive,
+        "meter",
+        start,
+        start + timedelta(minutes=406),
+        states=("unavailable",),
+        source_epoch=2,
+    )
+    payload = diagnostic_csv("incidents", report)
+    rows = list(csv.DictReader(io.StringIO(payload.removeprefix("\ufeff"))))
+    assert expected > 200
+    assert report["export_complete"] is True
+    assert report["total"] == expected
+    assert len(rows) == expected
+    assert {row["health_state"] for row in rows} == {"unavailable"}
+    assert {row["source_epoch"] for row in rows} == {"2"}
+    assert any(row["source_id"].startswith("'=") for row in rows)
 
 
 def test_open_incident_duration_is_unknown_and_not_quarter_gap(tmp_path) -> None:
