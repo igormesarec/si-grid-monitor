@@ -29,8 +29,8 @@ import {
   selectTimelineHour,
   todayChartModel,
   todayQuarterAction,
-} from "./dashboard-model.mjs?v=1.0.5";
-import {localizeDashboard, normalizeDashboardLanguage, translateDashboard} from "./dashboard-i18n.mjs?v=1.0.5";
+} from "./dashboard-model.mjs?v=1.0.6";
+import {localizeDashboard, normalizeDashboardLanguage, translateDashboard} from "./dashboard-i18n.mjs?v=1.0.6";
 
 const fmt = (value, digits = 3) => value == null ? "—" : Number(value).toFixed(digits);
 const fmtPct = value => fmt(value, 2);
@@ -139,6 +139,18 @@ export class SIGridMonitorPanel extends HTMLElement {
     this._calendarError = null;
     this._contracts = null;
     this._contractsError = null;
+    this._sourceHealth = null;
+    this._qualityReport = null;
+    this._sourceHealthError = null;
+    this._sourceHealthPage ??= 1;
+    this._sourceHealthState ??= "all";
+    this._sourceHealthEpoch ??= "all";
+    if (!this._sourceHealthStartDate) {
+      const start = new Date();
+      start.setDate(start.getDate() - 6);
+      this._sourceHealthStartDate = localDate(start);
+    }
+    this._sourceHealthEndDate ??= this._selectedDate;
     this._contractSelection = [];
     this._contractAuditPage = 1;
     this._transitions = null;
@@ -439,6 +451,26 @@ export class SIGridMonitorPanel extends HTMLElement {
         if (!this._gate.accepts(token)) return;
         this._contracts = contracts;
         this._contractsError = null;
+      } else if (this._tab === "source_health") {
+        const query = {
+          start_date: this._sourceHealthStartDate,
+          end_date: this._sourceHealthEndDate,
+          ...(this._sourceHealthState === "all" ? {} : {states: [this._sourceHealthState]}),
+          ...(this._sourceHealthEpoch === "all" ? {} : {source_epoch: Number(this._sourceHealthEpoch)}),
+          page: this._sourceHealthPage,
+          page_size: 50,
+        };
+        const [health, quality] = await Promise.all([
+          this._call("source_health", query, entryId),
+          this._call("quality_report", {
+            start_date: this._sourceHealthStartDate,
+            end_date: this._sourceHealthEndDate,
+          }, entryId),
+        ]);
+        if (!this._gate.accepts(token)) return;
+        this._sourceHealth = health;
+        this._qualityReport = quality;
+        this._sourceHealthError = null;
       } else {
         const [calendar, tariffStatus] = await Promise.all([
           this._call("calendar", {date: this._selectedDate}, entryId),
@@ -483,6 +515,10 @@ export class SIGridMonitorPanel extends HTMLElement {
         } else if (this._tab === "contracts") {
           this._contracts = null;
           this._contractsError = error?.message || "Could not load contract information.";
+        } else if (this._tab === "source_health") {
+          this._sourceHealth = null;
+          this._qualityReport = null;
+          this._sourceHealthError = error?.message || "Could not load source health.";
         } else {
           this._error = error?.message || String(error);
         }
@@ -514,6 +550,7 @@ export class SIGridMonitorPanel extends HTMLElement {
         return;
       }
       if (this._tab === "overview" ||
+          this._tab === "source_health" ||
           (this._tab === "today" && this._selectedDate === localDate()) ||
           (["period", "blocks", "exceedances"].includes(this._tab)
             && (this._period || this._blocks || this._exceedances)?.period?.partial)) {
@@ -752,6 +789,7 @@ export class SIGridMonitorPanel extends HTMLElement {
       forecastReason: forecastEnergyConsistent
         ? forecast.smoothed_future_reason
         : "projected final energy is below energy already imported",
+      explicitInterruptionUtc: live.source_health?.explicit_interruption_utc,
     });
     const x = timestamp => 44 + (Date.parse(timestamp) - start) / (end - start) * 1036;
     const plotTop = 24;
@@ -968,7 +1006,12 @@ export class SIGridMonitorPanel extends HTMLElement {
     if (this._historicalError) return `<div class="error"><strong>Archive request failed</strong><p>${esc(this._historicalError)}</p><button data-retry-quarter>Retry</button></div>`;
     const quarter = this._historical?.quarter;
     if (!quarter) return `<p>${this._historicalStart ? `No archived summary exists for ${esc(localQuarterLabel(this._historicalStart))}. The interval is missing, still live, or outside retained history.` : "Select a completed quarter to inspect its immutable SQLite summary."}</p>`;
-    return `<div class="grid">${this._metric("Local interval", localQuarterLabel(quarter.start_utc))}${this._metric("Import demand", fmt(quarter.import_demand_kw), "kW")}${this._metric("Import", fmt(quarter.import_kwh), "kWh")}${this._metric("Export", fmt(quarter.export_kwh), "kWh")}${this._metric("Original target", fmt(quarter.contractual_target_kw), "kW")}${this._metric("Quality", quarter.quality || "unknown")}${this._metric("Rule status", quarter.tariff_rule_status || "unknown")}${this._metric("Exceeded", quarter.confirmed_exceeded == null ? "Unknown" : quarter.confirmed_exceeded ? "Yes" : "No")}</div><div class="empty">Detailed power trace unavailable. The aggregate is shown without fabricated samples.</div>`;
+    const incidents = (this._historical.source_health_incidents || []).map(item => `<li><strong>${esc(this._t(`health.${item.health_state}`))}</strong> · ${esc(localQuarterLabel(item.started_utc))}${item.ended_utc ? ` – ${esc(localQuarterLabel(item.ended_utc))}` : ` · ${esc(this._t("source_health.open_unknown"))}`} · ${esc(this._t(`health_reason.${item.reason_code}`))}</li>`).join("");
+    const incidentEvidence = incidents
+      ? `<details><summary>${esc(this._t("source_health.overlapping_incidents"))}</summary><ul>${incidents}</ul><p class="notice">${esc(this._t("source_health.duration_notice"))}</p></details>`
+      : quarter.quality === "incomplete" || quarter.quality === "unavailable"
+        ? `<p class="notice">${esc(this._t("source_health.historical_timing_unavailable"))}</p>` : "";
+    return `<div class="grid">${this._metric("Local interval", localQuarterLabel(quarter.start_utc))}${this._metric("UTC identity", quarter.start_utc)}${this._metric("Import demand", fmt(quarter.import_demand_kw), "kW")}${this._metric("Import", fmt(quarter.import_kwh), "kWh")}${this._metric("Export", fmt(quarter.export_kwh), "kWh")}${this._metric("Original target", fmt(quarter.contractual_target_kw), "kW")}${this._metric("Quality", quarter.quality || "unknown")}${this._metric("Measurement coverage", fmt(quarter.coverage_seconds), "s")}${this._metric("Missing evidence", fmt(quarter.gap_seconds), "s")}${this._metric("Source epoch", quarter.source_epoch ?? "—")}${this._metric("Rule status", quarter.tariff_rule_status || "unknown")}${this._metric("Exceeded", quarter.confirmed_exceeded == null ? "Unknown" : quarter.confirmed_exceeded ? "Yes" : "No")}</div>${incidentEvidence}<div class="empty">Detailed power trace unavailable. The aggregate is shown without fabricated samples.</div>`;
   }
 
   _todayChart(quarters) {
@@ -1324,6 +1367,45 @@ export class SIGridMonitorPanel extends HTMLElement {
     return `<section class="card contracts-status"><h2>${esc(this._t("contracts.current_status"))}</h2>${warning}<div class="metrics"><article><span>${esc(this._t("contracts.status"))}</span><strong>${esc(this._enum("contract_status", report.contract_status))}</strong></article><article><span>${esc(this._t("contracts.current_block"))}</span><strong>${report.current_tariff_block ? `B${report.current_tariff_block}` : "—"}</strong></article><article><span>${esc(this._t("contracts.applicable_target"))}</span><strong>${fmt(report.applicable_target_kw)} kW</strong></article><article><span>${esc(this._t("contracts.days_remaining"))}</span><strong>${health.days_remaining ?? "—"}</strong></article></div>${active ? `<p><strong>${esc(active.effective_from)} – ${esc(active.effective_to)}</strong> · ${esc(active.provenance || this._t("contracts.user_configured"))}</p>` : `<p>${esc(this._t("contracts.no_current"))}</p>`}${health.successor ? `<p>${esc(this._t("contracts.next_assignment"))}: <strong>${esc(health.successor.effective_from)} – ${esc(health.successor.effective_to)}</strong></p>` : ""}${buttons}</section><section class="card"><h2>${esc(this._t("contracts.timeline"))}</h2><div class="contract-timeline">${timeline}</div></section><section class="card"><h2>${esc(this._t("contracts.comparison"))}</h2>${comparison}</section><section class="card"><h2>${esc(this._t("contracts.historical_configuration"))}</h2><p>${esc(this._t("contracts.historical_help"))}</p><div class="contract-timeline">${historical}</div></section><section class="card"><h2>${esc(this._t("contracts.archived_evidence"))}</h2><p>${esc(this._t("contracts.archived_help"))}</p><div class="table-wrap contract-desktop"><table><thead><tr><th>${esc(this._t("contracts.evidence_range"))}</th><th>${esc(this._t("contracts.block"))}</th><th>${esc(this._t("contracts.target"))}</th><th>${esc(this._t("contracts.provenance"))}</th><th>${esc(this._t("contracts.status"))}</th><th>${esc(this._t("contracts.quarters"))}</th></tr></thead><tbody>${evidence}</tbody></table></div><div class="contract-mobile-list">${evidenceCards}</div></section><section class="card"><h2>${esc(this._t("contracts.audit"))}</h2><p>${esc(this._t("contracts.audit_help"))}</p><div class="table-wrap contract-desktop"><table><thead><tr><th>${esc(this._t("contracts.edit_time"))}</th><th>${esc(this._t("contracts.event"))}</th><th>${esc(this._t("contracts.effective_dates"))}</th><th>${esc(this._t("contracts.provenance"))}</th><th>${esc(this._t("contracts.source"))}</th><th>${esc(this._t("contracts.details"))}</th></tr></thead><tbody>${audit}</tbody></table></div><div class="contract-mobile-list">${auditCards}</div>${auditPagination}</section>`;
   }
 
+  _sourceHealthView() {
+    if (this._sourceHealthError) return `<section class="card error"><h2>${esc(this._t("source_health.unavailable"))}</h2><p>${esc(this._sourceHealthError)}</p><button data-source-health-retry>${esc(this._t("common.retry"))}</button></section>`;
+    const report = this._sourceHealth;
+    const quality = this._qualityReport;
+    if (!report || !quality) return `<section class="card">${esc(this._t("source_health.loading"))}</section>`;
+    const current = report.current || {};
+    const summary = report.summary || {};
+    const today = report.today_summary || {};
+    const q = quality.summary || {};
+    const states = ["healthy", "stale", "unavailable", "invalid_value", "missing_source_entity", "source_timestamp_mismatch", "configuration_transition", "runtime_restarting", "runtime_stopped", "unknown"];
+    const epochs = report.facets?.source_epochs || [];
+    const controls = `<section class="card"><div class="source-health-presets"><button data-source-health-days="0">${esc(this._t("source_health.today"))}</button><button data-source-health-days="1">${esc(this._t("source_health.yesterday"))}</button><button data-source-health-days="7">${esc(this._t("source_health.last_7"))}</button><button data-source-health-days="30">${esc(this._t("source_health.last_30"))}</button></div><div class="source-health-controls"><label>${esc(this._t("source_health.from"))}<input type="date" data-source-health-start value="${esc(this._sourceHealthStartDate)}"></label><label>${esc(this._t("source_health.through"))}<input type="date" data-source-health-end value="${esc(this._sourceHealthEndDate)}"></label><label>${esc(this._t("source_health.state"))}<select data-source-health-state><option value="all">${esc(this._t("source_health.all_states"))}</option>${states.map(state => `<option value="${state}" ${this._sourceHealthState === state ? "selected" : ""}>${esc(this._t(`health.${state}`))}</option>`).join("")}</select></label><label>${esc(this._t("source_health.source_epoch"))}<select data-source-health-epoch><option value="all">${esc(this._t("source_health.all_epochs"))}</option>${epochs.map(epoch => `<option value="${epoch}" ${String(this._sourceHealthEpoch) === String(epoch) ? "selected" : ""}>${epoch}</option>`).join("")}</select></label><button data-source-health-apply>${esc(this._t("source_health.apply"))}</button><button data-source-health-export="incidents">${esc(this._t("source_health.export_incidents"))}</button><button data-source-health-export="quality">${esc(this._t("source_health.export_quality"))}</button><button data-source-health-export="incomplete_quarters">${esc(this._t("source_health.export_incomplete"))}</button></div></section>`;
+    const observationAge = current.last_valid_sample_utc ? Math.max(0, (Date.now() - new Date(current.last_valid_sample_utc).getTime()) / 1000) : null;
+    const outageAge = current.state && current.state !== "healthy" && current.observed_utc ? Math.max(0, (Date.now() - new Date(current.observed_utc).getTime()) / 1000) : null;
+    const status = `<section class="card"><h2>${esc(this._t("source_health.current"))}</h2><div class="metrics"><article><span>${esc(this._t("source_health.meter"))}</span><strong>${esc(report.meter?.title || "—")}</strong></article><article><span>${esc(this._t("source_health.source"))}</span><strong>${esc((report.meter?.source_entities || []).join(", ") || "—")}</strong></article><article><span>${esc(this._t("source_health.current_state"))}</span><strong class="health-state ${esc(current.state || "unknown")}">${esc(this._t(`health.${current.state || "unknown"}`))}</strong></article><article><span>${esc(this._t("source_health.last_valid"))}</span><strong>${current.last_valid_sample_utc ? esc(localQuarterLabel(current.last_valid_sample_utc)) : "—"}</strong></article><article><span>${esc(this._t("source_health.observation_age"))}</span><strong>${observationAge == null ? "—" : `${fmt(observationAge)} s`}</strong></article><article><span>${esc(this._t("source_health.current_outage"))}</span><strong>${outageAge == null ? "—" : `${fmt(outageAge)} s`}</strong></article></div><p class="chart-key">${esc(this._t(`health_reason.${current.reason_code || "unknown"}`))}</p></section>`;
+    const metrics = `<section class="card"><h2>${esc(this._t("source_health.period_summary"))}</h2><div class="metrics"><article><span>${esc(this._t("source_health.incidents_today"))}</span><strong>${today.incident_count ?? 0}</strong></article><article><span>${esc(this._t("source_health.affected_today"))}</span><strong>${today.affected_quarter_count ?? 0}</strong></article><article><span>${esc(this._t("source_health.incomplete_today"))}</span><strong>${today.incomplete_archived_quarter_count ?? 0}</strong></article><article><span>${esc(this._t("source_health.incidents"))}</span><strong>${summary.incident_count ?? 0}</strong></article><article><span>${esc(this._t("source_health.affected_quarters"))}</span><strong>${summary.affected_quarter_count ?? 0}</strong></article><article><span>${esc(this._t("source_health.quarter_completeness"))}</span><strong>${fmtPct(q.quarter_completeness_pct)}%</strong></article><article><span>${esc(this._t("source_health.time_coverage"))}</span><strong>${fmtPct(q.measurement_time_coverage_pct)}%</strong></article><article><span>${esc(this._t("source_health.missing_seconds"))}</span><strong>${fmt(q.missing_measurement_seconds)} s</strong></article><article><span>${esc(this._t("source_health.unknown_duration"))}</span><strong>${summary.unknown_duration_count ?? 0}</strong></article></div><p class="notice">${esc(this._t("source_health.duration_notice"))}</p></section>`;
+    const incidents = (report.items || []).map(item => {
+      const duration = item.duration_seconds == null ? this._t("source_health.open_unknown") : this._t("source_health.seconds", {count: fmt(item.duration_seconds)});
+      return `<article class="health-incident ${esc(item.health_state)}"><div><strong>${esc(this._t(`health.${item.health_state}`))}</strong><span>${esc(localQuarterLabel(item.started_utc))} – ${item.ended_utc ? esc(localQuarterLabel(item.ended_utc)) : esc(this._t("source_health.open"))}</span></div><span>${esc(duration)}</span><span>${esc(this._t(`health_reason.${item.reason_code}`))}</span><small>${esc(this._t("source_health.evidence"))}: ${esc(item.evidence_type)}${item.last_valid_sample_utc ? ` · ${esc(this._t("source_health.last_valid"))}: ${esc(localQuarterLabel(item.last_valid_sample_utc))}` : ""}</small><button data-health-quarter="${esc(item.started_utc)}">${esc(this._t("source_health.open_quarter"))}</button></article>`;
+    }).join("") || `<p class="notice">${esc(this._t("source_health.no_incidents"))}</p>`;
+    const rangeStartMs = new Date(report.range?.start_utc).getTime();
+    const rangeEndMs = new Date(report.range?.end_utc).getTime();
+    const rangeMs = Math.max(1, rangeEndMs - rangeStartMs);
+    const timelineBars = (report.items || []).map(item => {
+      const startMs = Math.max(rangeStartMs, new Date(item.started_utc).getTime());
+      const endMs = Math.min(rangeEndMs, item.ended_utc ? new Date(item.ended_utc).getTime() : Date.now());
+      const left = Math.max(0, 100 * (startMs - rangeStartMs) / rangeMs);
+      const width = Math.max(0.5, 100 * Math.max(0, endMs - startMs) / rangeMs);
+      const color = item.health_state === "healthy" ? "#16a34a" : item.health_state === "stale" ? "#d97706" : ["unavailable", "missing_source_entity"].includes(item.health_state) ? "#dc2626" : "#64748b";
+      return `<button class="health-timeline-bar ${esc(item.health_state)}" style="position:absolute;top:5px;height:28px;min-width:3px;padding:0;border:1px solid ${color};background:${color}aa;left:${left}%;width:${Math.min(100 - left, width)}%" data-health-quarter="${esc(item.started_utc)}" aria-label="${esc(this._t(`health.${item.health_state}`))}: ${esc(localQuarterLabel(item.started_utc))}"></button>`;
+    }).join("");
+    const timeline = `<div class="health-timeline" style="position:relative;height:38px;margin:10px 0 18px;overflow:hidden" role="group" aria-label="${esc(this._t("source_health.timeline"))}">${timelineBars}</div>`;
+    const page = report.pagination || {page: 1, pages: 0};
+    const pagination = `<div class="pagination"><button data-source-health-page="${page.page - 1}" ${page.page <= 1 ? "disabled" : ""}>${esc(this._t("common.previous"))}</button><span>${page.page} / ${page.pages || 1}</span><button data-source-health-page="${page.page + 1}" ${page.page >= page.pages ? "disabled" : ""}>${esc(this._t("common.next"))}</button></div>`;
+    const patterns = (report.recurring_patterns || []).map(pattern => `<li><strong>${esc(this._t("source_health.repeated_observed"))}</strong> · ${esc(this._t(`health.${pattern.health_state}`))} · ${esc(pattern.local_half_hour_bucket)} · ${pattern.occurrence_count} ${esc(this._t("source_health.occurrences"))} / ${pattern.distinct_date_count} ${esc(this._t("source_health.dates"))}</li>`).join("") || `<p>${esc(this._t("source_health.no_recurring_pattern"))}</p>`;
+    const daily = (quality.daily || []).map(day => `<tr><td>${esc(day.date)}</td><td>${day.expected_calendar_quarters}</td><td>${day.valid_quarters}</td><td>${day.incomplete_quarters}</td><td>${day.unavailable_quarters}</td><td>${fmt(day.measurement_coverage_seconds)} s</td></tr>`).join("");
+    return `${controls}${status}${metrics}<section class="card"><h2>${esc(this._t("source_health.timeline"))}</h2>${timeline}<div class="health-list">${incidents}</div>${pagination}</section><section class="card"><h2>${esc(this._t("source_health.recurring_patterns"))}</h2><p class="chart-key">${esc(this._t("source_health.pattern_notice"))}</p><ul>${patterns}</ul></section><section class="card"><h2>${esc(this._t("source_health.daily_quality"))}</h2><div class="table-wrap"><table><thead><tr><th>${esc(this._t("source_health.date"))}</th><th>${esc(this._t("source_health.expected"))}</th><th>${esc(this._t("source_health.valid"))}</th><th>${esc(this._t("source_health.incomplete"))}</th><th>${esc(this._t("source_health.unavailable_quarters"))}</th><th>${esc(this._t("source_health.coverage_seconds"))}</th></tr></thead><tbody>${daily}</tbody></table></div></section>`;
+  }
+
   _calendarDetails(selected) {
     if (!selected) return "";
     const recordedReason = selected.as_recorded_source === "archived_quarter_unknown"
@@ -1384,6 +1466,26 @@ export class SIGridMonitorPanel extends HTMLElement {
     await this._loadTab();
   }
 
+  async _downloadDiagnosticCsv(kind) {
+    try {
+      const result = await this._call("diagnostic_csv", {
+        kind,
+        start_date: this._sourceHealthStartDate,
+        end_date: this._sourceHealthEndDate,
+      });
+      const blob = new Blob([result.csv], {type: result.content_type});
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = result.filename;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      this._sourceHealthError = error?.message || String(error);
+      this._render();
+    }
+  }
+
   _bind() {
     const root = this.shadowRoot;
     root.querySelectorAll("[data-tab]").forEach(element => {
@@ -1431,6 +1533,51 @@ export class SIGridMonitorPanel extends HTMLElement {
     root.querySelector("[data-retry-day]")?.addEventListener("click", () => this._loadTab());
     root.querySelector("[data-retry-calendar]")?.addEventListener("click", () => this._loadTab());
     root.querySelector("[data-retry-contracts]")?.addEventListener("click", () => this._loadTab());
+    root.querySelector("[data-source-health-retry]")?.addEventListener("click", () => this._loadTab());
+    root.querySelector("[data-source-health-apply]")?.addEventListener("click", () => {
+      this._sourceHealthStartDate = root.querySelector("[data-source-health-start]")?.value || this._sourceHealthStartDate;
+      this._sourceHealthEndDate = root.querySelector("[data-source-health-end]")?.value || this._sourceHealthEndDate;
+      this._sourceHealthState = root.querySelector("[data-source-health-state]")?.value || "all";
+      this._sourceHealthEpoch = root.querySelector("[data-source-health-epoch]")?.value || "all";
+      this._sourceHealthPage = 1;
+      this._loadTab();
+    });
+    root.querySelectorAll("[data-source-health-page]").forEach(button => {
+      button.addEventListener("click", () => {
+        const page = Number(button.dataset.sourceHealthPage);
+        if (Number.isInteger(page) && page > 0) {
+          this._sourceHealthPage = page;
+          this._loadTab();
+        }
+      });
+    });
+    root.querySelectorAll("[data-source-health-days]").forEach(button => {
+      button.addEventListener("click", () => {
+        const days = Number(button.dataset.sourceHealthDays);
+        const end = new Date(`${localDate(new Date())}T12:00:00`);
+        const start = new Date(end);
+        if (days === 1) { start.setDate(start.getDate() - 1); end.setDate(end.getDate() - 1); }
+        else if (days > 1) start.setDate(start.getDate() - (days - 1));
+        this._sourceHealthStartDate = localDate(start);
+        this._sourceHealthEndDate = localDate(end);
+        this._sourceHealthPage = 1;
+        this._loadTab();
+      });
+    });
+    root.querySelectorAll("[data-source-health-export]").forEach(button => {
+      button.addEventListener("click", () => this._downloadDiagnosticCsv(button.dataset.sourceHealthExport));
+    });
+    root.querySelectorAll("[data-health-quarter]").forEach(button => {
+      button.addEventListener("click", () => {
+        this._selectedDate = localDate(button.dataset.healthQuarter);
+        this._selectedTodayQuarterUtc = new Date(
+          Math.floor(new Date(button.dataset.healthQuarter).getTime() / 900000) * 900000,
+        ).toISOString();
+        this._tab = "today";
+        this._render();
+        this._loadTab();
+      });
+    });
     root.querySelector("[data-publishing-window]")?.addEventListener("change", event => {
       this._publishingWindowSeconds = Number(event.target.value);
       this._loadTab();
@@ -1766,7 +1913,7 @@ export class SIGridMonitorPanel extends HTMLElement {
     this._resetChartScrollOnRender = false;
     const active = this._entries.find(entry => entry.entry_id === this._entryId);
     const activeMeterName = active?.title || this._t("common.unavailable");
-    const tabs = ["overview", "today", "period", "blocks", "exceedances", "history", "contracts", "calendar"];
+    const tabs = ["overview", "today", "period", "blocks", "exceedances", "history", "source_health", "contracts", "calendar"];
     const content = !this._entries.length
       ? `<section class="card"><h2>${esc(this._t("setup.no_meter"))}</h2><p>${esc(this._t("setup.no_meter_help"))}</p></section>`
       : this._tab === "overview" ? this._overview()
@@ -1775,7 +1922,8 @@ export class SIGridMonitorPanel extends HTMLElement {
             : this._tab === "blocks" ? this._blocksView()
               : this._tab === "exceedances" ? this._exceedancesView()
                 : this._tab === "history" ? this._historyView()
-                  : this._tab === "contracts" ? this._contractsView()
+                  : this._tab === "source_health" ? this._sourceHealthView()
+                    : this._tab === "contracts" ? this._contractsView()
                     : `${this._calendarView()}${this._tariffStatusView()}`;
     const meterSelector = this._entries.length > 1
       ? `<label class="meter-selector"><span>${esc(this._t("meter.select"))}</span><select data-entry aria-label="${esc(this._t("meter.select"))}">${this._entries.map(entry => `<option value="${esc(entry.entry_id)}" ${entry.entry_id === this._entryId ? "selected" : ""}>${esc(entry.title)}</option>`).join("")}</select></label>`
@@ -1784,7 +1932,7 @@ export class SIGridMonitorPanel extends HTMLElement {
       ? `<div class="notice meter-notice" role="status" aria-live="polite">${esc(this._meterNotice)}</div>` : "";
     const languageButtonStyle = language => `min-width:44px;min-height:40px;padding:6px 10px;font-weight:700;${this._language === language ? "color:var(--primary-color,#03a9f4);border-color:var(--primary-color,#03a9f4);background:#0284c715" : ""}`;
     const languageSwitcher = `<div class="language-switcher" role="group" aria-label="${esc(this._t("language.switcher"))}" style="display:inline-flex;gap:4px;padding:3px;border:1px solid var(--line);border-radius:10px"><button type="button" style="${languageButtonStyle("en")}" data-dashboard-language="en" aria-pressed="${this._language === "en"}" title="${esc(this._t("language.english"))}">EN</button><button type="button" style="${languageButtonStyle("sl")}" data-dashboard-language="sl" aria-pressed="${this._language === "sl"}" title="${esc(this._t("language.slovenian"))}">SL</button></div>`;
-    this.shadowRoot.innerHTML = `<style>${this._styles()}</style><style>${this._legendStyles()}</style><style>${this._mobileHistoryStyles()}</style><style>${this._contractStyles()}</style><main><header><div class="brand"><span>SI</span><div><h1>SI Grid Monitor</h1><p>Import-only contractual demand intelligence</p></div></div>${languageSwitcher}</header><nav>${tabs.map(id => `<button data-tab="${id}" class="${this._tab === id ? "active" : ""}">${esc(this._t(`nav.${id}`))}</button>`).join("")}</nav><section class="meter meter-toolbar" aria-label="${esc(this._t("meter.active"))}"><div class="meter-identity"><small>${esc(this._t("meter.active"))}</small><strong data-active-meter-name>${esc(activeMeterName)}</strong></div>${meterSelector}</section>${meterNotice}${this._error ? `<div class="error">${esc(this._t("error.connection", {message: this._error}))}</div>` : ""}${content}</main>`;
+    this.shadowRoot.innerHTML = `<style>${this._styles()}</style><style>${this._legendStyles()}</style><style>${this._mobileHistoryStyles()}</style><style>${this._contractStyles()}</style><style>${this._sourceHealthStyles()}</style><main><header><div class="brand"><span>SI</span><div><h1>SI Grid Monitor</h1><p>Import-only contractual demand intelligence</p></div></div>${languageSwitcher}</header><nav>${tabs.map(id => `<button data-tab="${id}" class="${this._tab === id ? "active" : ""}">${esc(this._t(`nav.${id}`))}</button>`).join("")}</nav><section class="meter meter-toolbar" aria-label="${esc(this._t("meter.active"))}"><div class="meter-identity"><small>${esc(this._t("meter.active"))}</small><strong data-active-meter-name>${esc(activeMeterName)}</strong></div>${meterSelector}</section>${meterNotice}${this._error ? `<div class="error">${esc(this._t("error.connection", {message: this._error}))}</div>` : ""}${content}</main>`;
     const contractHealth = this._live?.contract_health;
     if (this._tab === "overview" && contractHealth?.level && contractHealth.level !== "ok") {
       this.shadowRoot.querySelector(".meter-toolbar")?.insertAdjacentHTML(
@@ -1865,6 +2013,10 @@ export class SIGridMonitorPanel extends HTMLElement {
 
   _contractStyles() {
     return `.contract-timeline{display:grid;gap:10px}.contract-period{display:grid;grid-template-columns:minmax(170px,.8fr) auto minmax(260px,2fr);gap:10px;align-items:center;text-align:left;width:100%}.contract-period.selected{outline:3px solid var(--primary-color,#03a9f4);outline-offset:1px}.contract-period small{grid-column:1/-1}.contract-gap{border:2px dashed var(--warning-color,#f59e0b);padding:12px;background:color-mix(in srgb,var(--warning-color,#f59e0b) 8%,transparent)}.contract-warning{border-left:4px solid #dc2626}.table-wrap{max-width:100%;overflow-x:auto}.contracts-status code,.contract-evidence code,.contract-mobile-card code{display:block;max-width:100%;white-space:pre-wrap;overflow-wrap:anywhere}.contracts-status .metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.contracts-status .metrics article,.contract-mobile-card{display:flex;flex-direction:column;gap:5px;padding:12px;border:1px solid var(--line);border-radius:10px;overflow-wrap:anywhere}.contracts-status .metrics span,.contract-mobile-card span,.contract-mobile-card time{font-size:.78rem;color:var(--secondary-text-color)}.contracts-status .metrics strong{font-size:1.15rem}.contract-mobile-list{display:none;gap:10px}@media(max-width:700px){.contract-period{grid-template-columns:1fr;min-height:64px}.contract-period small{grid-column:1}.contracts-status .row{align-items:stretch;flex-direction:column}.contracts-status .row button{min-height:44px}.contracts-status .metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.contract-desktop{display:none}.contract-mobile-list{display:grid}}@media(max-width:340px){.contracts-status .metrics{grid-template-columns:1fr}}`;
+  }
+
+  _sourceHealthStyles() {
+    return `.source-health-controls{display:grid;grid-template-columns:repeat(3,minmax(150px,1fr)) auto auto auto;gap:10px;align-items:end}.source-health-controls label{display:flex;flex-direction:column;gap:4px;font-size:.78rem;color:var(--secondary-text-color)}.health-list{display:grid;gap:10px}.health-incident{display:grid;grid-template-columns:minmax(220px,1.3fr) auto minmax(180px,1fr);gap:8px 14px;align-items:center;padding:12px;border:1px solid var(--line);border-left:5px solid #64748b;border-radius:10px;overflow-wrap:anywhere}.health-incident>div{display:flex;flex-direction:column}.health-incident small{grid-column:1/-1}.health-incident button{justify-self:start}.health-incident.unavailable,.health-incident.missing_source_entity{border-left-color:#dc2626}.health-incident.stale,.health-incident.source_timestamp_mismatch{border-left-color:#f59e0b}.health-incident.invalid_value{border-left-color:#a855f7}.health-incident.healthy{border-left-color:#16a34a}.health-state{overflow-wrap:anywhere}.health-state.unavailable,.health-state.missing_source_entity{color:#dc2626}.health-state.stale{color:#d97706}.health-state.healthy{color:#16a34a}@media(max-width:900px){.source-health-controls{grid-template-columns:repeat(2,minmax(0,1fr))}.source-health-controls button{min-height:44px}.health-incident{grid-template-columns:1fr}.health-incident small{grid-column:1}}@media(max-width:430px){.source-health-controls{grid-template-columns:1fr}.health-incident{padding:10px}.health-incident button{width:100%;min-height:44px}}`;
   }
 
   _historyStyles() {

@@ -38,6 +38,14 @@ from .contracted_power import ContractedPowerSchedule
 from .dashboard_models import build_day_view
 from .engine import LJUBLJANA, quarter_starts_for_local_day
 from .history import HistoryQuery, history_report
+from .source_health import (
+    HEALTH_STATES,
+    diagnostic_csv,
+    incident_dict,
+    incomplete_quarter_report,
+    quality_report,
+    source_health_report,
+)
 
 DATA_RUNTIMES = "runtimes"
 DATA_FRONTEND_READY = "frontend_ready"
@@ -139,6 +147,9 @@ async def async_setup_dashboard(hass: HomeAssistant) -> None:
             ws_transitions,
             ws_archive_status,
             ws_publishing,
+            ws_source_health,
+            ws_quality_report,
+            ws_diagnostic_csv,
         ):
             websocket_api.async_register_command(hass, handler)
         domain_data[DATA_COMMANDS_READY] = True
@@ -334,6 +345,12 @@ async def ws_quarter(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) 
             start + timedelta(minutes=15),
         )
         quarter = _row(rows[0]) if rows else None
+        incidents = await hass.async_add_executor_job(
+            runtime.archive.source_health_overlaps,
+            runtime.namespace,
+            start,
+            start + timedelta(minutes=15),
+        )
     except sqlite3.Error:
         _history_error(
             connection,
@@ -367,6 +384,11 @@ async def ws_quarter(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) 
             "status": status,
             "quarter": quarter,
             "detailed_trace_available": False,
+            "source_health_incidents": [incident_dict(item) for item in incidents],
+            "incident_logging_available": True,
+            "incident_gap_notice": (
+                "Incident duration is explanatory evidence and is not equal to quarter gap seconds."
+            ),
         },
     )
 
@@ -735,6 +757,214 @@ async def ws_history(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) 
         )
         return
     connection.send_result(msg["id"], _json({**report, "storage": storage}))
+
+
+_SOURCE_HEALTH_SCHEMA = {
+    vol.Required("start_date"): str,
+    vol.Required("end_date"): str,
+    vol.Optional("states"): [vol.In(sorted(HEALTH_STATES))],
+    vol.Optional("source_epoch"): int,
+    vol.Optional("page", default=1): int,
+    vol.Optional("page_size", default=50): int,
+}
+
+
+def _local_date_range(msg: dict[str, Any]) -> tuple[datetime, datetime]:
+    """Resolve an inclusive Ljubljana date range to canonical UTC bounds."""
+
+    start_date = date.fromisoformat(msg["start_date"])
+    end_date = date.fromisoformat(msg["end_date"])
+    if end_date < start_date or (end_date - start_date).days > 366:
+        raise ValueError("date range must be between one and 367 days")
+    return (
+        quarter_starts_for_local_day(start_date)[0],
+        quarter_starts_for_local_day(end_date + timedelta(days=1))[0],
+    )
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/source_health", **_ENTRY_SCHEMA, **_SOURCE_HEALTH_SCHEMA}
+)
+@websocket_api.async_response
+async def ws_source_health(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
+    """Return bounded, meter-isolated source-health transitions."""
+
+    runtime = _runtime(hass, msg)
+    if runtime is None:
+        connection.send_error(msg["id"], "entry_not_found", "SI Grid Monitor entry not found")
+        return
+    try:
+        start, end = _local_date_range(msg)
+        if msg["page"] < 1 or not 1 <= msg["page_size"] <= 200:
+            raise ValueError("invalid source-health page")
+        report = await hass.async_add_executor_job(
+            lambda: source_health_report(
+                runtime.archive,
+                runtime.namespace,
+                start,
+                end,
+                states=tuple(msg.get("states", ())),
+                source_epoch=msg.get("source_epoch"),
+                page=msg["page"],
+                page_size=msg["page_size"],
+                now_utc=datetime.now(UTC),
+            )
+        )
+        live = runtime.dashboard_current()
+    except (KeyError, TypeError, ValueError):
+        connection.send_error(msg["id"], "invalid_query", "Invalid source-health query")
+        return
+    except sqlite3.Error:
+        _history_error(
+            connection,
+            msg,
+            operation="source_health",
+            requested=f"{msg.get('start_date')}..{msg.get('end_date')}",
+            code="archive_unavailable",
+            message="Source-health archive is temporarily unavailable",
+        )
+        return
+    connection.send_result(
+        msg["id"],
+        _json(
+            {
+                **report,
+                "current": live.get("source_health"),
+                "meter": {
+                    "entry_id": runtime.entry.entry_id,
+                    "title": runtime.entry.title,
+                    "source_mode": runtime.source_mode,
+                    "source_entities": list(runtime.source_entities),
+                },
+            }
+        ),
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/quality_report",
+        **_ENTRY_SCHEMA,
+        vol.Required("start_date"): str,
+        vol.Required("end_date"): str,
+        vol.Optional("tariff_block"): int,
+        vol.Optional("source_epoch"): int,
+    }
+)
+@websocket_api.async_response
+async def ws_quality_report(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
+    """Return separate quarter-completeness and time-coverage metrics."""
+
+    runtime = _runtime(hass, msg)
+    if runtime is None:
+        connection.send_error(msg["id"], "entry_not_found", "SI Grid Monitor entry not found")
+        return
+    try:
+        start, end = _local_date_range(msg)
+        if msg.get("tariff_block") is not None and msg["tariff_block"] not in range(1, 6):
+            raise ValueError("tariff block must be B1 through B5")
+        report = await hass.async_add_executor_job(
+            lambda: quality_report(
+                runtime.archive,
+                runtime.namespace,
+                start,
+                end,
+                now_utc=datetime.now(UTC),
+                tariff_block=msg.get("tariff_block"),
+                source_epoch=msg.get("source_epoch"),
+            )
+        )
+    except (KeyError, TypeError, ValueError):
+        connection.send_error(msg["id"], "invalid_query", "Invalid quality-report query")
+        return
+    except sqlite3.Error:
+        _history_error(
+            connection,
+            msg,
+            operation="quality_report",
+            requested=f"{msg.get('start_date')}..{msg.get('end_date')}",
+            code="archive_unavailable",
+            message="Measurement-quality archive is temporarily unavailable",
+        )
+        return
+    connection.send_result(msg["id"], _json(report))
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/diagnostic_csv",
+        **_ENTRY_SCHEMA,
+        vol.Required("kind"): vol.In(("incidents", "quality", "incomplete_quarters")),
+        vol.Required("start_date"): str,
+        vol.Required("end_date"): str,
+    }
+)
+@websocket_api.async_response
+async def ws_diagnostic_csv(hass: HomeAssistant, connection: Any, msg: dict[str, Any]) -> None:
+    """Return one explicitly bounded, read-only administrator CSV export."""
+
+    if not connection.user.is_admin:
+        connection.send_error(msg["id"], "unauthorized", "Administrator access is required")
+        return
+    runtime = _runtime(hass, msg)
+    if runtime is None:
+        connection.send_error(msg["id"], "entry_not_found", "SI Grid Monitor entry not found")
+        return
+    try:
+        start, end = _local_date_range(msg)
+        if msg["kind"] == "incidents":
+            report = await hass.async_add_executor_job(
+                lambda: source_health_report(
+                    runtime.archive,
+                    runtime.namespace,
+                    start,
+                    end,
+                    page=1,
+                    page_size=200,
+                    now_utc=datetime.now(UTC),
+                )
+            )
+        elif msg["kind"] == "quality":
+            report = await hass.async_add_executor_job(
+                lambda: quality_report(
+                    runtime.archive,
+                    runtime.namespace,
+                    start,
+                    end,
+                    now_utc=datetime.now(UTC),
+                )
+            )
+        else:
+            report = await hass.async_add_executor_job(
+                lambda: incomplete_quarter_report(runtime.archive, runtime.namespace, start, end)
+            )
+        payload = diagnostic_csv(msg["kind"], report)
+    except (KeyError, TypeError, ValueError):
+        connection.send_error(msg["id"], "invalid_query", "Invalid diagnostic export query")
+        return
+    except sqlite3.Error:
+        _history_error(
+            connection,
+            msg,
+            operation="diagnostic_csv",
+            requested=f"{msg.get('start_date')}..{msg.get('end_date')}",
+            code="archive_unavailable",
+            message="Diagnostic archive is temporarily unavailable",
+        )
+        return
+    connection.send_result(
+        msg["id"],
+        {
+            "filename": f"si-grid-monitor-{msg['kind']}-{msg['start_date']}-{msg['end_date']}.csv",
+            "content_type": "text/csv;charset=utf-8",
+            "csv": payload,
+            "row_limit": {
+                "incidents": 200,
+                "quality": 367,
+                "incomplete_quarters": 10_000,
+            }[msg["kind"]],
+        },
+    )
 
 
 _RECORDER_AUDIT_SCHEMA = {

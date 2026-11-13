@@ -1,4 +1,28 @@
-# SI Grid Monitor V1.0.5 Release-Candidate Manual Test Plan
+# SI Grid Monitor V1.0.6 Release-Candidate Manual Test Plan
+
+## Source-health acceptance
+
+1. Back up Home Assistant and record the schema-7 archive size and quarter count.
+   Upgrade to V1.0.6 and confirm schema 8 opens with those values unchanged.
+2. For each configured meter, make its source unavailable, restore it, submit an
+   invalid value where safe, and allow a reading to become stale. Confirm one
+   transition interval per state change rather than one event per source report.
+3. Restart Home Assistant during an outage. Confirm the recovered interval says
+   its end is unknown at restart and does not display a fabricated exact duration.
+4. Open Source Health at 320, 360, 390, 430, 768 px and desktop in both themes.
+   Verify identifiers wrap, filters remain usable and the page does not create
+   whole-panel horizontal overflow.
+5. Open an incomplete historical quarter. Confirm overlapping incidents are
+   explanatory evidence and are not presented as equal to the stored gap seconds.
+6. As an administrator, export incidents, daily quality and incomplete quarters.
+   Confirm each file is bounded and opens safely. Confirm a non-admin cannot export.
+7. Verify quarter completeness and measurement-time coverage are both present
+   and can differ. Check a 92-, 96- and 100-quarter local day.
+8. Confirm an explicit unavailable transition breaks the solid smoothing trace;
+   no zero sample or connected line is invented across the interruption.
+
+Real source timing, Android Companion rendering and restart behavior remain
+manual gates; automated tests do not constitute live Home Assistant acceptance.
 
 ## Legacy statistics repair acceptance
 
@@ -47,7 +71,7 @@ presentation still require real Home Assistant validation.
 1. Before upgrading, record Recorder and InfluxDB sizes plus state-change counts
    for both meters. Keep current temporary exclusions until validation completes.
 2. Upgrade without removing entries. Confirm entity IDs, unique IDs, archive row
-   counts, schema 7, contracts, audits and source epochs remain unchanged.
+   counts, migrated schema 8, contracts, audits and source epochs remain unchanged.
 3. With **Storage Optimized**, run both meters for at least 24 hours through
    import, zero, export, quarter/tariff transitions, source stale/recovery and a
    safe simulated warning. Confirm internal quarter energy remains accurate while
@@ -142,7 +166,7 @@ presentation still require real Home Assistant validation.
    dated B1–B5 assignments. Test once on desktop and once in the Android
    Companion App.
 2. Confirm the single **SI Grid Monitor** sidebar item still opens the dashboard,
-   shows all eight tabs and switches between the two meters without mixed data.
+   shows all nine tabs and switches between the two meters without mixed data.
 3. In **Settings > Devices & services > SI Grid Monitor**, open **Configure** for
    each meter. It must open the native SI Grid Monitor settings menu, not the
    sidebar dashboard.
@@ -186,7 +210,7 @@ not claim Companion App acceptance.
    Confirm the config-entry unique ID now identifies the new live source. Attempt
    the same source already owned by another meter and confirm reconfiguration is
    rejected without changing either entry or archive.
-7. Check all eight tabs on desktop and Android. Distinguish valid, incomplete,
+7. Check all nine tabs on desktop and Android. Distinguish valid, incomplete,
    unavailable, missing after monitoring began, pre-monitoring, live and upcoming
    intervals. Pre-monitoring must not increase missing counts.
 8. Confirm all displayed kW/kWh measurements use three decimals, percentages use
@@ -827,7 +851,7 @@ rendering and live SolarEdge cadence still require the real-instance checks.
     the panel. Repeat at Android widths (320, 360 and 390 px), at 768 px, in light
     and dark themes, and with browser/text scaling enabled. Check that labels do
     not overlap and horizontal/vertical scrolling remains usable.
-17. Visit all eight tabs in English and Slovenian. Check metric descriptions,
+17. Visit all nine tabs in English and Slovenian. Check metric descriptions,
     warnings, errors, chart legends, table headings, pagination, controls and
     accessibility labels. Units and stored technical values (quality/provenance
     codes, entity IDs and UTC identities) must remain unchanged.
@@ -903,8 +927,8 @@ before/after counts with the results.
 # V1.0.2 contract-management acceptance
 
 1. Back up `.storage/si_grid_monitor_<entry-id>.db`, upgrade from V1.0.1 and
-   confirm schema 7 opens with every old quarter/epoch/checkpoint unchanged.
-2. On Android 320/360/390/430 px and desktop, open all eight tabs; verify the
+   confirm schema 8 opens with every old quarter/epoch/checkpoint unchanged.
+2. On Android 320/360/390/430 px and desktop, open all nine tabs; verify the
    Contracts timeline, tables, scrolling, meter selector, keyboard/touch access,
    light/dark themes and larger text.
 3. From a 2026 full-year fixture, Schedule change on 25 October and confirm the

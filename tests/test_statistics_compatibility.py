@@ -50,7 +50,7 @@ def test_archive_is_independent_of_absent_home_assistant_statistics(tmp_path) ->
     # quarter and recovery evidence.
     reopened = QuarterArchive(path)
     reopened.open()
-    assert reopened.schema_version == 7
+    assert reopened.schema_version == 8
     rows = reopened.list_quarters("meter-a", start, start + timedelta(hours=1))
     assert len(rows) == 1
     assert rows[0]["import_kwh"] == pytest.approx(0.75)

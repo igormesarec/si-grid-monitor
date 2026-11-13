@@ -260,8 +260,13 @@ export function smoothedImportSeries(
   }));
 }
 
-function powerSegments(trace, nowUtc, staleAfterSeconds, valueForSample, omitZero = false) {
+function powerSegments(
+  trace, nowUtc, staleAfterSeconds, valueForSample, omitZero = false,
+  explicitInterruptionUtc = null,
+) {
   const now = new Date(nowUtc).getTime();
+  const interruption = explicitInterruptionUtc
+    ? new Date(explicitInterruptionUtc).getTime() : Number.POSITIVE_INFINITY;
   const staleMs = Math.max(1, Number(staleAfterSeconds)) * 1000;
   const sorted = [...trace].sort((left, right) => sampleTime(left) - sampleTime(right));
   const segments = [];
@@ -271,7 +276,7 @@ function powerSegments(trace, nowUtc, staleAfterSeconds, valueForSample, omitZer
     const start = sampleTime(sample);
     if (start > now) break;
     const next = index + 1 < sorted.length ? sampleTime(sorted[index + 1]) : now;
-    const end = Math.min(now, next, start + staleMs);
+    const end = Math.min(now, next, start + staleMs, interruption);
     const value = valueForSample(sample);
     if (omitZero && Math.abs(value) <= 1e-12) {
       previousEnd = null;
@@ -317,20 +322,24 @@ export function livePowerChartModel({
   futureAnchorUtc = null,
   forecastQuality = "unavailable",
   forecastReason = null,
+  explicitInterruptionUtc = null,
 }) {
   const quarterStart = quarterStartUtc ? new Date(quarterStartUtc).getTime() : -Infinity;
   const visibleTrace = trace.filter(sample => sampleTime(sample) >= quarterStart);
   const actualImportSegments = powerSegments(
     visibleTrace, nowUtc, staleAfterSeconds, sample => importPower(sample),
+    false, explicitInterruptionUtc,
   );
   const actualExportSegments = powerSegments(visibleTrace, nowUtc, staleAfterSeconds, sample => {
     const signed = Number(sample.signed_kw);
     return signed < 0 ? signed : 0;
-  }, true);
+  }, true, explicitInterruptionUtc);
   const smoothedImport = smoothedImportSeries(
     smoothingContext, windowSeconds, staleAfterSeconds, nowUtc, quarterStartUtc,
   )
     .filter(sample => sampleTime(sample) >= quarterStart)
+    .filter(sample => !explicitInterruptionUtc
+      || sampleTime(sample) <= new Date(explicitInterruptionUtc).getTime())
     .filter(sample => sample.complete)
     .map(sample => ({timestamp: sample.timestamp, kw: sample.import_kw}));
   const smoothedImportSegments = splitTimedPoints(smoothedImport, staleAfterSeconds);

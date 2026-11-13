@@ -8,11 +8,10 @@ contracted-power target, and preserves auditable quarter history. It is useful
 for homes and small sites with heat pumps, EV charging, solar PV or other loads
 that need clearer visibility into quarter-hour grid import.
 
-**Release status:** V1.0.5 is a draft maintenance release candidate based on
-V1.0.4. It preserves the statistics guidance, contract management and
-English/Slovenian localization while aligning the live chart's historical
-smoothing with the backend across fixed-quarter boundaries. Real Home Assistant
-and Android acceptance is still required.
+**Release status:** V1.0.6 is a draft maintenance release candidate based on
+V1.0.5. It adds durable, event-based source-health diagnostics and separates
+quarter completeness from measured-time coverage. Real Home Assistant and
+Android acceptance is still required.
 
 This is monitoring and decision-support software—not a distributor-certified
 meter, guaranteed bill calculation, physical protection device or automatic
@@ -25,9 +24,11 @@ load controller.
 - Instantaneous, time-weighted smoothed and sustained load forecasts when their
   measurement and contract prerequisites are satisfied.
 - Clear CAN ADD / MUST REDUCE estimates for billing-energy budgets.
-- Eight-tab authenticated Home Assistant sidebar dashboard, including Contracts.
-- Permanent, per-meter schema-7 SQLite history with quality, provenance and an
-  append-only contract-edit audit (schema-6 archives migrate additively).
+- Nine-tab authenticated Home Assistant sidebar dashboard, including Contracts
+  and Source Health.
+- Permanent, per-meter schema-8 SQLite history with quality, provenance,
+  append-only contract-edit audit and transition-only source-health intervals
+  (schema-7 archives migrate additively).
 - Multiple independent meter entries behind one shared sidebar panel.
 - Three-decimal kW/kWh presentation without reducing stored precision.
 - English and Slovenian configuration and dashboard terminology.
@@ -80,7 +81,9 @@ their original quality and provenance.
 - **[Configuration reference](docs/configuration.md)** — contracts, margins,
   smoothing, simulation, retention and removal.
 - **[Dashboard guide](docs/dashboard-guide.md)** — Overview, Today, Period,
-  Blocks, Exceedances, History, Contracts and Tariff Calendar.
+  Blocks, Exceedances, History, Source Health, Contracts and Tariff Calendar.
+- **[Source-health diagnostics](docs/source-health.md)** — recorded interruptions,
+  measurement-time coverage, safe CSV exports and evidence limitations.
 - **[Calculations](docs/calculations.md)** and **[forecasts](docs/forecasts.md)** —
   equations, quality gates and limitations.
 - **[History and archive safety](docs/history-and-archive.md)**,

@@ -208,6 +208,12 @@ class GridMonitorRuntime:
         self._shutdown_task: asyncio.Task[None] | None = None
         self._shutdown_complete = False
         self._contract_health_date = None
+        self._source_health_state = "unknown"
+        self._source_health_reason = "runtime_not_started"
+        self._source_health_observed_utc = dt_util.utcnow()
+        self._source_health_lock = asyncio.Lock()
+        self._persisted_health_signature: tuple[str, str, int | None] | None = None
+        self._source_health_task: asyncio.Task[None] | None = None
 
     @property
     def source_entities(self) -> tuple[str, ...]:
@@ -371,6 +377,12 @@ class GridMonitorRuntime:
                 or "waiting_for_valid_measurement",
                 "trace": [],
                 "smoothing_context": [],
+                "source_health": {
+                    "state": self._source_health_state,
+                    "reason_code": self._source_health_reason,
+                    "observed_utc": self._source_health_observed_utc.isoformat(),
+                    "last_valid_sample_utc": None,
+                },
             }
         projection = snapshot.projection
         sustained = self.sustained_forecast
@@ -623,6 +635,21 @@ class GridMonitorRuntime:
             "smoothing_context": smoothing_context,
             "smoothing_window_seconds": smoothing_seconds,
             "trace_stale_after_seconds": DEFAULT_STALE_AFTER_SECONDS,
+            "source_health": {
+                "state": self._source_health_state,
+                "reason_code": self._source_health_reason,
+                "observed_utc": self._source_health_observed_utc.isoformat(),
+                "last_valid_sample_utc": (
+                    self.source_measurement_timestamp_utc.isoformat()
+                    if self.source_measurement_timestamp_utc is not None
+                    else None
+                ),
+                "explicit_interruption_utc": (
+                    self._source_health_observed_utc.isoformat()
+                    if self._source_health_state not in {"healthy", "stale"}
+                    else None
+                ),
+            },
             "detailed_trace_provenance": "bounded_runtime_samples",
         }
 
@@ -744,6 +771,9 @@ class GridMonitorRuntime:
         try:
             await self.hass.async_add_executor_job(self.archive.open)
             await self._async_reconcile_contract_audit()
+            previous_epochs = await self.hass.async_add_executor_job(
+                self.archive.list_configuration_epochs, self.namespace
+            )
             startup_settings = self.settings
             targets = self.current_block_targets_kw or (None, None, None, None, None)
             self.configuration_epoch = await self.hass.async_add_executor_job(
@@ -759,6 +789,15 @@ class GridMonitorRuntime:
                     contracted_power_schedule=self.contracted_power_schedule,
                     effective_utc=dt_util.utcnow(),
                 )
+            )
+            configuration_changed = bool(
+                previous_epochs and self.configuration_epoch.epoch != previous_epochs[-1].epoch
+            )
+            await self._async_transition_source_health(
+                "configuration_transition" if configuration_changed else "runtime_restarting",
+                "source_configuration_changed" if configuration_changed else "runtime_starting",
+                observed_utc=dt_util.utcnow(),
+                recovery_code="end_unknown_at_restart",
             )
             await self.hass.async_add_executor_job(
                 self.archive.classify_existing_quarters,
@@ -967,6 +1006,18 @@ class GridMonitorRuntime:
         publishing = getattr(self, "publishing", None)
         if publishing is not None:
             publishing.clear()
+        health_transition = getattr(self, "_async_transition_source_health", None)
+        if health_transition is not None:
+            try:
+                await health_transition(
+                    "runtime_stopped",
+                    "clean_runtime_shutdown",
+                    observed_utc=dt_util.utcnow(),
+                    recovery_code="clean_shutdown",
+                )
+            except Exception as err:
+                errors.append(err)
+                _LOGGER.exception("Failed to record SI Grid Monitor source-health shutdown")
         try:
             await self._archive_tasks.cancel_and_wait(self._backfill_task)
         except Exception as err:
@@ -1044,6 +1095,16 @@ class GridMonitorRuntime:
     @callback
     def _async_tick(self, now) -> None:
         self.publishing.record_internal_timer_tick()
+        now_utc = now.astimezone(UTC)
+        latest = self.source_measurement_timestamp_utc
+        if (
+            self.source_available
+            and latest is not None
+            and now_utc - latest > timedelta(seconds=DEFAULT_STALE_AFTER_SECONDS)
+        ):
+            self._set_source_health("stale", "freshness_window_expired", now_utc)
+        elif self._persisted_health_signature != self._health_signature:
+            self._schedule_source_health_persistence()
         self._refresh(now)
 
     @callback
@@ -1059,13 +1120,21 @@ class GridMonitorRuntime:
             if state is not None:
                 self._ingest_power_states(state, None)
             else:
-                self._mark_source_unavailable("configured signed-power source is unavailable")
+                self._mark_source_unavailable(
+                    "configured signed-power source is unavailable",
+                    health_state="missing_source_entity",
+                    reason_code="configured_source_entity_missing",
+                )
         elif self.source_mode == SOURCE_IMPORT_ONLY:
             state = self.hass.states.get(self.import_power_entity)
             if state is not None:
                 self._ingest_power_states(state, None)
             else:
-                self._mark_source_unavailable("configured import-power source is unavailable")
+                self._mark_source_unavailable(
+                    "configured import-power source is unavailable",
+                    health_state="missing_source_entity",
+                    reason_code="configured_source_entity_missing",
+                )
         elif self.source_mode == SOURCE_SEPARATE_POWER:
             import_state = self.hass.states.get(self.import_power_entity)
             export_state = self.hass.states.get(self.export_power_entity)
@@ -1073,7 +1142,9 @@ class GridMonitorRuntime:
                 self._ingest_power_states(import_state, export_state)
             else:
                 self._mark_source_unavailable(
-                    "one or more configured import/export sources are unavailable"
+                    "one or more configured import/export sources are unavailable",
+                    health_state="missing_source_entity",
+                    reason_code="configured_source_entity_missing",
                 )
         else:
             raise UnsupportedSourceModeError(self.source_mode)
@@ -1082,17 +1153,28 @@ class GridMonitorRuntime:
     def _ingest_power_states(self, primary: State, secondary: State | None) -> None:
         states = (primary,) if secondary is None else (primary, secondary)
         if any(state.state in {"unknown", "unavailable", "none", ""} for state in states):
-            self._mark_source_unavailable("one or more source readings are unavailable")
+            self._mark_source_unavailable(
+                "one or more source readings are unavailable",
+                reason_code="source_state_unavailable",
+            )
             return
         units = [state.attributes.get(ATTR_UNIT_OF_MEASUREMENT) for state in states]
         if any(not isinstance(unit, str) for unit in units):
-            self._mark_source_unavailable("source has no W/kW unit")
+            self._mark_source_unavailable(
+                "source has no W/kW unit",
+                health_state="invalid_value",
+                reason_code="invalid_or_missing_power_unit",
+            )
             return
         timestamps = [
             (state.last_reported or state.last_updated).astimezone(UTC) for state in states
         ]
         if max(timestamps) - min(timestamps) > timedelta(seconds=DEFAULT_STALE_AFTER_SECONDS):
-            self._mark_source_unavailable("source timestamps are too far apart")
+            self._mark_source_unavailable(
+                "source timestamps are too far apart",
+                health_state="source_timestamp_mismatch",
+                reason_code="source_timestamps_exceed_freshness_window",
+            )
             return
         try:
             if self.source_mode == SOURCE_SEPARATE_POWER and secondary is not None:
@@ -1116,23 +1198,104 @@ class GridMonitorRuntime:
             # timestamp. It is safe to ignore that duplicate without degrading
             # the last accepted sample.
             if "strictly" not in str(err):
-                self._mark_source_unavailable(str(err))
+                self._mark_source_unavailable(
+                    str(err),
+                    health_state="invalid_value",
+                    reason_code="source_value_rejected",
+                )
                 _LOGGER.warning("Rejected source sample from %s: %s", self.source_entities, err)
             return
         self.source_available = True
         self.source_status_reason = None
+        self._set_source_health("healthy", "valid_measurement", dt_util.utcnow())
         self._refresh(dt_util.utcnow())
 
     @callback
-    def _mark_source_unavailable(self, reason: str) -> None:
+    def _mark_source_unavailable(
+        self,
+        reason: str,
+        *,
+        health_state: str = "unavailable",
+        reason_code: str = "source_unavailable",
+    ) -> None:
         """Expose an explicit source failure immediately without inventing a sample."""
 
         self.source_available = False
         self.source_status_reason = reason
+        self._set_source_health(health_state, reason_code, dt_util.utcnow())
         # Re-evaluate publication availability immediately.  The calculation
         # engine retains its last evidenced sample and accumulated energy; no
         # fake zero or gap-filling measurement is ingested here.
         self._refresh(dt_util.utcnow())
+
+    @property
+    def _health_signature(self) -> tuple[str, str, int | None]:
+        return (
+            self._source_health_state,
+            self._source_health_reason,
+            self.configuration_epoch.epoch if self.configuration_epoch is not None else None,
+        )
+
+    @callback
+    def _set_source_health(self, state: str, reason_code: str, observed_utc: datetime) -> None:
+        """Update in-memory health and queue one transition-only durable write."""
+
+        signature = (
+            state,
+            reason_code,
+            self.configuration_epoch.epoch if self.configuration_epoch is not None else None,
+        )
+        if signature == self._health_signature:
+            return
+        self._source_health_state = state
+        self._source_health_reason = reason_code
+        self._source_health_observed_utc = observed_utc.astimezone(UTC)
+        self._schedule_source_health_persistence()
+
+    @callback
+    def _schedule_source_health_persistence(self) -> None:
+        if self.configuration_epoch is None or self._shutdown_complete:
+            return
+        if self._source_health_task is not None and not self._source_health_task.done():
+            return
+        self._source_health_task = self._archive_tasks.track(
+            self.hass.async_create_task(
+                self._async_transition_source_health(
+                    self._source_health_state,
+                    self._source_health_reason,
+                    observed_utc=self._source_health_observed_utc,
+                ),
+                "SI Grid Monitor persist source health",
+            )
+        )
+
+    async def _async_transition_source_health(
+        self,
+        state: str,
+        reason_code: str,
+        *,
+        observed_utc: datetime,
+        recovery_code: str | None = None,
+    ) -> None:
+        """Serialize source-health transitions and retry safely after failures."""
+
+        epoch = self.configuration_epoch.epoch if self.configuration_epoch is not None else None
+        signature = (state, reason_code, epoch)
+        async with self._source_health_lock:
+            await self.hass.async_add_executor_job(
+                partial(
+                    self.archive.transition_source_health,
+                    namespace=self.namespace,
+                    source_epoch=epoch,
+                    source_id=self.configuration_source_id,
+                    health_state=state,
+                    reason_code=reason_code,
+                    observed_utc=observed_utc,
+                    last_valid_sample_utc=self.source_measurement_timestamp_utc,
+                    recovery_code=recovery_code,
+                )
+            )
+            self._persisted_health_signature = signature
 
     @callback
     def _refresh(self, now) -> None:

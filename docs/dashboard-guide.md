@@ -1,4 +1,4 @@
-# Dashboard guide — all eight tabs
+# Dashboard guide — all nine tabs
 
 The shared header on every page includes an accessible **EN/SL** switch. Its
 selection persists in browser storage across navigation and reloads and is not
@@ -82,6 +82,25 @@ monitoring began. Historical counter-derived rows may remain visible, but their
 legacy provenance is not promoted to live-power evidence.
 
 An archive stores **quarter summaries**, not precise historical instantaneous peaks or an original second-by-second graph. The administrator Recorder audit is a separate, controlled reconstruction process; review candidates before any approved write.
+
+## Source Health
+
+Source Health records observed source-state transitions without storing every
+source report. It shows the current health state, last accepted measurement,
+bounded incident history and daily measurement-quality summaries. Quarter
+completeness and measurement-time coverage are deliberately separate.
+
+An incident may overlap a quarter, but its observed duration is not assumed to
+equal the aggregate gap seconds stored with that quarter. Open incidents and
+restart-spanning intervals retain unknown exact duration. Recurring time groups
+are descriptive observations, not claims about a device or network cause. See
+[Source-health diagnostics](source-health.md).
+
+## Contracts
+
+Contracts separates the current configured schedule, historical configuration
+snapshots, immutable archived-quarter target evidence and user-edit audit events.
+These sources have different certainty and are never silently merged.
 
 ## Tariff Calendar
 

@@ -25,6 +25,11 @@ A new meter added in the middle of a fixed quarter has no readings for the prece
 
 A **full 120-second smoothing window** is not the same as **complete quarter import-energy coverage**. Sustained advice requires both supported recent history and enough quarter evidence.
 
+Source-health intervals provide additional event-based evidence about an
+unavailable, stale or invalid source. They do not retroactively prove the exact
+start/end of old gaps and are not mathematically interchangeable with a
+quarter's aggregate `gap_seconds`. See [Source-health diagnostics](source-health.md).
+
 ## Import-only meters
 
 Mode C knows imported power but not exported power. That is enough to calculate import-only demand with suitable live input, not enough to claim exported energy was measured.

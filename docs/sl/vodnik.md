@@ -35,9 +35,14 @@ Intervalli se začnejo ob **:00, :15, :30 in :45**. Ne začnejo se ob trenutku n
 - **Incomplete / nepopolno**: manjkajo meritve ali rezultat ni dovolj potrjen.
 - **Unknown / neznano**: vir te količine ne meri. Ne pomeni izmerjene vrednosti nič.
 
-## Osem zavihkov
+## Devet zavihkov
 
-**Overview:** trenutni interval, energija, moč, napovedi, varnostni opis. **Today:** pregled današnjih četrtin. **Period:** obdobja in primerjave. **Blocks:** analiza B1–B5. **Exceedances:** potrjene prekoračitve. **History:** arhiv 15-minutnih povzetkov. **Contracts:** trenutne/prihodnje dodelitve, vrzeli, primerjava in revizijska sled. **Tariff Calendar:** razpored blokov, zgodovinska oziroma trenutno nastavljena ciljna vrednost in status pravil.
+**Overview:** trenutni interval, energija, moč, napovedi, varnostni opis. **Today:** pregled današnjih četrtin. **Period:** obdobja in primerjave. **Blocks:** analiza B1–B5. **Exceedances:** potrjene prekoračitve. **History:** arhiv 15-minutnih povzetkov. **Source Health:** opaženi prehodi zdravja vira ter ločena popolnost četrtin in časovna pokritost meritev. **Contracts:** trenutne/prihodnje dodelitve, vrzeli, primerjava in revizijska sled. **Tariff Calendar:** razpored blokov, zgodovinska oziroma trenutno nastavljena ciljna vrednost in status pravil.
+
+Dogodek zdravja vira je diagnostični dokaz. Njegovo opaženo trajanje ni nujno
+enako skupnim manjkajočim sekundam arhivirane četrtine. Odprti dogodki in dogodki
+čez ponovni zagon ohranijo neznano natančno trajanje; ponavljajoči se časovni
+vzorci ne dokazujejo vzroka.
 
 ## Upravljanje pogodb
 

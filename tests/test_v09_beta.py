@@ -692,7 +692,7 @@ def test_setup_timeout_defers_then_reopens_archive_on_successful_retry(
         rows = reopened.list_quarters(entry.entry_id, start, start + timedelta(minutes=15))
         assert len(rows) == 1
         assert rows[0]["import_kwh"] == pytest.approx(0.25)
-        assert reopened.schema_version == 7
+        assert reopened.schema_version == 8
         reopened.close()
 
     _Runtime.instances.clear()
@@ -816,7 +816,7 @@ def test_upgrade_reopen_and_reinstall_preserve_each_meter_namespace(tmp_path: Pa
 
     reopened = QuarterArchive(path)
     reopened.open()
-    assert reopened.schema_version == 7
+    assert reopened.schema_version == 8
     meter_a = reopened.list_quarters("meter-a", start, start + timedelta(hours=1))
     assert len(meter_a) == 1
     assert len(reopened.list_quarters("meter-b", start, start + timedelta(hours=1))) == 1
@@ -912,7 +912,7 @@ def test_v096_mode_d_schema6_archive_survives_disable_and_source_migration(
 
     migrated = QuarterArchive(path)
     migrated.open()
-    assert migrated.schema_version == 7
+    assert migrated.schema_version == 8
     assert dict(migrated.list_quarters(namespace, start, start + timedelta(minutes=15))[0]) == (
         original_row
     )
@@ -953,9 +953,9 @@ def test_beta_version_frontend_and_hacs_package_are_consistent() -> None:
         encoding="utf-8"
     )
     hacs = json.loads((ROOT / "hacs.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == VERSION == "1.0.5"
-    assert "dashboard-model.mjs?v=1.0.5" in dashboard
-    assert "dashboard-i18n.mjs?v=1.0.5" in dashboard
+    assert manifest["version"] == VERSION == "1.0.6"
+    assert "dashboard-model.mjs?v=1.0.6" in dashboard
+    assert "dashboard-i18n.mjs?v=1.0.6" in dashboard
     assert hacs["name"] == "SI Grid Monitor"
     assert not any(ROOT.joinpath(name).exists() for name in ("release.zip", "dist.zip"))
 
@@ -1662,7 +1662,7 @@ def test_meter_archive_removal_is_entry_scoped_and_backup_is_reopenable(tmp_path
     assert other.exists()
     restored = QuarterArchive(backup)
     restored.open()
-    assert restored.schema_version == 7
+    assert restored.schema_version == 8
     assert len(restored.list_quarters("meter-a", start, start + timedelta(minutes=15))) == 1
     restored.close()
 
@@ -2157,7 +2157,7 @@ def test_real_loop_shutdown_cancellation_finishes_archive_and_reopens(
         rows = runtime.archive.list_quarters(entry.entry_id, start, start + timedelta(minutes=15))
         assert len(rows) == 1
         assert rows[0]["import_kwh"] == pytest.approx(0.25)
-        assert runtime.archive.schema_version == 7
+        assert runtime.archive.schema_version == 8
         runtime.archive.close()
 
     asyncio.run(scenario())

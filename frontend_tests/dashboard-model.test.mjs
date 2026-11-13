@@ -929,3 +929,22 @@ test("today selector handles archived, live, missing, upcoming and DST-sized day
     assert.equal(todayQuarterAction(quarters[6]), "upcoming");
   }
 });
+
+test("explicit unavailability clips measured and smoothed traces before staleness expiry", () => {
+  const model = livePowerChartModel({
+    trace: [{timestamp: "2026-01-01T00:00:00Z", signed_kw: 2}],
+    smoothingContext: [
+      {timestamp: "2025-12-31T23:59:00Z", signed_kw: 2},
+      {timestamp: "2026-01-01T00:00:00Z", signed_kw: 2},
+    ],
+    nowUtc: "2026-01-01T00:00:40Z",
+    quarterStartUtc: "2026-01-01T00:00:00Z",
+    quarterEndUtc: "2026-01-01T00:15:00Z",
+    staleAfterSeconds: 60,
+    explicitInterruptionUtc: "2026-01-01T00:00:10Z",
+  });
+  assert.equal(model.actualImportSegments[0].at(-1).timestamp, "2026-01-01T00:00:10.000Z");
+  assert.ok(model.smoothedImportSegments.flat().every(
+    point => new Date(point.timestamp) <= new Date("2026-01-01T00:00:10Z"),
+  ));
+});

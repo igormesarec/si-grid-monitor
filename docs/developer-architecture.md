@@ -25,8 +25,8 @@ engine.py / sustained.py
       +--> authenticated dashboard websocket
       |       dashboard.js / dashboard-model.mjs / i18n
       |
-      +--> integration-owned SQLite schema-7 archive (schema-6 quarter data preserved)
-              checkpoints, source epochs, historical reports
+      +--> integration-owned SQLite schema-8 archive (schema-7 data preserved)
+              checkpoints, source epochs, source-health intervals, historical reports
 ~~~
 
 ## Component responsibilities
@@ -40,8 +40,8 @@ engine.py / sustained.py
 | `sustained.py` | Conservative forward evaluation of constant extra load over intersecting quarters |
 | `sensor.py` | Home Assistant entity exposure and availability rules |
 | `publishing.py` | Separates one-second calculation from HA publication, owns explicit entity policies and bounded event diagnostics |
-| `archive.py`, `history.py` | SQLite storage, migration, quality, provenance and paginated HISTORY |
-| `frontend/dashboard.js`, `dashboard-model.mjs` | Eight-tab interface, charts, measured-vs-unknown semantics and bilingual reporting |
+| `archive.py`, `history.py`, `source_health.py` | SQLite storage, atomic migration, quality, provenance, source-health and paginated reporting |
+| `frontend/dashboard.js`, `dashboard-model.mjs` | Nine-tab interface, charts, measured-vs-unknown semantics and bilingual reporting |
 
 Inspect exact file names when extending functionality; this overview intentionally omits some helper modules.
 

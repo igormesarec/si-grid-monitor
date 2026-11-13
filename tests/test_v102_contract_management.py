@@ -134,7 +134,7 @@ def test_schema6_to_schema7_is_additive_and_audit_is_idempotent(tmp_path) -> Non
 
     reopened = QuarterArchive(path)
     reopened.open()
-    assert reopened.schema_version == 7
+    assert reopened.schema_version == 8
     assert len(reopened.list_quarters("meter-a", start, start + timedelta(minutes=15))) == 1
     event = ContractAuditEvent(
         "event-1",
@@ -233,7 +233,7 @@ def test_schema7_migration_rolls_back_and_retries(
     monkeypatch.setattr(QuarterArchive, "_migration_checkpoint", lambda self, point: None)
     recovered = QuarterArchive(path)
     recovered.open()
-    assert recovered.schema_version == 7
+    assert recovered.schema_version == 8
     assert len(recovered.list_quarters("meter-a", start, start + timedelta(minutes=15))) == 1
 
 

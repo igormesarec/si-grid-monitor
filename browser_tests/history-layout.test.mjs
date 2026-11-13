@@ -157,6 +157,40 @@ async function calendarFixture(page, {width, dark = false}) {
   }, dark);
 }
 
+async function sourceHealthFixture(page, {width, dark = false, language = "en"}) {
+  await page.setViewportSize({width, height: 900});
+  await page.goto(origin);
+  await page.evaluate(async ({darkMode, dashboardLanguage}) => {
+    await import("/custom_components/si_grid_monitor/frontend/dashboard.js");
+    document.documentElement.style.cssText = `font-size:18px;--primary-text-color:${darkMode ? "#eee" : "#222"};--secondary-text-color:${darkMode ? "#ccc" : "#555"};--card-background-color:${darkMode ? "#222" : "#fff"};--primary-background-color:${darkMode ? "#111" : "#fafafa"}`;
+    const panel = document.createElement("si-grid-monitor-panel");
+    panel._loaded = true;
+    panel._hass = {language: dashboardLanguage};
+    panel._language = dashboardLanguage;
+    panel._entries = [{entry_id: "meter", title: "Main Grid source health meter"}];
+    panel._entryId = "meter";
+    panel._tab = "source_health";
+    panel._sourceHealth = {
+      range: {start_utc: "2026-10-25T00:00:00Z", end_utc: "2026-10-26T00:00:00Z"},
+      meter: {title: "Main Grid", source_entities: ["sensor.solaredge_m1_ac_power_with_long_identifier"]},
+      current: {state: "unavailable", reason_code: "source_state_unavailable",
+        observed_utc: "2026-10-25T03:49:01Z", last_valid_sample_utc: "2026-10-25T03:48:00Z"},
+      summary: {incident_count: 2, affected_quarter_count: 3, unknown_duration_count: 1},
+      pagination: {page: 1, pages: 1},
+      items: [{health_state: "unavailable", reason_code: "source_state_unavailable",
+        started_utc: "2026-10-25T03:49:01Z", ended_utc: null, duration_seconds: null,
+        evidence_type: "observed_live", last_valid_sample_utc: "2026-10-25T03:48:00Z"}],
+    };
+    panel._qualityReport = {summary: {quarter_completeness_pct: 95,
+      measurement_time_coverage_pct: 98.5, missing_measurement_seconds: 38.1},
+    daily: [{date: "2026-10-25", expected_calendar_quarters: 100,
+      valid_quarters: 95, incomplete_quarters: 2, unavailable_quarters: 1,
+      measurement_coverage_seconds: 85000}]};
+    document.body.append(panel);
+    window.testPanel = panel;
+  }, {darkMode: dark, dashboardLanguage: language});
+}
+
 async function overviewFixture(page, {width, dark = false, language = "en"}) {
   await page.setViewportSize({width, height: 900});
   await page.goto(origin);
@@ -472,5 +506,37 @@ for (const width of [320, 1280]) {
       assert.equal(preserved.selected, initial.selected);
       assert.match(preserved.detail, /02:00/);
     } finally { await page.close(); }
+  });
+}
+
+for (const width of [320, 360, 390, 430, 768, 1280]) {
+  test(`Source Health remains readable without page overflow at ${width}px`, async () => {
+    const page = await browser.newPage();
+    try {
+      await sourceHealthFixture(page, {width, dark: width === 360, language: width === 390 ? "sl" : "en"});
+      const layout = await page.evaluate(() => {
+        const root = window.testPanel.shadowRoot;
+        const main = root.querySelector("main").getBoundingClientRect();
+        const incident = root.querySelector(".health-incident").getBoundingClientRect();
+        const source = root.querySelector(".metrics article:nth-child(2) strong");
+        return {
+          pageOverflow: document.documentElement.scrollWidth - window.innerWidth,
+          mainWidth: main.width,
+          incidentWidth: incident.width,
+          sourceOverflow: source.scrollWidth - source.clientWidth,
+          controls: root.querySelectorAll(".source-health-controls label").length,
+          timelineBars: root.querySelectorAll(".health-timeline-bar").length,
+          navVisible: root.querySelector('[data-tab="source_health"]') !== null,
+        };
+      });
+      assert.ok(layout.pageOverflow <= 1, JSON.stringify(layout));
+      assert.ok(layout.incidentWidth <= layout.mainWidth + 1, JSON.stringify(layout));
+      assert.ok(layout.sourceOverflow <= 1, JSON.stringify(layout));
+      assert.equal(layout.controls, 4);
+      assert.equal(layout.timelineBars, 1);
+      assert.equal(layout.navVisible, true);
+    } finally {
+      await page.close();
+    }
   });
 }

@@ -23,7 +23,7 @@ from .engine import EPSILON, LJUBLJANA, CompletedQuarter, DataQuality
 from .tariffs.calendar import SlovenianTariffCalendar
 from .tariffs.models import RuleStatus, TariffClassification
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 _QUALITY_RANK = {
     DataQuality.UNAVAILABLE.value: 0,
     DataQuality.INCOMPLETE.value: 1,
@@ -177,6 +177,26 @@ class ContractAuditEvent:
     origin: str
     actor: str | None
     configuration_revision: str
+
+
+@dataclass(frozen=True, slots=True)
+class SourceHealthIncident:
+    """One observed source-health interval; timestamps never imply unseen evidence."""
+
+    incident_id: str
+    namespace: str
+    source_epoch: int | None
+    source_id: str
+    health_state: str
+    reason_code: str
+    started_utc: datetime
+    detected_utc: datetime
+    last_valid_sample_utc: datetime | None
+    ended_utc: datetime | None
+    recovery_code: str | None
+    evidence_type: str
+    created_utc: datetime
+    updated_utc: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -647,6 +667,150 @@ class QuarterArchive:
             ).fetchone()
         return int(row[0])
 
+    def transition_source_health(
+        self,
+        *,
+        namespace: str,
+        source_epoch: int | None,
+        source_id: str,
+        health_state: str,
+        reason_code: str,
+        observed_utc: datetime,
+        last_valid_sample_utc: datetime | None,
+        evidence_type: str = "observed_live",
+        recovery_code: str | None = None,
+    ) -> SourceHealthIncident:
+        """Close the previous observed state and open a new one idempotently."""
+
+        observed = _utc_iso(observed_utc)
+        last_valid = _utc_iso(last_valid_sample_utc) if last_valid_sample_utc else None
+        with self._lock:
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._db.execute(
+                    """SELECT * FROM source_health_incidents
+                       WHERE namespace=? AND ended_utc IS NULL
+                       ORDER BY started_utc DESC LIMIT 1""",
+                    (namespace,),
+                ).fetchone()
+                if (
+                    row is not None
+                    and str(row["health_state"]) == health_state
+                    and str(row["reason_code"]) == reason_code
+                    and str(row["source_id"]) == source_id
+                    and row["source_epoch"] == source_epoch
+                ):
+                    self._db.commit()
+                    return _source_health_from_row(row)
+                if row is not None:
+                    self._db.execute(
+                        """UPDATE source_health_incidents
+                           SET ended_utc=?,recovery_code=?,updated_utc=?
+                           WHERE incident_id=? AND ended_utc IS NULL""",
+                        (
+                            observed,
+                            recovery_code or f"transition_to_{health_state}",
+                            observed,
+                            row["incident_id"],
+                        ),
+                    )
+                incident_id = str(uuid.uuid4())
+                self._db.execute(
+                    """INSERT INTO source_health_incidents(
+                         incident_id,namespace,source_epoch,source_id,health_state,
+                         reason_code,started_utc,detected_utc,last_valid_sample_utc,
+                         ended_utc,recovery_code,evidence_type,created_utc,updated_utc)
+                       VALUES (?,?,?,?,?,?,?,?,?,NULL,NULL,?,?,?)""",
+                    (
+                        incident_id,
+                        namespace,
+                        source_epoch,
+                        source_id,
+                        health_state,
+                        reason_code,
+                        observed,
+                        observed,
+                        last_valid,
+                        evidence_type,
+                        observed,
+                        observed,
+                    ),
+                )
+                inserted = self._db.execute(
+                    "SELECT * FROM source_health_incidents WHERE incident_id=?",
+                    (incident_id,),
+                ).fetchone()
+                self._db.commit()
+            except BaseException:
+                self._db.rollback()
+                raise
+        return _source_health_from_row(inserted)
+
+    def list_source_health_incidents(
+        self,
+        namespace: str,
+        start_utc: datetime,
+        end_utc: datetime,
+        *,
+        health_states: tuple[str, ...] = (),
+        source_epoch: int | None = None,
+        page: int = 1,
+        page_size: int = 50,
+        newest_first: bool = True,
+    ) -> tuple[list[SourceHealthIncident], int]:
+        """Return bounded intervals overlapping a UTC range for one meter."""
+
+        bounded = min(max(int(page_size), 1), 200)
+        page = max(int(page), 1)
+        where = ["namespace=?", "started_utc<?", "COALESCE(ended_utc,?)>?"]
+        params: list[Any] = [namespace, _utc_iso(end_utc), _utc_iso(end_utc), _utc_iso(start_utc)]
+        if health_states:
+            where.append(f"health_state IN ({','.join('?' for _ in health_states)})")
+            params.extend(health_states)
+        if source_epoch is not None:
+            where.append("source_epoch=?")
+            params.append(source_epoch)
+        clause = " AND ".join(where)
+        direction = "DESC" if newest_first else "ASC"
+        with self._lock:
+            total = int(
+                self._db.execute(
+                    f"SELECT COUNT(*) FROM source_health_incidents WHERE {clause}", params
+                ).fetchone()[0]
+            )
+            rows = self._db.execute(
+                f"""SELECT * FROM source_health_incidents WHERE {clause}
+                    ORDER BY started_utc {direction},incident_id {direction}
+                    LIMIT ? OFFSET ?""",
+                (*params, bounded, (page - 1) * bounded),
+            ).fetchall()
+        return [_source_health_from_row(row) for row in rows], total
+
+    def source_health_overlaps(
+        self, namespace: str, start_utc: datetime, end_utc: datetime
+    ) -> list[SourceHealthIncident]:
+        """Return all recorded state intervals overlapping one fixed quarter."""
+
+        rows, _ = self.list_source_health_incidents(
+            namespace, start_utc, end_utc, page_size=200, newest_first=False
+        )
+        return rows
+
+    def source_health_epochs(
+        self, namespace: str, start_utc: datetime, end_utc: datetime
+    ) -> list[int]:
+        """Return bounded distinct source epochs represented in a health range."""
+
+        with self._lock:
+            rows = self._db.execute(
+                """SELECT DISTINCT source_epoch FROM source_health_incidents
+                   WHERE namespace=? AND started_utc<? AND COALESCE(ended_utc,?)>?
+                     AND source_epoch IS NOT NULL
+                   ORDER BY source_epoch DESC LIMIT 100""",
+                (namespace, _utc_iso(end_utc), _utc_iso(end_utc), _utc_iso(start_utc)),
+            ).fetchall()
+        return [int(row[0]) for row in rows]
+
     def list_contract_target_evidence(
         self, namespace: str, *, limit: int = 200
     ) -> list[dict[str, Any]]:
@@ -904,6 +1068,32 @@ class QuarterArchive:
                     """SELECT * FROM quarters WHERE namespace=? AND start_utc>=?
                        AND start_utc<? ORDER BY start_utc""",
                     (namespace, _utc_iso(start_utc), _utc_iso(end_utc)),
+                ).fetchall()
+            )
+
+    def list_incomplete_quarters(
+        self,
+        namespace: str,
+        start_utc: datetime,
+        end_utc: datetime,
+        *,
+        limit: int = 10_000,
+    ) -> list[sqlite3.Row]:
+        """Return a bounded diagnostic list of incomplete/unavailable quarters."""
+
+        bounded = min(max(int(limit), 1), 10_000)
+        with self._lock:
+            return list(
+                self._db.execute(
+                    """SELECT start_utc,end_utc,quality,coverage_seconds,gap_seconds,
+                              import_kwh,export_kwh,source_id,source_epoch,provenance,
+                              configuration_status,contractual_status,tariff_block
+                       FROM quarters
+                       WHERE namespace=? AND start_utc>=? AND start_utc<?
+                         AND quality IN ('incomplete','unavailable')
+                         AND simulation=0
+                       ORDER BY start_utc DESC LIMIT ?""",
+                    (namespace, _utc_iso(start_utc), _utc_iso(end_utc), bounded),
                 ).fetchall()
             )
 
@@ -1923,6 +2113,68 @@ class QuarterArchive:
             version = 6
         if version == 6:
             self._migrate_v6_to_v7()
+            version = 7
+        if version == 7:
+            self._migrate_v7_to_v8()
+
+    def _migrate_v7_to_v8(self) -> None:
+        """Atomically add event-based, namespaced source-health history."""
+
+        self._migration_checkpoint("before_v8_schema_change")
+        self._db.execute("BEGIN IMMEDIATE")
+        try:
+            self._db.execute(
+                """CREATE TABLE IF NOT EXISTS source_health_incidents(
+                     incident_id TEXT PRIMARY KEY,namespace TEXT NOT NULL,
+                     source_epoch INTEGER,source_id TEXT NOT NULL,
+                     health_state TEXT NOT NULL,reason_code TEXT NOT NULL,
+                     started_utc TEXT NOT NULL,detected_utc TEXT NOT NULL,
+                     last_valid_sample_utc TEXT,ended_utc TEXT,recovery_code TEXT,
+                     evidence_type TEXT NOT NULL,created_utc TEXT NOT NULL,
+                     updated_utc TEXT NOT NULL)"""
+            )
+            self._migration_checkpoint("after_source_health_table")
+            self._db.execute(
+                """CREATE INDEX IF NOT EXISTS idx_source_health_namespace_time
+                   ON source_health_incidents(namespace,started_utc DESC)"""
+            )
+            self._db.execute(
+                """CREATE INDEX IF NOT EXISTS idx_source_health_namespace_state_time
+                   ON source_health_incidents(namespace,health_state,started_utc DESC)"""
+            )
+            self._db.execute(
+                """CREATE UNIQUE INDEX IF NOT EXISTS idx_source_health_one_open
+                   ON source_health_incidents(namespace) WHERE ended_utc IS NULL"""
+            )
+            self._migration_checkpoint("after_source_health_indexes")
+            columns = {
+                str(row["name"])
+                for row in self._db.execute("PRAGMA table_info(source_health_incidents)").fetchall()
+            }
+            required = {
+                "incident_id",
+                "namespace",
+                "source_epoch",
+                "source_id",
+                "health_state",
+                "reason_code",
+                "started_utc",
+                "detected_utc",
+                "last_valid_sample_utc",
+                "ended_utc",
+                "recovery_code",
+                "evidence_type",
+                "created_utc",
+                "updated_utc",
+            }
+            if columns != required:
+                raise RuntimeError("archive has an incompatible partial V8 source-health table")
+            self._migration_checkpoint("before_v8_version_update")
+            self._db.execute("PRAGMA user_version=8")
+            self._db.commit()
+        except BaseException:
+            self._db.rollback()
+            raise
 
     def _migrate_v6_to_v7(self) -> None:
         """Atomically add append-only contract-audit storage."""
@@ -2100,6 +2352,35 @@ def _utc_iso(value: datetime) -> str:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("archive timestamps must be timezone-aware")
     return value.astimezone(UTC).isoformat()
+
+
+def _source_health_from_row(row: Mapping[str, Any]) -> SourceHealthIncident:
+    """Convert one SQLite row without losing unknown interval endpoints."""
+
+    return SourceHealthIncident(
+        incident_id=str(row["incident_id"]),
+        namespace=str(row["namespace"]),
+        source_epoch=None if row["source_epoch"] is None else int(row["source_epoch"]),
+        source_id=str(row["source_id"]),
+        health_state=str(row["health_state"]),
+        reason_code=str(row["reason_code"]),
+        started_utc=datetime.fromisoformat(str(row["started_utc"])).astimezone(UTC),
+        detected_utc=datetime.fromisoformat(str(row["detected_utc"])).astimezone(UTC),
+        last_valid_sample_utc=(
+            None
+            if row["last_valid_sample_utc"] is None
+            else datetime.fromisoformat(str(row["last_valid_sample_utc"])).astimezone(UTC)
+        ),
+        ended_utc=(
+            None
+            if row["ended_utc"] is None
+            else datetime.fromisoformat(str(row["ended_utc"])).astimezone(UTC)
+        ),
+        recovery_code=None if row["recovery_code"] is None else str(row["recovery_code"]),
+        evidence_type=str(row["evidence_type"]),
+        created_utc=datetime.fromisoformat(str(row["created_utc"])).astimezone(UTC),
+        updated_utc=datetime.fromisoformat(str(row["updated_utc"])).astimezone(UTC),
+    )
 
 
 def _row_dict(row: Mapping[str, Any]) -> dict[str, Any]:
