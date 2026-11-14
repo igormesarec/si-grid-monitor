@@ -117,6 +117,9 @@ from .task_queue import ArchiveTaskQueue
 
 SOURCE_HEALTH_RETRY_LIMIT = 3
 SOURCE_HEALTH_RETRY_DELAY_SECONDS = 0.05
+SOURCE_HEALTH_RETRY_INITIAL_BACKOFF_SECONDS = 1.0
+SOURCE_HEALTH_RETRY_MAX_BACKOFF_SECONDS = 60.0
+SOURCE_HEALTH_PENDING_LIMIT = 1024
 SOURCE_HEALTH_INTERRUPTION_STATES = frozenset(
     {"stale", "unavailable", "invalid_value", "missing_source_entity", "source_timestamp_mismatch"}
 )
@@ -235,6 +238,11 @@ class GridMonitorRuntime:
         self._persisted_health_signature: tuple[str, str, int | None] | None = None
         self._source_health_task: asyncio.Task[bool] | None = None
         self._source_health_pending: deque[_PendingSourceHealthTransition] = deque()
+        self._source_health_retry_failures = 0
+        self._source_health_retry_not_before_utc: datetime | None = None
+        self._source_health_overflow_count = 0
+        self._source_health_overflow_first_utc: datetime | None = None
+        self._source_health_overflow_last_utc: datetime | None = None
         self._source_health_interruption_windows: deque[dict[str, datetime | None]] = deque(
             maxlen=64
         )
@@ -682,6 +690,26 @@ class GridMonitorRuntime:
                     for item in self._source_health_interruption_windows
                     if item["end_utc"] is None or item["end_utc"] >= quarter_start
                 ],
+                "persistence": {
+                    "pending_transition_count": len(self._source_health_pending),
+                    "retry_failures": self._source_health_retry_failures,
+                    "retry_not_before_utc": (
+                        self._source_health_retry_not_before_utc.isoformat()
+                        if self._source_health_retry_not_before_utc is not None
+                        else None
+                    ),
+                    "overflow_count": self._source_health_overflow_count,
+                    "overflow_first_utc": (
+                        self._source_health_overflow_first_utc.isoformat()
+                        if self._source_health_overflow_first_utc is not None
+                        else None
+                    ),
+                    "overflow_last_utc": (
+                        self._source_health_overflow_last_utc.isoformat()
+                        if self._source_health_overflow_last_utc is not None
+                        else None
+                    ),
+                },
             },
             "detailed_trace_provenance": "bounded_runtime_samples",
         }
@@ -1061,6 +1089,24 @@ class GridMonitorRuntime:
         except Exception as err:
             errors.append(err)
             _LOGGER.exception("Failed to drain SI Grid Monitor archive tasks")
+        pending_health = getattr(self, "_source_health_pending", ())
+        if pending_health:
+            try:
+                persisted = await self._async_drain_source_health_transitions()
+                if not persisted:
+                    pending = len(pending_health)
+                    error = RuntimeError(
+                        f"{pending} source-health transition(s) remain unpersisted at shutdown"
+                    )
+                    errors.append(error)
+                    _LOGGER.error(
+                        "SI Grid Monitor shutdown is closing the archive with %d explicitly "
+                        "reported unpersisted source-health transition(s)",
+                        pending,
+                    )
+            except Exception as err:
+                errors.append(err)
+                _LOGGER.exception("Failed final source-health persistence during shutdown")
         # A prior executor/database failure leaves the durable cursor unchanged.
         # Retry outstanding quarters synchronously before the connection closes.
         try:
@@ -1131,8 +1177,8 @@ class GridMonitorRuntime:
             and now_utc - latest > timedelta(seconds=DEFAULT_STALE_AFTER_SECONDS)
         ):
             self._set_source_health("stale", "freshness_window_expired", now_utc)
-        elif self._persisted_health_signature != self._health_signature:
-            self._schedule_source_health_persistence()
+        if self._source_health_pending:
+            self._schedule_source_health_persistence(now_utc=now_utc)
         self._refresh(now)
 
     @callback
@@ -1295,24 +1341,42 @@ class GridMonitorRuntime:
         self._source_health_reason = reason_code
         self._source_health_observed_utc = observed
         epoch = self.configuration_epoch.epoch if self.configuration_epoch is not None else None
-        self._source_health_pending.append(
-            _PendingSourceHealthTransition(
-                state=state,
-                reason_code=reason_code,
-                observed_utc=observed,
-                source_epoch=epoch,
-                source_id=self.configuration_source_id,
-                last_valid_sample_utc=self.source_measurement_timestamp_utc,
-            )
+        transition = _PendingSourceHealthTransition(
+            state=state,
+            reason_code=reason_code,
+            observed_utc=observed,
+            source_epoch=epoch,
+            source_id=self.configuration_source_id,
+            last_valid_sample_utc=self.source_measurement_timestamp_utc,
         )
+        if len(self._source_health_pending) >= SOURCE_HEALTH_PENDING_LIMIT:
+            self._source_health_overflow_count += 1
+            if self._source_health_overflow_first_utc is None:
+                self._source_health_overflow_first_utc = observed
+            self._source_health_overflow_last_utc = observed
+            _LOGGER.error(
+                "Source-health persistence queue is full (%d); transition at %s was not "
+                "persisted (total overflow=%d)",
+                SOURCE_HEALTH_PENDING_LIMIT,
+                observed.isoformat(),
+                self._source_health_overflow_count,
+            )
+        else:
+            self._source_health_pending.append(transition)
         self._schedule_source_health_persistence()
 
     @callback
-    def _schedule_source_health_persistence(self) -> None:
+    def _schedule_source_health_persistence(self, *, now_utc: datetime | None = None) -> None:
         if (
             self.configuration_epoch is None
             or not self._source_health_pending
             or self._shutdown_complete
+        ):
+            return
+        now = (now_utc or dt_util.utcnow()).astimezone(UTC)
+        if (
+            self._source_health_retry_not_before_utc is not None
+            and now < self._source_health_retry_not_before_utc
         ):
             return
         if self._source_health_task is not None and not self._source_health_task.done():
@@ -1365,15 +1429,27 @@ class GridMonitorRuntime:
                     raise
                 except Exception:
                     if attempt == SOURCE_HEALTH_RETRY_LIMIT:
+                        self._source_health_retry_failures += 1
+                        backoff = min(
+                            SOURCE_HEALTH_RETRY_MAX_BACKOFF_SECONDS,
+                            SOURCE_HEALTH_RETRY_INITIAL_BACKOFF_SECONDS
+                            * (2 ** min(self._source_health_retry_failures - 1, 6)),
+                        )
+                        self._source_health_retry_not_before_utc = dt_util.utcnow().astimezone(
+                            UTC
+                        ) + timedelta(seconds=backoff)
                         _LOGGER.exception(
                             "Source-health transition persistence failed after %d attempts; "
-                            "the ordered transition remains queued",
+                            "the ordered transition remains queued; retry in %.1f seconds",
                             SOURCE_HEALTH_RETRY_LIMIT,
+                            backoff,
                         )
                         return False
                     await asyncio.sleep(SOURCE_HEALTH_RETRY_DELAY_SECONDS)
                 else:
                     self._source_health_pending.popleft()
+                    self._source_health_retry_failures = 0
+                    self._source_health_retry_not_before_utc = None
                     self._persisted_health_signature = (
                         item.state,
                         item.reason_code,

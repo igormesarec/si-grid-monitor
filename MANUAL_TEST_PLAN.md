@@ -908,6 +908,26 @@ Automated tests do not satisfy this gate. Record the HA version, HACS version,
 browser/app version, integration commit, source update cadence and database
 before/after counts with the results.
 
+## V1.0.6 review-correction acceptance
+
+1. Temporarily make the selected meter archive unwritable while the source
+   changes healthy → unavailable → healthy. Restore archive access without
+   changing the source again. Confirm ordinary timer ticks persist both queued
+   transitions in timestamp order and the pending count returns to zero.
+2. Keep the archive unavailable long enough to observe retry backoff. Confirm
+   SQLite writes are not attempted every second and live measurement, billing,
+   forecast and publishing cadence remain unchanged.
+3. In a disposable test instance, exercise the documented 1,024-transition
+   diagnostic queue bound. Confirm overflow count/timestamps and error logs are
+   visible and no omitted event is represented as archived evidence.
+4. Stop Home Assistant while source-health persistence is unavailable. Confirm
+   shutdown remains bounded, SQLite closes, and the unpersisted transition count
+   is explicitly reported rather than silently discarded.
+5. Request a filtered incident CSV with more than 10,000 rows. Confirm no file is
+   downloaded and the UI reports: **Export exceeds 10,000 rows. Select a shorter
+   date range or apply additional filters.** Narrow the range and verify a
+   complete UTF-8 CSV is downloaded.
+
 ## V1.0.3 final publication review
 
 1. In Mode A or B, hold a genuine 3.000 kW export for a full quarter. Confirm

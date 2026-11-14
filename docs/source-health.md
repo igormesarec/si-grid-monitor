@@ -52,6 +52,9 @@ rejected with instructions to narrow the filters or retry; it is never returned
 as a silently truncated CSV. Do not publish exports without reviewing source
 entity IDs and provenance fields.
 
+The oversized response is explicit: **Export exceeds 10,000 rows. Select a
+shorter date range or apply additional filters.** No CSV accompanies that error.
+
 Dashboard pages remain bounded, but their summary counts, observed durations
 and affected-quarter metrics use the complete filtered range. A page containing
 50 or 200 visible incidents therefore does not limit the period summary.
@@ -63,6 +66,16 @@ for one state is still running, a later unavailable and recovery transition
 retain their individual timestamps and are written afterward. Each write has a
 bounded retry sequence; an unsuccessful transition remains queued ahead of
 newer states instead of being skipped.
+
+Normal one-second runtime ticks retry whenever the FIFO is nonempty, including
+when recovery has returned the source to the same signature that was last
+persisted. Repeated database failures use exponential backoff capped at 60
+seconds. The in-memory queue is bounded at 1,024 transitions. If that emergency
+bound is reached, the runtime logs each omitted diagnostic transition and
+exposes the overflow count and first/last timestamps in live diagnostics. Those
+events are never labelled as persisted. Shutdown makes one final bounded retry,
+closes SQLite safely, and reports any remaining unpersisted diagnostics as a
+shutdown error.
 
 The live chart retains bounded interruption windows after recovery. A recovery
 inside the normal 60-second sample-validity allowance therefore starts a new

@@ -40,6 +40,7 @@ from .engine import LJUBLJANA, quarter_starts_for_local_day
 from .history import HistoryQuery, history_report
 from .source_health import (
     HEALTH_STATES,
+    DiagnosticExportTooLargeError,
     diagnostic_csv,
     incident_dict,
     incident_export_report,
@@ -949,6 +950,9 @@ async def ws_diagnostic_csv(hass: HomeAssistant, connection: Any, msg: dict[str,
                 )
             )
         payload = diagnostic_csv(msg["kind"], report)
+    except DiagnosticExportTooLargeError as err:
+        connection.send_error(msg["id"], "export_too_large", str(err))
+        return
     except (KeyError, TypeError, ValueError):
         connection.send_error(msg["id"], "invalid_query", "Invalid diagnostic export query")
         return

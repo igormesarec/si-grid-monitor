@@ -26,6 +26,12 @@ All notable changes to SI Grid Monitor will be documented here.
   rows and rejected results that exceed the explicit export contract.
 - Kept brief observed outages visible after recovery by splitting measured and
   smoothed chart segments without changing energy or forecast calculations.
+- Retried every nonempty source-health FIFO from normal timer ticks even when
+  the recovered current state matches the last persisted state. Extended
+  database outages use capped exponential backoff; the bounded queue exposes
+  and logs any overflow instead of claiming dropped diagnostics were saved.
+- Added a dedicated oversized-export response: incident exports above 10,000
+  filtered rows return actionable filter guidance and never return partial CSV.
 
 ### V1.0.5 cross-quarter smoothing draft
 

@@ -709,6 +709,43 @@ def test_source_health_and_quality_commands_are_namespaced_and_csv_is_admin_only
     archive.close()
 
 
+def test_oversized_incident_csv_returns_actionable_websocket_error(
+    tmp_path: Path, monkeypatch: Any
+) -> None:
+    archive = QuarterArchive(tmp_path / "source-health-export-limit.db")
+    archive.open()
+    runtime = _runtime(archive)
+
+    def oversized(*_args: Any, **_kwargs: Any) -> Any:
+        raise dashboard.DiagnosticExportTooLargeError(
+            "Export exceeds 10,000 rows. Select a shorter date range or apply additional filters."
+        )
+
+    monkeypatch.setattr(dashboard, "incident_export_report", oversized)
+    connection = _Connection(is_admin=True)
+    _run(
+        dashboard.ws_diagnostic_csv(
+            _Hass(runtime),
+            connection,
+            {
+                "id": 93,
+                "entry_id": "entry-a",
+                "kind": "incidents",
+                "start_date": "2026-01-01",
+                "end_date": "2026-12-31",
+            },
+        )
+    )
+
+    assert connection.result is None
+    assert connection.error == (
+        93,
+        "export_too_large",
+        "Export exceeds 10,000 rows. Select a shorter date range or apply additional filters.",
+    )
+    archive.close()
+
+
 def test_history_command_preserves_confirmed_false_and_null_filters(tmp_path: Path) -> None:
     archive = QuarterArchive(tmp_path / "history-status.db")
     archive.open()

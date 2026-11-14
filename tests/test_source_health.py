@@ -12,6 +12,7 @@ import pytest
 
 from custom_components.si_grid_monitor.archive import ArchiveRecord, QuarterArchive
 from custom_components.si_grid_monitor.source_health import (
+    DiagnosticExportTooLargeError,
     diagnostic_csv,
     incident_export_report,
     incomplete_quarter_report,
@@ -237,6 +238,28 @@ def test_incident_csv_pages_all_rows_and_applies_state_and_epoch_filters(tmp_pat
     assert {row["health_state"] for row in rows} == {"unavailable"}
     assert {row["source_epoch"] for row in rows} == {"2"}
     assert any(row["source_id"].startswith("'=") for row in rows)
+
+
+def test_incident_csv_rejects_oversized_filtered_export() -> None:
+    class OversizedArchive:
+        @staticmethod
+        def list_source_health_incidents(*_args: Any, **_kwargs: Any) -> tuple[list[Any], int]:
+            return [], 10_001
+
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    with pytest.raises(
+        DiagnosticExportTooLargeError,
+        match=(
+            r"Export exceeds 10,000 rows\. Select a shorter date range or apply additional "
+            r"filters\."
+        ),
+    ):
+        incident_export_report(
+            OversizedArchive(),  # type: ignore[arg-type]
+            "meter",
+            start,
+            start + timedelta(days=1),
+        )
 
 
 def test_open_incident_duration_is_unknown_and_not_quarter_gap(tmp_path) -> None:

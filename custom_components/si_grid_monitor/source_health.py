@@ -32,6 +32,10 @@ MAX_REPORT_DAYS = 366
 MAX_CSV_ROWS = 10_000
 
 
+class DiagnosticExportTooLargeError(ValueError):
+    """Raised when a diagnostic export cannot be complete within its safe bound."""
+
+
 def incident_dict(
     incident: SourceHealthIncident, *, now_utc: datetime | None = None
 ) -> dict[str, Any]:
@@ -442,9 +446,8 @@ def incident_export_report(
         newest_first=False,
     )
     if total > MAX_CSV_ROWS:
-        raise ValueError(
-            f"filtered incident export contains {total} rows; narrow the date range or filters "
-            f"to at most {MAX_CSV_ROWS} rows"
+        raise DiagnosticExportTooLargeError(
+            "Export exceeds 10,000 rows. Select a shorter date range or apply additional filters."
         )
     incidents = list(first)
     page = 2
