@@ -2,10 +2,10 @@
 
 **SI Grid Monitor** is an independent, HACS-compatible Home Assistant integration for monitoring Slovenia's fixed 15-minute imported-electricity demand. It helps you understand how much power you have imported in each billing interval, how this relates to your contracted power in tariff blocks B1–B5, and whether additional demand is likely to fit within the remaining quarter.
 
-**Version documented: proposed V1.0.4 maintenance release candidate.** It keeps
-the V1.0.3 English/Slovenian interface and V1.0.2 contract management while
-documenting safe resolution of legacy Home Assistant statistics warnings. Real
-Home Assistant acceptance is still required. This is monitoring and decision
+**Version documented: proposed V1.0.6 maintenance release candidate.** It keeps
+the V1.0.5 cross-quarter smoothing and adds durable source-health evidence plus
+separate quarter/time coverage reporting. Real Home Assistant acceptance is
+still required. This is monitoring and decision
 support, not a certified utility meter, automatic load controller, or electrical
 safety device.
 
@@ -24,7 +24,7 @@ Import-only fixed 15-minute energy calculation
        ↓
 Apply dated B1–B5 contracted limits and tariff rules
        ↓
-Overview · Today · Period · Blocks · Exceedances · History · Tariff Calendar
+Overview · Today · Period · Blocks · Exceedances · History · Source Health · Contracts · Tariff Calendar
        ↓
 Permanent per-meter SQLite archive and measurement-quality audit
 ```
@@ -35,7 +35,9 @@ Permanent per-meter SQLite archive and measurement-quality audit
 2. [Choose the appropriate sensor mode](source-modes.md). Live grid power is recommended where possible.
 3. [Enter your distributor-assigned contracted-power limits](configuration.md), with their actual validity dates.
 4. Check **SI Grid Monitor** in Home Assistant's sidebar.
-5. [Learn to interpret the eight dashboard tabs](dashboard-guide.md) and [measurement-quality states](data-quality.md).
+5. [Learn to interpret the nine dashboard tabs](dashboard-guide.md),
+   [measurement-quality states](data-quality.md) and
+   [source-health evidence](source-health.md).
 
 ### What you'll see
 

@@ -1073,7 +1073,7 @@ test("historical calendar cells never replace unknown recorded targets with curr
   assert.doesNotMatch(html, /As recorded[^<]*4\.200 kW/);
 });
 
-test("publishing diagnostics render bounded estimates without adding a ninth tab", () => {
+test("publishing diagnostics remain on Overview while Source Health is a dedicated tab", () => {
   const panel = new SIGridMonitorPanel();
   panel._language = "en";
   panel._publishingWindowSeconds = 3600;
@@ -1100,7 +1100,72 @@ test("publishing diagnostics render bounded estimates without adding a ninth tab
   assert.match(html, /Isolated processing failures/);
   assert.match(html, /Currently faulted publications/);
   assert.match(html, /Quarter-energy max interval/);
-  assert.equal((panel._render.toString().match(/"contracts", "calendar"/g) || []).length, 1);
+  assert.equal((panel._render.toString().match(/"source_health", "contracts", "calendar"/g) || []).length, 1);
+});
+
+test("Source Health renders explicit uncertainty, quality metrics, and mobile controls", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._language = "en";
+  panel._sourceHealthStartDate = "2026-10-19";
+  panel._sourceHealthEndDate = "2026-10-25";
+  panel._sourceHealthState = "all";
+  panel._sourceHealth = {
+    range: {start_utc: "2026-10-25T00:00:00Z", end_utc: "2026-10-26T00:00:00Z"},
+    meter: {title: "Main Grid", source_entities: ["sensor.solaredge_m1_ac_power"]},
+    current: {state: "unavailable", reason_code: "source_state_unavailable",
+      last_valid_sample_utc: START_A},
+    summary: {incident_count: 1, affected_quarter_count: 2,
+      unknown_duration_count: 1},
+    pagination: {page: 1, pages: 1},
+    items: [{incident_id: "event", health_state: "unavailable",
+      reason_code: "source_state_unavailable", started_utc: START_A,
+      ended_utc: null, duration_seconds: null, evidence_type: "observed_live",
+      last_valid_sample_utc: START_A}],
+  };
+  panel._qualityReport = {summary: {quarter_completeness_pct: 95,
+    measurement_time_coverage_pct: 98.5, missing_measurement_seconds: 38.1},
+  daily: [{date: "2026-10-19", expected_calendar_quarters: 96,
+    valid_quarters: 94, incomplete_quarters: 2, unavailable_quarters: 0,
+    measurement_coverage_seconds: 86000}]};
+  const html = panel._sourceHealthView();
+  assert.match(html, /Open; exact end unknown/);
+  assert.match(html, /Incident timing is explanatory evidence/);
+  assert.match(html, /sensor\.solaredge_m1_ac_power/);
+  assert.match(html, /Quarter completeness/);
+  assert.match(html, /Measurement time coverage/);
+  assert.match(panel._sourceHealthStyles(), /max-width:430px/);
+});
+
+test("diagnostic CSV export sends the active state and source-epoch filters", async () => {
+  const panel = new SIGridMonitorPanel();
+  panel._language = "en";
+  panel._sourceHealthStartDate = "2026-10-01";
+  panel._sourceHealthEndDate = "2026-10-31";
+  panel._sourceHealthState = "unavailable";
+  panel._sourceHealthEpoch = "7";
+  let request = null;
+  panel._call = async (type, payload) => {
+    request = {type, payload};
+    return {csv: "\ufeffhealth_state\nunavailable\n", content_type: "text/csv;charset=utf-8",
+      filename: "health.csv", complete: true, total_rows: 1, exported_rows: 1};
+  };
+  const originalDocument = globalThis.document;
+  const originalCreate = URL.createObjectURL;
+  const originalRevoke = URL.revokeObjectURL;
+  globalThis.document = {createElement: () => ({click() {}})};
+  URL.createObjectURL = () => "blob:test";
+  URL.revokeObjectURL = () => {};
+  try {
+    await panel._downloadDiagnosticCsv("incidents");
+  } finally {
+    globalThis.document = originalDocument;
+    URL.createObjectURL = originalCreate;
+    URL.revokeObjectURL = originalRevoke;
+  }
+  assert.deepEqual(request, {type: "diagnostic_csv", payload: {
+    kind: "incidents", start_date: "2026-10-01", end_date: "2026-10-31",
+    states: ["unavailable"], source_epoch: 7,
+  }});
 });
 
 test("publishing diagnostics distinguish warmup, truncation, and unverified InfluxDB", () => {

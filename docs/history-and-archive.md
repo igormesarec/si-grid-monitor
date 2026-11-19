@@ -1,7 +1,7 @@
 # History, archive, checkpointing and recovery
 
 SI Grid Monitor stores completed 15-minute quarter **summaries** in an
-integration-owned SQLite schema-7 database. Existing schema-6 archives migrate
+integration-owned SQLite schema-8 database. Existing schema-7 archives migrate
 additively. Archive namespaces are specific to the configuration entry, and retained data survives ordinary Home Assistant
 Recorder purges.
 
@@ -12,6 +12,8 @@ Recorder purges.
 - Dated targets, source/configuration epochs, tariff-rule metadata and provenance.
 - Eligible/confirmed exceedance results and unconfirmed statuses.
 - Runtime checkpoints needed to restore an in-progress quarter without fabricating downtime measurements.
+- Transition-only source-health intervals used for diagnostics. These remain
+  separate evidence and never rewrite a completed quarter's quality or gap total.
 
 **Not stored:** a guaranteed instantaneous historic peak or fully detailed continuous source trace. The HISTORY charts must not invent such detail from 15-minute summary values.
 

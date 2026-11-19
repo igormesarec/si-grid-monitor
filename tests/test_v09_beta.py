@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sqlite3
 import sys
 import types
+from collections import deque
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
@@ -692,7 +694,7 @@ def test_setup_timeout_defers_then_reopens_archive_on_successful_retry(
         rows = reopened.list_quarters(entry.entry_id, start, start + timedelta(minutes=15))
         assert len(rows) == 1
         assert rows[0]["import_kwh"] == pytest.approx(0.25)
-        assert reopened.schema_version == 7
+        assert reopened.schema_version == 8
         reopened.close()
 
     _Runtime.instances.clear()
@@ -816,7 +818,7 @@ def test_upgrade_reopen_and_reinstall_preserve_each_meter_namespace(tmp_path: Pa
 
     reopened = QuarterArchive(path)
     reopened.open()
-    assert reopened.schema_version == 7
+    assert reopened.schema_version == 8
     meter_a = reopened.list_quarters("meter-a", start, start + timedelta(hours=1))
     assert len(meter_a) == 1
     assert len(reopened.list_quarters("meter-b", start, start + timedelta(hours=1))) == 1
@@ -912,7 +914,7 @@ def test_v096_mode_d_schema6_archive_survives_disable_and_source_migration(
 
     migrated = QuarterArchive(path)
     migrated.open()
-    assert migrated.schema_version == 7
+    assert migrated.schema_version == 8
     assert dict(migrated.list_quarters(namespace, start, start + timedelta(minutes=15))[0]) == (
         original_row
     )
@@ -953,9 +955,9 @@ def test_beta_version_frontend_and_hacs_package_are_consistent() -> None:
         encoding="utf-8"
     )
     hacs = json.loads((ROOT / "hacs.json").read_text(encoding="utf-8"))
-    assert manifest["version"] == VERSION == "1.0.5"
-    assert "dashboard-model.mjs?v=1.0.5" in dashboard
-    assert "dashboard-i18n.mjs?v=1.0.5" in dashboard
+    assert manifest["version"] == VERSION == "1.0.6"
+    assert "dashboard-model.mjs?v=1.0.6" in dashboard
+    assert "dashboard-i18n.mjs?v=1.0.6" in dashboard
     assert hacs["name"] == "SI Grid Monitor"
     assert not any(ROOT.joinpath(name).exists() for name in ("release.zip", "dist.zip"))
 
@@ -1639,6 +1641,255 @@ def test_migrated_mode_a_keeps_the_v09_configuration_epoch_identity(tmp_path: Pa
     archive.close()
 
 
+@pytest.mark.skipif(
+    REAL_LOOP_UNAVAILABLE,
+    reason="the managed Windows runtime cannot create asyncio's socketpair",
+)
+def test_source_health_transitions_remain_ordered_while_first_write_is_blocked() -> None:
+    """An in-flight executor write must not collapse unavailable/recovery transitions."""
+
+    _ensure_homeassistant_stubs()
+    from custom_components.si_grid_monitor.runtime import GridMonitorRuntime
+
+    async def scenario() -> None:
+        started = asyncio.Event()
+        release = asyncio.Event()
+        persisted: list[tuple[str, datetime]] = []
+        attempts: dict[str, int] = {}
+
+        class Archive:
+            @staticmethod
+            def transition_source_health(**kwargs: Any) -> None:
+                state = kwargs["health_state"]
+                attempts[state] = attempts.get(state, 0) + 1
+                if state == "unavailable" and attempts[state] < 3:
+                    raise sqlite3.OperationalError("temporarily locked")
+                persisted.append((kwargs["health_state"], kwargs["observed_utc"]))
+
+        class Hass:
+            calls = 0
+
+            @staticmethod
+            def async_create_task(coroutine: Any, name: str) -> asyncio.Task[Any]:
+                return asyncio.create_task(coroutine, name=name)
+
+            @classmethod
+            async def async_add_executor_job(cls, function: Any) -> Any:
+                cls.calls += 1
+                if cls.calls == 1:
+                    started.set()
+                    await release.wait()
+                return function()
+
+        class Tasks:
+            @staticmethod
+            def track(task: asyncio.Task[Any]) -> asyncio.Task[Any]:
+                return task
+
+        runtime = object.__new__(GridMonitorRuntime)
+        runtime.hass = Hass()
+        runtime.archive = Archive()
+        runtime.namespace = "meter"
+        runtime.configuration_epoch = SimpleNamespace(epoch=7)
+        runtime.configuration_source_id = "sensor.grid"
+        runtime.engine = SimpleNamespace(last_sample=SimpleNamespace(timestamp_utc=None))
+        runtime._source_health_state = "unknown"
+        runtime._source_health_reason = "runtime_not_started"
+        runtime._source_health_observed_utc = datetime(2026, 1, 1, tzinfo=UTC)
+        runtime._source_health_lock = asyncio.Lock()
+        runtime._source_health_pending = deque()
+        runtime._source_health_retry_failures = 0
+        runtime._source_health_retry_not_before_utc = None
+        runtime._source_health_overflow_count = 0
+        runtime._source_health_overflow_first_utc = None
+        runtime._source_health_overflow_last_utc = None
+        runtime._source_health_interruption_windows = deque(maxlen=64)
+        runtime._source_health_task = None
+        runtime._persisted_health_signature = None
+        runtime._shutdown_complete = False
+        runtime._archive_tasks = Tasks()
+
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        runtime._set_source_health("healthy", "valid_measurement", start)
+        await asyncio.wait_for(started.wait(), timeout=2)
+        runtime._set_source_health(
+            "unavailable", "source_state_unavailable", start + timedelta(seconds=5)
+        )
+        runtime._set_source_health("healthy", "valid_measurement", start + timedelta(seconds=9))
+        release.set()
+        task = runtime._source_health_task
+        assert task is not None
+        assert await asyncio.wait_for(task, timeout=2) is True
+
+        assert persisted == [
+            ("healthy", start),
+            ("unavailable", start + timedelta(seconds=5)),
+            ("healthy", start + timedelta(seconds=9)),
+        ]
+        assert not runtime._source_health_pending
+        assert attempts["unavailable"] == 3
+        assert list(runtime._source_health_interruption_windows) == [
+            {
+                "start_utc": start + timedelta(seconds=5),
+                "end_utc": start + timedelta(seconds=9),
+            }
+        ]
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.skipif(
+    REAL_LOOP_UNAVAILABLE,
+    reason="the managed Windows runtime cannot create asyncio's socketpair",
+)
+def test_source_health_tick_retries_pending_fifo_after_signature_returns_to_persisted() -> None:
+    """A recovered current signature must not strand earlier failed transitions."""
+
+    _ensure_homeassistant_stubs()
+    from custom_components.si_grid_monitor.runtime import GridMonitorRuntime
+
+    async def scenario() -> None:
+        persisted: list[tuple[str, datetime]] = []
+
+        class Archive:
+            available = True
+            calls = 0
+
+            @classmethod
+            def transition_source_health(cls, **kwargs: Any) -> None:
+                cls.calls += 1
+                if not cls.available:
+                    raise sqlite3.OperationalError("database remains locked")
+                persisted.append((kwargs["health_state"], kwargs["observed_utc"]))
+
+        class Hass:
+            @staticmethod
+            def async_create_task(coroutine: Any, name: str) -> asyncio.Task[Any]:
+                return asyncio.create_task(coroutine, name=name)
+
+            @staticmethod
+            async def async_add_executor_job(function: Any) -> Any:
+                return function()
+
+        class Tasks:
+            @staticmethod
+            def track(task: asyncio.Task[Any]) -> asyncio.Task[Any]:
+                return task
+
+        runtime = object.__new__(GridMonitorRuntime)
+        runtime.hass = Hass()
+        runtime.archive = Archive()
+        runtime.namespace = "meter"
+        runtime.configuration_epoch = SimpleNamespace(epoch=7)
+        runtime.configuration_source_id = "sensor.grid"
+        runtime.engine = SimpleNamespace(last_sample=SimpleNamespace(timestamp_utc=None))
+        runtime.source_available = False
+        runtime.publishing = SimpleNamespace(record_internal_timer_tick=lambda: None)
+        runtime._refresh = lambda _now: None
+        runtime._source_health_state = "unknown"
+        runtime._source_health_reason = "runtime_not_started"
+        runtime._source_health_observed_utc = datetime(2026, 1, 1, tzinfo=UTC)
+        runtime._source_health_lock = asyncio.Lock()
+        runtime._source_health_pending = deque()
+        runtime._source_health_retry_failures = 0
+        runtime._source_health_retry_not_before_utc = None
+        runtime._source_health_overflow_count = 0
+        runtime._source_health_overflow_first_utc = None
+        runtime._source_health_overflow_last_utc = None
+        runtime._source_health_interruption_windows = deque(maxlen=64)
+        runtime._source_health_task = None
+        runtime._persisted_health_signature = None
+        runtime._shutdown_complete = False
+        runtime._archive_tasks = Tasks()
+
+        start = datetime(2026, 1, 1, tzinfo=UTC)
+        runtime._set_source_health("healthy", "valid_measurement", start)
+        first = runtime._source_health_task
+        assert first is not None and await asyncio.wait_for(first, timeout=2) is True
+        await asyncio.sleep(0)
+
+        Archive.available = False
+        unavailable_at = start + timedelta(seconds=5)
+        recovered_at = start + timedelta(seconds=9)
+        runtime._set_source_health("unavailable", "source_state_unavailable", unavailable_at)
+        runtime._set_source_health("healthy", "valid_measurement", recovered_at)
+        failed = runtime._source_health_task
+        assert failed is not None and await asyncio.wait_for(failed, timeout=2) is False
+        await asyncio.sleep(0)
+
+        assert runtime._health_signature == runtime._persisted_health_signature
+        assert [(item.state, item.observed_utc) for item in runtime._source_health_pending] == [
+            ("unavailable", unavailable_at),
+            ("healthy", recovered_at),
+        ]
+        assert runtime._source_health_retry_failures == 1
+
+        retry_at = runtime._source_health_retry_not_before_utc
+        assert retry_at is not None
+        runtime._async_tick(retry_at - timedelta(milliseconds=1))
+        assert runtime._source_health_task is None
+        assert Archive.calls == 4
+
+        Archive.available = True
+        runtime._async_tick(retry_at + timedelta(milliseconds=1))
+        retried = runtime._source_health_task
+        assert retried is not None and await asyncio.wait_for(retried, timeout=2) is True
+
+        assert persisted == [
+            ("healthy", start),
+            ("unavailable", unavailable_at),
+            ("healthy", recovered_at),
+        ]
+        assert not runtime._source_health_pending
+        assert runtime._source_health_retry_not_before_utc is None
+
+    asyncio.run(scenario())
+
+
+def test_source_health_pending_queue_is_bounded_and_overflow_is_observable(caplog) -> None:
+    """An extended outage bounds memory without claiming dropped diagnostics were stored."""
+
+    _ensure_homeassistant_stubs()
+    from custom_components.si_grid_monitor.runtime import (
+        SOURCE_HEALTH_PENDING_LIMIT,
+        GridMonitorRuntime,
+    )
+
+    runtime = object.__new__(GridMonitorRuntime)
+    runtime.configuration_epoch = None
+    runtime.configuration_source_id = "sensor.grid"
+    runtime.engine = SimpleNamespace(last_sample=SimpleNamespace(timestamp_utc=None))
+    runtime._source_health_state = "unknown"
+    runtime._source_health_reason = "runtime_not_started"
+    runtime._source_health_observed_utc = datetime(2026, 1, 1, tzinfo=UTC)
+    runtime._source_health_pending = deque()
+    runtime._source_health_retry_failures = 0
+    runtime._source_health_retry_not_before_utc = None
+    runtime._source_health_overflow_count = 0
+    runtime._source_health_overflow_first_utc = None
+    runtime._source_health_overflow_last_utc = None
+    runtime._source_health_interruption_windows = deque(maxlen=64)
+    runtime._source_health_task = None
+    runtime._persisted_health_signature = None
+    runtime._shutdown_complete = False
+
+    start = datetime(2026, 1, 1, tzinfo=UTC)
+    for index in range(SOURCE_HEALTH_PENDING_LIMIT + 2):
+        state = "healthy" if index % 2 == 0 else "unavailable"
+        reason = "valid_measurement" if state == "healthy" else "source_state_unavailable"
+        runtime._set_source_health(state, reason, start + timedelta(seconds=index))
+
+    assert len(runtime._source_health_pending) == SOURCE_HEALTH_PENDING_LIMIT
+    assert runtime._source_health_overflow_count == 2
+    assert runtime._source_health_overflow_first_utc == start + timedelta(
+        seconds=SOURCE_HEALTH_PENDING_LIMIT
+    )
+    assert runtime._source_health_overflow_last_utc == start + timedelta(
+        seconds=SOURCE_HEALTH_PENDING_LIMIT + 1
+    )
+    assert "was not persisted" in caplog.text
+
+
 def test_meter_archive_removal_is_entry_scoped_and_backup_is_reopenable(tmp_path: Path) -> None:
     storage = tmp_path / ".storage"
     storage.mkdir()
@@ -1662,7 +1913,7 @@ def test_meter_archive_removal_is_entry_scoped_and_backup_is_reopenable(tmp_path
     assert other.exists()
     restored = QuarterArchive(backup)
     restored.open()
-    assert restored.schema_version == 7
+    assert restored.schema_version == 8
     assert len(restored.list_quarters("meter-a", start, start + timedelta(minutes=15))) == 1
     restored.close()
 
@@ -2052,6 +2303,55 @@ def test_runtime_shutdown_finishes_durable_cleanup_after_listener_failure() -> N
     assert runtime._listeners == set()
 
 
+def test_runtime_shutdown_reports_source_health_that_cannot_be_persisted() -> None:
+    """A bounded shutdown closes SQLite but explicitly reports queued diagnostic loss."""
+
+    _ensure_homeassistant_stubs()
+    from custom_components.si_grid_monitor.runtime import GridMonitorRuntime
+
+    completed: list[str] = []
+
+    class Queue:
+        has_active_tasks = False
+
+        async def cancel_and_wait(self, _task: Any) -> None:
+            return None
+
+        async def drain(self) -> tuple[BaseException, ...]:
+            return ()
+
+    async def drain_health() -> bool:
+        completed.append("health_retry_failed")
+        return False
+
+    async def executor(function: Any, *args: Any) -> Any:
+        return function(*args)
+
+    runtime = SimpleNamespace(
+        _unsubscribers=[],
+        _listeners=set(),
+        _archive_tasks=Queue(),
+        _backfill_task=None,
+        _drain_completed=lambda: None,
+        _source_health_pending=deque([object(), object()]),
+        _async_drain_source_health_transitions=drain_health,
+        _async_store_pending_completed=lambda: asyncio.sleep(0),
+        engine=SimpleNamespace(checkpoint=lambda: None),
+        hass=SimpleNamespace(async_add_executor_job=executor),
+        archive=SimpleNamespace(close=lambda: completed.append("archive_closed")),
+    )
+
+    with pytest.raises(ExceptionGroup) as raised:
+        _run(GridMonitorRuntime._async_stop_impl(runtime))
+
+    assert [str(error) for error in raised.value.exceptions] == [
+        "2 source-health transition(s) remain unpersisted at shutdown"
+    ]
+    assert completed == ["health_retry_failed", "archive_closed"]
+    assert runtime._shutdown_complete is True
+    assert len(runtime._source_health_pending) == 2
+
+
 @pytest.mark.skipif(
     REAL_LOOP_UNAVAILABLE,
     reason="the managed Windows runtime cannot create asyncio's socketpair",
@@ -2157,7 +2457,7 @@ def test_real_loop_shutdown_cancellation_finishes_archive_and_reopens(
         rows = runtime.archive.list_quarters(entry.entry_id, start, start + timedelta(minutes=15))
         assert len(rows) == 1
         assert rows[0]["import_kwh"] == pytest.approx(0.25)
-        assert runtime.archive.schema_version == 7
+        assert runtime.archive.schema_version == 8
         runtime.archive.close()
 
     asyncio.run(scenario())

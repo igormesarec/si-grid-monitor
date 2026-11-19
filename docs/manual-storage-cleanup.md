@@ -7,7 +7,7 @@ integration quarter archives. Cleanup is a separate administrator operation.
 ## Before doing anything
 
 1. Install the optimized release, restart Home Assistant and confirm both meters,
-   all eight tabs, contracts and quarter archives work.
+   all nine tabs, contracts and quarter archives work.
 2. Keep any temporary SI Grid Monitor Recorder/InfluxDB exclusions in place while
    validating **Data Publishing & Storage** for at least a representative day.
 3. Create and verify a complete Home Assistant backup. Back up InfluxDB using its
