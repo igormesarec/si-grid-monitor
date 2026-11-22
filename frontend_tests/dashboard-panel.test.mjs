@@ -1160,6 +1160,48 @@ test("Source Health renders explicit uncertainty, quality metrics, and mobile co
   assert.match(panel._sourceHealthStyles(), /source-health-metrics article/);
 });
 
+test("Source Health timeline limits restart-unknown records to observed markers", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._language = "en";
+  panel._sourceHealth = {
+    range: {start_utc: "2026-10-24T20:00:00Z", end_utc: "2026-10-25T12:00:00Z"},
+    meter: {title: "Main Grid", source_entities: ["sensor.grid"]},
+    current: {state: "unavailable", reason_code: "source_state_unavailable"},
+    summary: {}, today_summary: {}, pagination: {page: 1, pages: 1},
+    items: [
+      {health_state: "healthy", reason_code: "valid_measurement",
+        started_utc: "2026-10-24T20:00:00Z", ended_utc: "2026-10-24T21:00:00Z",
+        duration_seconds: 3600, duration_status: "closed_observed",
+        display_status: "completed_healthy_interval", event_category: "healthy"},
+      {health_state: "unavailable", reason_code: "source_state_unavailable",
+        started_utc: "2026-10-24T21:00:00Z", ended_utc: "2026-10-24T21:15:00Z",
+        duration_seconds: 900, duration_status: "closed_observed",
+        display_status: "completed_incident", event_category: "source_interruption"},
+      {health_state: "healthy", reason_code: "valid_measurement",
+        started_utc: "2026-10-24T22:30:00Z", ended_utc: "2026-10-25T08:30:00Z",
+        duration_seconds: null, duration_status: "restart_end_unknown",
+        display_status: "unknown_termination_after_restart", event_category: "healthy"},
+      {health_state: "unavailable", reason_code: "source_state_unavailable",
+        started_utc: "2026-10-25T08:30:00Z", ended_utc: "2026-10-25T09:30:00Z",
+        duration_seconds: null, duration_status: "restart_end_unknown",
+        display_status: "unknown_termination_after_restart", event_category: "source_interruption"},
+      {health_state: "unavailable", reason_code: "source_state_unavailable",
+        started_utc: "2026-10-25T10:00:00Z", ended_utc: null,
+        duration_seconds: null, duration_status: "open_end_unknown",
+        display_status: "active_source_interruption", event_category: "source_interruption"},
+    ],
+  };
+  panel._qualityReport = {summary: {}, daily: []};
+  const html = panel._sourceHealthView();
+  assert.equal((html.match(/health-timeline-restart-unknown/g) || []).length, 2);
+  assert.equal((html.match(/health-timeline-observed-marker/g) || []).length, 2);
+  assert.equal((html.match(/Restart uncertainty — exact end unverified/g) || []).length, 6);
+  assert.match(html, /25\/10\/2026, 00:30:00 (?:CEST|GMT\+2)/);
+  assert.match(html, /25\/10\/2026, 09:30:00 (?:CET|GMT\+1)/);
+  assert.match(panel._sourceHealthStyles(), /health-timeline-observed-marker/);
+  assert.match(panel._sourceHealthStyles(), /health-timeline-restart-unknown/);
+});
+
 test("diagnostic CSV export sends the active state and source-epoch filters", async () => {
   const panel = new SIGridMonitorPanel();
   panel._language = "en";

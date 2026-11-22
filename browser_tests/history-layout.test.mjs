@@ -570,6 +570,95 @@ for (const width of [320, 360, 390, 430, 768, 1280]) {
   }
 }
 
+test("restart-unknown downtime remains hatched evidence across DST", async () => {
+  const page = await browser.newPage();
+  try {
+    await sourceHealthFixture(page, {width: 768, dark: false});
+    await page.evaluate(() => {
+      const panel = window.testPanel;
+      panel._sourceHealth.range = {
+        start_utc: "2026-10-24T20:00:00Z", end_utc: "2026-10-25T12:00:00Z",
+      };
+      panel._sourceHealth.items = [
+        {health_state: "healthy", reason_code: "valid_measurement",
+          started_utc: "2026-10-24T20:00:00Z", ended_utc: "2026-10-24T21:00:00Z",
+          duration_seconds: 3600, duration_status: "closed_observed",
+          display_status: "completed_healthy_interval", event_category: "healthy"},
+        {health_state: "unavailable", reason_code: "source_state_unavailable",
+          started_utc: "2026-10-24T21:00:00Z", ended_utc: "2026-10-24T21:15:00Z",
+          duration_seconds: 900, duration_status: "closed_observed",
+          display_status: "completed_incident", event_category: "source_interruption"},
+        {health_state: "healthy", reason_code: "valid_measurement",
+          started_utc: "2026-10-24T22:30:00Z", ended_utc: "2026-10-25T08:30:00Z",
+          duration_seconds: null, duration_status: "restart_end_unknown",
+          display_status: "unknown_termination_after_restart", event_category: "healthy"},
+        {health_state: "unavailable", reason_code: "source_state_unavailable",
+          started_utc: "2026-10-25T08:30:00Z", ended_utc: "2026-10-25T09:30:00Z",
+          duration_seconds: null, duration_status: "restart_end_unknown",
+          display_status: "unknown_termination_after_restart", event_category: "source_interruption"},
+        {health_state: "unavailable", reason_code: "source_state_unavailable",
+          started_utc: "2026-10-25T10:00:00Z", ended_utc: null,
+          duration_seconds: null, duration_status: "open_end_unknown",
+          display_status: "active_source_interruption", event_category: "source_interruption"},
+      ];
+      panel._render();
+    });
+    const evidence = await page.evaluate(() => {
+      const root = window.testPanel.shadowRoot;
+      const ranges = [...root.querySelectorAll(".health-timeline-restart-unknown")];
+      const markers = [...root.querySelectorAll(".health-timeline-observed-marker")];
+      const healthyMarker = markers.find(node => node.classList.contains("healthy"));
+      const unavailableMarker = markers.find(node => node.classList.contains("unavailable"));
+      const healthyRange = ranges[0];
+      const healthyCompleted = root.querySelector(
+        ".health-timeline-bar.healthy:not(.health-timeline-observed-marker)",
+      );
+      const unavailableCompleted = root.querySelector(
+        ".health-timeline-bar.unavailable:not(.health-timeline-observed-marker)",
+      );
+      const unknownIncident = healthyMarker.closest(".health-timeline")
+        .parentElement.querySelector(
+          '.health-incident button[data-health-quarter="2026-10-24T22:30:00Z"]',
+        )?.parentElement;
+      return {
+        barCount: root.querySelectorAll(".health-timeline-bar").length,
+        rangeCount: ranges.length,
+        markerCount: markers.length,
+        healthyMarkerWidth: healthyMarker.getBoundingClientRect().width,
+        unavailableMarkerWidth: unavailableMarker.getBoundingClientRect().width,
+        healthyRangeWidth: healthyRange.getBoundingClientRect().width,
+        completedHealthyWidth: healthyCompleted.getBoundingClientRect().width,
+        completedUnavailableWidth: unavailableCompleted.getBoundingClientRect().width,
+        unknownBackgroundImage: getComputedStyle(healthyRange).backgroundImage,
+        unknownBackgroundColor: getComputedStyle(healthyRange).backgroundColor,
+        unknownText: healthyRange.textContent,
+        healthyAria: healthyMarker.getAttribute("aria-label"),
+        healthyUtc: healthyMarker.dataset.healthQuarter,
+        incidentText: unknownIncident?.textContent,
+        pageOverflow: document.documentElement.scrollWidth - innerWidth,
+      };
+    });
+    assert.equal(evidence.barCount, 5);
+    assert.equal(evidence.rangeCount, 2);
+    assert.equal(evidence.markerCount, 2);
+    assert.ok(evidence.healthyMarkerWidth <= 12, JSON.stringify(evidence));
+    assert.ok(evidence.unavailableMarkerWidth <= 12, JSON.stringify(evidence));
+    assert.ok(evidence.healthyRangeWidth > evidence.healthyMarkerWidth * 20, JSON.stringify(evidence));
+    assert.ok(evidence.completedHealthyWidth > evidence.healthyMarkerWidth, JSON.stringify(evidence));
+    assert.ok(evidence.completedUnavailableWidth > evidence.unavailableMarkerWidth, JSON.stringify(evidence));
+    assert.match(evidence.unknownBackgroundImage, /repeating-linear-gradient/);
+    assert.equal(evidence.unknownBackgroundColor, "rgba(0, 0, 0, 0)");
+    assert.match(evidence.unknownText, /Restart uncertainty/);
+    assert.match(evidence.healthyAria, /(?:CEST|GMT\+2)/);
+    assert.match(evidence.healthyAria, /(?:CET|GMT\+1)/);
+    assert.equal(evidence.healthyUtc, "2026-10-24T22:30:00Z");
+    assert.match(evidence.incidentText, /Unknown termination after restart/);
+    assert.match(evidence.incidentText, /25\/10\/2026, 00:30:00/);
+    assert.match(evidence.incidentText, /25\/10\/2026, 09:30:00/);
+    assert.ok(evidence.pageOverflow <= 1, JSON.stringify(evidence));
+  } finally { await page.close(); }
+});
+
 test("Source Health timeline opens the exact affected quarter", async () => {
   const page = await browser.newPage();
   try {

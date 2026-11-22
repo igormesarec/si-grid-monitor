@@ -15,6 +15,9 @@ All notable changes to SI Grid Monitor will be documented here.
   diagnostic transition.
 - Added an honest interruption timeline with date/time axis, state legend,
   unknown unrecorded areas and exact-quarter selection.
+- Restart-unknown records now show only a small observed-state marker; the
+  unverified interval remains visibly hatched instead of appearing continuously
+  healthy or unavailable.
 - Reworked historical contract snapshots into readable cards that keep epoch,
   effective timestamp, assignment dates, B1–B5 values, provenance and technical
   details separate.

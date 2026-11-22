@@ -160,6 +160,7 @@ test("source-health incident categories and timeline guidance are bilingual", ()
     "source_health.status_unknown_termination_after_restart",
     "source_health.status_completed_lifecycle_event", "source_health.legend",
     "source_health.unrecorded_unknown", "source_health.timeline_page_notice",
+    "source_health.restart_uncertainty",
     "contracts.effective_time", "contracts.assignment_dates",
     "contracts.legacy_targets", "contracts.technical_details",
   ]) {

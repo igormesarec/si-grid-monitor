@@ -295,8 +295,97 @@ def test_source_health_status_distinguishes_open_closed_and_restart_unknown(tmp_
     by_state = {item["health_state"]: item for item in report["items"]}
     assert by_state["unavailable"]["display_status"] == "completed_incident"
     assert by_state["unavailable"]["duration_seconds"] == pytest.approx(12.345)
+    assert by_state["unavailable"]["duration_status"] == "closed_observed"
     assert by_state["healthy"]["display_status"] == "unknown_termination_after_restart"
     assert by_state["healthy"]["duration_seconds"] is None
+    assert by_state["healthy"]["duration_status"] == "restart_end_unknown"
+
+
+def test_source_health_status_covers_completed_and_active_intervals(tmp_path) -> None:
+    archive = _archive(tmp_path)
+    start = datetime(2026, 11, 22, 10, 0, tzinfo=UTC)
+    for offset, state, reason in (
+        (0, "healthy", "valid_measurement"),
+        (5, "unavailable", "source_state_unavailable"),
+        (10, "healthy", "valid_measurement"),
+        (15, "unavailable", "source_state_unavailable"),
+    ):
+        archive.transition_source_health(
+            namespace="meter",
+            source_epoch=1,
+            source_id="sensor.grid",
+            health_state=state,
+            reason_code=reason,
+            observed_utc=start + timedelta(seconds=offset),
+            last_valid_sample_utc=start + timedelta(seconds=max(0, offset - 1)),
+        )
+
+    report = source_health_report(
+        archive,
+        "meter",
+        start,
+        start + timedelta(minutes=1),
+        now_utc=start + timedelta(seconds=20),
+    )
+    items = sorted(report["items"], key=lambda item: item["started_utc"])
+    assert items[0]["display_status"] == "completed_healthy_interval"
+    assert items[0]["duration_status"] == "closed_observed"
+    assert items[1]["display_status"] == "completed_incident"
+    assert items[1]["duration_status"] == "closed_observed"
+    assert items[-1]["display_status"] == "active_source_interruption"
+    assert items[-1]["duration_status"] == "open_end_unknown"
+    assert items[-1]["observed_open_seconds"] == pytest.approx(5.0)
+
+
+@pytest.mark.parametrize(
+    ("health_state", "reason_code"),
+    (
+        ("healthy", "valid_measurement"),
+        ("unavailable", "source_state_unavailable"),
+    ),
+)
+def test_ten_hour_restart_gap_across_dst_remains_unverified(
+    tmp_path, health_state: str, reason_code: str
+) -> None:
+    archive = _archive(tmp_path)
+    started = datetime(2026, 10, 24, 22, 30, tzinfo=UTC)
+    restarted = started + timedelta(hours=10)
+    archive.transition_source_health(
+        namespace="meter",
+        source_epoch=1,
+        source_id="sensor.grid",
+        health_state=health_state,
+        reason_code=reason_code,
+        observed_utc=started,
+        last_valid_sample_utc=started,
+    )
+    archive.transition_source_health(
+        namespace="meter",
+        source_epoch=1,
+        source_id="sensor.grid",
+        health_state="runtime_restarting",
+        reason_code="runtime_starting",
+        observed_utc=restarted,
+        last_valid_sample_utc=started,
+        recovery_code="end_unknown_at_restart",
+    )
+
+    report = source_health_report(
+        archive,
+        "meter",
+        started - timedelta(minutes=30),
+        restarted + timedelta(minutes=30),
+        now_utc=restarted,
+    )
+    item = next(entry for entry in report["items"] if entry["health_state"] == health_state)
+    assert item["started_utc"] == started.isoformat()
+    assert item["ended_utc"] == restarted.isoformat()
+    assert item["duration_seconds"] is None
+    assert item["duration_status"] == "restart_end_unknown"
+    assert item["display_status"] == "unknown_termination_after_restart"
+    assert item["start_local"].endswith("+02:00")
+    assert item["end_local"].endswith("+01:00")
+    assert report["summary"]["affected_quarter_count"] == 0
 
 
 def test_incident_csv_pages_all_rows_and_applies_state_and_epoch_filters(tmp_path) -> None:
