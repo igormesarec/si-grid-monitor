@@ -149,3 +149,22 @@ test("Contracts and historical calendar dynamic content has complete bilingual k
     assert.notEqual(translateDashboard(key, "sl"), key, `missing Slovenian translation for ${key}`);
   }
 });
+
+test("source-health incident categories and timeline guidance are bilingual", () => {
+  for (const key of [
+    "source_health.source_interruptions", "source_health.lifecycle_events",
+    "source_health.first_recorded", "source_health.category_source_interruption",
+    "source_health.category_lifecycle", "source_health.category_healthy",
+    "source_health.status_ongoing_healthy", "source_health.status_active_source_interruption",
+    "source_health.status_completed_incident",
+    "source_health.status_unknown_termination_after_restart",
+    "source_health.status_completed_lifecycle_event", "source_health.legend",
+    "source_health.unrecorded_unknown", "source_health.timeline_page_notice",
+    "source_health.restart_uncertainty",
+    "contracts.effective_time", "contracts.assignment_dates",
+    "contracts.legacy_targets", "contracts.technical_details",
+  ]) {
+    assert.notEqual(translateDashboard(key, "en"), key, `missing English translation for ${key}`);
+    assert.notEqual(translateDashboard(key, "sl"), key, `missing Slovenian translation for ${key}`);
+  }
+});

@@ -103,7 +103,12 @@ async function contractsFixture(page, {width, dark = false}) {
       audit_pagination: {page: 1, pages: 2, total: 51},
       historical_configuration: [{epoch: 1, effective_utc: "2026-01-01T00:00:00+00:00",
         source_id: "sensor.grid", block_targets_kw: [1, 1.1, 1.2, 1.3, 1.4],
-        contracted_power_periods: null}],
+        contracted_power_periods: [
+          {effective_from: "2026-01-01", effective_to: "2026-12-31",
+            block_targets_kw: [1, 1.1, 1.2, 1.3, 1.4], provenance: "2026 fixture"},
+          {effective_from: "2027-01-01", effective_to: "2027-12-31",
+            block_targets_kw: [2, 2.1, 2.2, 2.3, 2.4], provenance: "2027 fixture"},
+        ]}],
       archived_target_evidence: [{first_start_utc: "2026-01-01T00:00:00+00:00",
         last_start_utc: "2026-06-30T23:45:00+00:00", tariff_block: 2,
         contractual_target_kw: 1.1, target_provenance: "fixture",
@@ -175,11 +180,18 @@ async function sourceHealthFixture(page, {width, dark = false, language = "en"})
       meter: {title: "Main Grid", source_entities: ["sensor.solaredge_m1_ac_power_with_long_identifier"]},
       current: {state: "unavailable", reason_code: "source_state_unavailable",
         observed_utc: "2026-10-25T03:49:01Z", last_valid_sample_utc: "2026-10-25T03:48:00Z"},
-      summary: {incident_count: 2, affected_quarter_count: 3, unknown_duration_count: 1},
+      summary: {incident_count: 2, source_interruption_count: 2, lifecycle_event_count: 1,
+        affected_quarter_count: 3, unknown_duration_count: 1,
+        source_interruption_unknown_duration_count: 1, lifecycle_unknown_duration_count: 0,
+        diagnostic_logging_started_utc: "2026-10-01T00:00:00Z"},
+      today_summary: {source_interruption_count: 1, lifecycle_event_count: 0,
+        affected_quarter_count: 3, incomplete_archived_quarter_count: 2},
       pagination: {page: 1, pages: 1},
       items: [{health_state: "unavailable", reason_code: "source_state_unavailable",
         started_utc: "2026-10-25T03:49:01Z", ended_utc: null, duration_seconds: null,
-        evidence_type: "observed_live", last_valid_sample_utc: "2026-10-25T03:48:00Z"}],
+        observed_open_seconds: 65.125, event_category: "source_interruption",
+        display_status: "active_source_interruption", evidence_type: "observed_live",
+        last_valid_sample_utc: "2026-10-25T03:48:00Z"}],
     };
     panel._qualityReport = {summary: {quarter_completeness_pct: 95,
       measurement_time_coverage_pct: 98.5, missing_measurement_seconds: 38.1},
@@ -408,10 +420,11 @@ for (const {width, dark} of [{width: 360, dark: true}, {width: 1280, dark: false
 }
 
 for (const width of [320, 360, 390, 430, 768, 1280]) {
-  test(`CONTRACTS remains readable without page overflow at ${width}px`, async () => {
+  for (const dark of [false, true]) {
+  test(`CONTRACTS remains readable without page overflow at ${width}px, ${dark ? "dark" : "light"}`, async () => {
     const page = await browser.newPage();
     try {
-      await contractsFixture(page, {width, dark: width === 360});
+      await contractsFixture(page, {width, dark});
       const layout = await page.evaluate(() => {
         const root = window.testPanel.shadowRoot;
         const periods = [...root.querySelectorAll(".contract-period")];
@@ -424,6 +437,10 @@ for (const width of [320, 360, 390, 430, 768, 1280]) {
           periods: periods.length,
           managementButtons: root.querySelectorAll("[data-manage-contracts]").length,
           historicalEvidence: root.querySelector(".contract-evidence")?.textContent,
+          historicalEvidenceOverflow: root.querySelector(".contract-evidence")?.scrollWidth
+            - root.querySelector(".contract-evidence")?.clientWidth,
+          historicalAssignments: root.querySelectorAll(".contract-evidence-assignment").length,
+          historicalBlocks: root.querySelectorAll(".contract-evidence-blocks span").length,
           clipped: periods.some(node => node.scrollWidth > node.clientWidth + 1),
           gap: root.querySelector(".contract-gap")?.textContent,
           tabsScrollable: root.querySelector("nav").scrollWidth >= root.querySelector("nav").clientWidth,
@@ -436,6 +453,9 @@ for (const width of [320, 360, 390, 430, 768, 1280]) {
       assert.equal(layout.periods, 3);
       assert.equal(layout.managementButtons, 1);
       assert.match(layout.historicalEvidence, /sensor\.grid/);
+      assert.ok(layout.historicalEvidenceOverflow <= 1, JSON.stringify(layout));
+      assert.equal(layout.historicalAssignments, 2);
+      assert.equal(layout.historicalBlocks, 10);
       assert.equal(layout.clipped, false);
       assert.match(layout.gap, /Not configured/);
       assert.equal(layout.tabsScrollable, true);
@@ -450,6 +470,7 @@ for (const width of [320, 360, 390, 430, 768, 1280]) {
       }
     } finally { await page.close(); }
   });
+  }
 }
 
 for (const width of [320, 768, 1280]) {
@@ -510,15 +531,16 @@ for (const width of [320, 1280]) {
 }
 
 for (const width of [320, 360, 390, 430, 768, 1280]) {
-  test(`Source Health remains readable without page overflow at ${width}px`, async () => {
+  for (const dark of [false, true]) {
+  test(`Source Health remains readable without page overflow at ${width}px, ${dark ? "dark" : "light"}`, async () => {
     const page = await browser.newPage();
     try {
-      await sourceHealthFixture(page, {width, dark: width === 360, language: width === 390 ? "sl" : "en"});
+      await sourceHealthFixture(page, {width, dark, language: width === 390 ? "sl" : "en"});
       const layout = await page.evaluate(() => {
         const root = window.testPanel.shadowRoot;
         const main = root.querySelector("main").getBoundingClientRect();
         const incident = root.querySelector(".health-incident").getBoundingClientRect();
-        const source = root.querySelector(".metrics article:nth-child(2) strong");
+        const source = root.querySelector(".source-health-metrics .source-identity strong");
         return {
           pageOverflow: document.documentElement.scrollWidth - window.innerWidth,
           mainWidth: main.width,
@@ -526,6 +548,9 @@ for (const width of [320, 360, 390, 430, 768, 1280]) {
           sourceOverflow: source.scrollWidth - source.clientWidth,
           controls: root.querySelectorAll(".source-health-controls label").length,
           timelineBars: root.querySelectorAll(".health-timeline-bar").length,
+          timelineTicks: root.querySelectorAll(".health-axis-tick").length,
+          legendItems: root.querySelectorAll(".health-timeline-legend span").length,
+          metricCards: root.querySelectorAll(".source-health-metrics article").length,
           navVisible: root.querySelector('[data-tab="source_health"]') !== null,
         };
       });
@@ -534,9 +559,122 @@ for (const width of [320, 360, 390, 430, 768, 1280]) {
       assert.ok(layout.sourceOverflow <= 1, JSON.stringify(layout));
       assert.equal(layout.controls, 4);
       assert.equal(layout.timelineBars, 1);
+      assert.equal(layout.timelineTicks, 3);
+      assert.equal(layout.legendItems, 5);
+      assert.ok(layout.metricCards >= 12);
       assert.equal(layout.navVisible, true);
     } finally {
       await page.close();
     }
   });
+  }
 }
+
+test("restart-unknown downtime remains hatched evidence across DST", async () => {
+  const page = await browser.newPage();
+  try {
+    await sourceHealthFixture(page, {width: 768, dark: false});
+    await page.evaluate(() => {
+      const panel = window.testPanel;
+      panel._sourceHealth.range = {
+        start_utc: "2026-10-24T20:00:00Z", end_utc: "2026-10-25T12:00:00Z",
+      };
+      panel._sourceHealth.items = [
+        {health_state: "healthy", reason_code: "valid_measurement",
+          started_utc: "2026-10-24T20:00:00Z", ended_utc: "2026-10-24T21:00:00Z",
+          duration_seconds: 3600, duration_status: "closed_observed",
+          display_status: "completed_healthy_interval", event_category: "healthy"},
+        {health_state: "unavailable", reason_code: "source_state_unavailable",
+          started_utc: "2026-10-24T21:00:00Z", ended_utc: "2026-10-24T21:15:00Z",
+          duration_seconds: 900, duration_status: "closed_observed",
+          display_status: "completed_incident", event_category: "source_interruption"},
+        {health_state: "healthy", reason_code: "valid_measurement",
+          started_utc: "2026-10-24T22:30:00Z", ended_utc: "2026-10-25T08:30:00Z",
+          duration_seconds: null, duration_status: "restart_end_unknown",
+          display_status: "unknown_termination_after_restart", event_category: "healthy"},
+        {health_state: "unavailable", reason_code: "source_state_unavailable",
+          started_utc: "2026-10-25T08:30:00Z", ended_utc: "2026-10-25T09:30:00Z",
+          duration_seconds: null, duration_status: "restart_end_unknown",
+          display_status: "unknown_termination_after_restart", event_category: "source_interruption"},
+        {health_state: "unavailable", reason_code: "source_state_unavailable",
+          started_utc: "2026-10-25T10:00:00Z", ended_utc: null,
+          duration_seconds: null, duration_status: "open_end_unknown",
+          display_status: "active_source_interruption", event_category: "source_interruption"},
+      ];
+      panel._render();
+    });
+    const evidence = await page.evaluate(() => {
+      const root = window.testPanel.shadowRoot;
+      const ranges = [...root.querySelectorAll(".health-timeline-restart-unknown")];
+      const markers = [...root.querySelectorAll(".health-timeline-observed-marker")];
+      const healthyMarker = markers.find(node => node.classList.contains("healthy"));
+      const unavailableMarker = markers.find(node => node.classList.contains("unavailable"));
+      const healthyRange = ranges[0];
+      const healthyCompleted = root.querySelector(
+        ".health-timeline-bar.healthy:not(.health-timeline-observed-marker)",
+      );
+      const unavailableCompleted = root.querySelector(
+        ".health-timeline-bar.unavailable:not(.health-timeline-observed-marker)",
+      );
+      const unknownIncident = healthyMarker.closest(".health-timeline")
+        .parentElement.querySelector(
+          '.health-incident button[data-health-quarter="2026-10-24T22:30:00Z"]',
+        )?.parentElement;
+      return {
+        barCount: root.querySelectorAll(".health-timeline-bar").length,
+        rangeCount: ranges.length,
+        markerCount: markers.length,
+        healthyMarkerWidth: healthyMarker.getBoundingClientRect().width,
+        unavailableMarkerWidth: unavailableMarker.getBoundingClientRect().width,
+        healthyRangeWidth: healthyRange.getBoundingClientRect().width,
+        completedHealthyWidth: healthyCompleted.getBoundingClientRect().width,
+        completedUnavailableWidth: unavailableCompleted.getBoundingClientRect().width,
+        unknownBackgroundImage: getComputedStyle(healthyRange).backgroundImage,
+        unknownBackgroundColor: getComputedStyle(healthyRange).backgroundColor,
+        unknownText: healthyRange.textContent,
+        healthyAria: healthyMarker.getAttribute("aria-label"),
+        healthyUtc: healthyMarker.dataset.healthQuarter,
+        incidentText: unknownIncident?.textContent,
+        pageOverflow: document.documentElement.scrollWidth - innerWidth,
+      };
+    });
+    assert.equal(evidence.barCount, 5);
+    assert.equal(evidence.rangeCount, 2);
+    assert.equal(evidence.markerCount, 2);
+    assert.ok(evidence.healthyMarkerWidth <= 12, JSON.stringify(evidence));
+    assert.ok(evidence.unavailableMarkerWidth <= 12, JSON.stringify(evidence));
+    assert.ok(evidence.healthyRangeWidth > evidence.healthyMarkerWidth * 20, JSON.stringify(evidence));
+    assert.ok(evidence.completedHealthyWidth > evidence.healthyMarkerWidth, JSON.stringify(evidence));
+    assert.ok(evidence.completedUnavailableWidth > evidence.unavailableMarkerWidth, JSON.stringify(evidence));
+    assert.match(evidence.unknownBackgroundImage, /repeating-linear-gradient/);
+    assert.equal(evidence.unknownBackgroundColor, "rgba(0, 0, 0, 0)");
+    assert.match(evidence.unknownText, /Restart uncertainty/);
+    assert.match(evidence.healthyAria, /(?:CEST|GMT\+2)/);
+    assert.match(evidence.healthyAria, /(?:CET|GMT\+1)/);
+    assert.equal(evidence.healthyUtc, "2026-10-24T22:30:00Z");
+    assert.match(evidence.incidentText, /Unknown termination after restart/);
+    assert.match(evidence.incidentText, /25\/10\/2026, 00:30:00/);
+    assert.match(evidence.incidentText, /25\/10\/2026, 09:30:00/);
+    assert.ok(evidence.pageOverflow <= 1, JSON.stringify(evidence));
+  } finally { await page.close(); }
+});
+
+test("Source Health timeline opens the exact affected quarter", async () => {
+  const page = await browser.newPage();
+  try {
+    await sourceHealthFixture(page, {width: 360, dark: false});
+    await page.evaluate(() => {
+      window.testPanel._loadTab = async () => {};
+      window.testPanel._render = () => {};
+    });
+    await page.locator("si-grid-monitor-panel .health-timeline-bar").click();
+    const selection = await page.evaluate(() => (
+      {
+        tab: window.testPanel._tab,
+        selected: window.testPanel._selectedTodayQuarterUtc,
+      }
+    ));
+    assert.equal(selection.tab, "today");
+    assert.equal(selection.selected, "2026-10-25T03:45:00.000Z");
+  } finally { await page.close(); }
+});

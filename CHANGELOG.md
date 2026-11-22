@@ -4,6 +4,24 @@ All notable changes to SI Grid Monitor will be documented here.
 
 ## [Unreleased]
 
+### V1.0.6.1 live-acceptance hotfix draft
+
+- Reworked Source Health summaries into consistent responsive metric cards with
+  safe wrapping for long entity IDs.
+- Separated observed source interruptions from integration lifecycle events
+  without modifying any stored transition, reason code or quarter coverage.
+- Added second-precision Europe/Ljubljana timestamps, human-readable durations,
+  explicit open/completed/restart-unknown states and the first recorded
+  diagnostic transition.
+- Added an honest interruption timeline with date/time axis, state legend,
+  unknown unrecorded areas and exact-quarter selection.
+- Restart-unknown records now show only a small observed-state marker; the
+  unverified interval remains visibly hatched instead of appearing continuously
+  healthy or unavailable.
+- Reworked historical contract snapshots into readable cards that keep epoch,
+  effective timestamp, assignment dates, B1–B5 values, provenance and technical
+  details separate.
+
 ### V1.0.6 source-health diagnostics draft
 
 - Added durable per-meter, transition-only source-health intervals for healthy,

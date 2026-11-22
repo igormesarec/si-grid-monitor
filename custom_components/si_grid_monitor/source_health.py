@@ -10,7 +10,13 @@ from dataclasses import asdict
 from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
-from .archive import QuarterArchive, SourceHealthIncident, archive_row_validity
+from .archive import (
+    SOURCE_INTERRUPTION_STATES,
+    SOURCE_LIFECYCLE_STATES,
+    QuarterArchive,
+    SourceHealthIncident,
+    archive_row_validity,
+)
 from .engine import LJUBLJANA, quarter_bounds, quarter_starts_for_local_day
 
 HEALTH_STATES = frozenset(
@@ -27,7 +33,8 @@ HEALTH_STATES = frozenset(
         "unknown",
     }
 )
-INTERRUPTION_STATES = HEALTH_STATES - {"healthy"}
+INTERRUPTION_STATES = SOURCE_INTERRUPTION_STATES
+LIFECYCLE_STATES = SOURCE_LIFECYCLE_STATES
 MAX_REPORT_DAYS = 366
 MAX_CSV_ROWS = 10_000
 
@@ -76,6 +83,28 @@ def incident_dict(
         if incident.ended_utc is not None
         else None
     )
+    if incident.health_state == "healthy":
+        result["event_category"] = "healthy"
+    elif incident.health_state in LIFECYCLE_STATES:
+        result["event_category"] = "lifecycle"
+    else:
+        result["event_category"] = "source_interruption"
+    if incident.recovery_code == "end_unknown_at_restart":
+        result["display_status"] = "unknown_termination_after_restart"
+    elif incident.ended_utc is None:
+        result["display_status"] = (
+            "ongoing_healthy"
+            if incident.health_state == "healthy"
+            else "active_lifecycle_event"
+            if incident.health_state in LIFECYCLE_STATES
+            else "active_source_interruption"
+        )
+    elif incident.health_state == "healthy":
+        result["display_status"] = "completed_healthy_interval"
+    elif incident.health_state in LIFECYCLE_STATES:
+        result["display_status"] = "completed_lifecycle_event"
+    else:
+        result["display_status"] = "completed_incident"
     return result
 
 
@@ -113,6 +142,7 @@ def source_health_report(
         health_states=states,
         source_epoch=source_epoch,
     )
+    recording_started_utc = archive.source_health_recording_started_utc(namespace)
     metric_intervals = archive.source_health_metric_intervals(
         namespace,
         start_utc,
@@ -221,12 +251,19 @@ def source_health_report(
         },
         "summary": {
             "incident_count": aggregate["incident_count"],
+            "source_interruption_count": aggregate["source_interruption_count"],
+            "lifecycle_event_count": aggregate["lifecycle_event_count"],
+            "healthy_interval_count": aggregate["healthy_interval_count"],
             "matching_transition_count": aggregate["matching_transition_count"],
             "unavailable_observed_seconds": aggregate["observed_seconds_by_state"].get(
                 "unavailable", 0.0
             ),
             "stale_observed_seconds": aggregate["observed_seconds_by_state"].get("stale", 0.0),
             "unknown_duration_count": aggregate["unknown_duration_count"],
+            "source_interruption_unknown_duration_count": aggregate[
+                "source_interruption_unknown_duration_count"
+            ],
+            "lifecycle_unknown_duration_count": aggregate["lifecycle_unknown_duration_count"],
             "affected_quarter_count": len(affected_quarters),
             "incomplete_archived_quarter_count": incomplete,
             "quarter_record_missing_seconds": missing_seconds,
@@ -234,6 +271,8 @@ def source_health_report(
             "metrics_truncated": False,
             "incident_duration_is_not_quarter_gap_seconds": True,
             "first_transition_utc": aggregate["first_transition_utc"],
+            "first_source_interruption_utc": aggregate["first_source_interruption_utc"],
+            "diagnostic_logging_started_utc": recording_started_utc,
             "last_transition_utc": aggregate["last_transition_utc"],
         },
         "recurring_patterns": recurring_patterns,
@@ -243,6 +282,8 @@ def source_health_report(
             "metrics_complete": True,
             "metrics_truncated": False,
             "incident_count": today_aggregate["incident_count"],
+            "source_interruption_count": today_aggregate["source_interruption_count"],
+            "lifecycle_event_count": today_aggregate["lifecycle_event_count"],
             "affected_quarter_count": len(today_affected),
             "incomplete_archived_quarter_count": sum(
                 str(row["quality"]) in {"incomplete", "unavailable"} for row in today_rows

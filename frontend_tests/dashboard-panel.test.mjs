@@ -1005,7 +1005,12 @@ test("CONTRACTS timeline is responsive and keeps three-decimal comparison values
     audit_pagination: {page: 1, pages: 3, total: 101},
     historical_configuration: [{epoch: 1, effective_utc: "2026-01-01T00:00:00+00:00",
       source_id: "sensor.grid", block_targets_kw: [1,1.1,1.2,1.3,1.4],
-      contracted_power_periods: null}],
+      contracted_power_periods: [
+        {effective_from: "2026-01-01", effective_to: "2026-12-31",
+          block_targets_kw: [1,1.1,1.2,1.3,1.4], provenance: "2026 fixture"},
+        {effective_from: "2027-01-01", effective_to: "2027-12-31",
+          block_targets_kw: [2,2.1,2.2,2.3,2.4], provenance: "2027 fixture"},
+      ]}],
     archived_target_evidence: [{first_start_utc: "2026-01-01T00:00:00+00:00",
       last_start_utc: "2026-06-30T23:45:00+00:00", tariff_block: 2,
       contractual_target_kw: 1.1, target_provenance: "fixture",
@@ -1022,10 +1027,18 @@ test("CONTRACTS timeline is responsive and keeps three-decimal comparison values
   assert.match(html, /Historical configuration snapshots/);
   assert.match(html, /Immutable archived-quarter target evidence/);
   assert.match(html, /sensor\.grid/);
+  assert.match(html, /contract-evidence-assignment/);
+  assert.match(html, /Contract assignment dates/);
+  assert.match(html, /Effective date and time/);
+  assert.match(html, /Technical details/);
+  assert.equal((html.match(/contract-evidence-blocks/g) || []).length, 2);
+  assert.match(html, /2026 fixture/);
+  assert.match(html, /2027 fixture/);
   assert.match(html, /Page 1 of 3 · 101 events/);
   const css = panel._contractStyles();
   assert.match(css, /@media\(max-width:700px\)/);
   assert.match(css, /grid-template-columns:1fr/);
+  assert.match(css, /contract-evidence-blocks/);
   panel._contractSelection = [0, 1];
   const selectedHtml = panel._contractsView();
   assert.equal((selectedHtml.match(/aria-pressed="true"/g) || []).length, 2);
@@ -1113,14 +1126,19 @@ test("Source Health renders explicit uncertainty, quality metrics, and mobile co
     range: {start_utc: "2026-10-25T00:00:00Z", end_utc: "2026-10-26T00:00:00Z"},
     meter: {title: "Main Grid", source_entities: ["sensor.solaredge_m1_ac_power"]},
     current: {state: "unavailable", reason_code: "source_state_unavailable",
-      last_valid_sample_utc: START_A},
+      observed_utc: "2026-10-19T08:00:01+00:00", last_valid_sample_utc: START_A},
     summary: {incident_count: 1, affected_quarter_count: 2,
-      unknown_duration_count: 1},
+      source_interruption_count: 1, lifecycle_event_count: 2,
+      source_interruption_unknown_duration_count: 1, lifecycle_unknown_duration_count: 1,
+      diagnostic_logging_started_utc: "2026-10-19T08:00:00+00:00"},
+    today_summary: {source_interruption_count: 1, lifecycle_event_count: 0,
+      affected_quarter_count: 2, incomplete_archived_quarter_count: 1},
     pagination: {page: 1, pages: 1},
     items: [{incident_id: "event", health_state: "unavailable",
       reason_code: "source_state_unavailable", started_utc: START_A,
       ended_utc: null, duration_seconds: null, evidence_type: "observed_live",
-      last_valid_sample_utc: START_A}],
+      observed_open_seconds: 65.125, event_category: "source_interruption",
+      display_status: "active_source_interruption", last_valid_sample_utc: START_A}],
   };
   panel._qualityReport = {summary: {quarter_completeness_pct: 95,
     measurement_time_coverage_pct: 98.5, missing_measurement_seconds: 38.1},
@@ -1128,12 +1146,60 @@ test("Source Health renders explicit uncertainty, quality metrics, and mobile co
     valid_quarters: 94, incomplete_quarters: 2, unavailable_quarters: 0,
     measurement_coverage_seconds: 86000}]};
   const html = panel._sourceHealthView();
-  assert.match(html, /Open; exact end unknown/);
+  assert.match(html, /Active source interruption/);
+  assert.match(html, /1 min 5\.125 s/);
+  assert.match(html, /19\/10\/2026, 10:00:00 CEST/);
   assert.match(html, /Incident timing is explanatory evidence/);
+  assert.match(html, /Integration lifecycle events/);
+  assert.match(html, /Earlier periods are unknown, not verified healthy/);
+  assert.match(html, /Unrecorded time remains unknown/);
   assert.match(html, /sensor\.solaredge_m1_ac_power/);
   assert.match(html, /Quarter completeness/);
   assert.match(html, /Measurement time coverage/);
   assert.match(panel._sourceHealthStyles(), /max-width:430px/);
+  assert.match(panel._sourceHealthStyles(), /source-health-metrics article/);
+});
+
+test("Source Health timeline limits restart-unknown records to observed markers", () => {
+  const panel = new SIGridMonitorPanel();
+  panel._language = "en";
+  panel._sourceHealth = {
+    range: {start_utc: "2026-10-24T20:00:00Z", end_utc: "2026-10-25T12:00:00Z"},
+    meter: {title: "Main Grid", source_entities: ["sensor.grid"]},
+    current: {state: "unavailable", reason_code: "source_state_unavailable"},
+    summary: {}, today_summary: {}, pagination: {page: 1, pages: 1},
+    items: [
+      {health_state: "healthy", reason_code: "valid_measurement",
+        started_utc: "2026-10-24T20:00:00Z", ended_utc: "2026-10-24T21:00:00Z",
+        duration_seconds: 3600, duration_status: "closed_observed",
+        display_status: "completed_healthy_interval", event_category: "healthy"},
+      {health_state: "unavailable", reason_code: "source_state_unavailable",
+        started_utc: "2026-10-24T21:00:00Z", ended_utc: "2026-10-24T21:15:00Z",
+        duration_seconds: 900, duration_status: "closed_observed",
+        display_status: "completed_incident", event_category: "source_interruption"},
+      {health_state: "healthy", reason_code: "valid_measurement",
+        started_utc: "2026-10-24T22:30:00Z", ended_utc: "2026-10-25T08:30:00Z",
+        duration_seconds: null, duration_status: "restart_end_unknown",
+        display_status: "unknown_termination_after_restart", event_category: "healthy"},
+      {health_state: "unavailable", reason_code: "source_state_unavailable",
+        started_utc: "2026-10-25T08:30:00Z", ended_utc: "2026-10-25T09:30:00Z",
+        duration_seconds: null, duration_status: "restart_end_unknown",
+        display_status: "unknown_termination_after_restart", event_category: "source_interruption"},
+      {health_state: "unavailable", reason_code: "source_state_unavailable",
+        started_utc: "2026-10-25T10:00:00Z", ended_utc: null,
+        duration_seconds: null, duration_status: "open_end_unknown",
+        display_status: "active_source_interruption", event_category: "source_interruption"},
+    ],
+  };
+  panel._qualityReport = {summary: {}, daily: []};
+  const html = panel._sourceHealthView();
+  assert.equal((html.match(/health-timeline-restart-unknown/g) || []).length, 2);
+  assert.equal((html.match(/health-timeline-observed-marker/g) || []).length, 2);
+  assert.equal((html.match(/Restart uncertainty — exact end unverified/g) || []).length, 6);
+  assert.match(html, /25\/10\/2026, 00:30:00 (?:CEST|GMT\+2)/);
+  assert.match(html, /25\/10\/2026, 09:30:00 (?:CET|GMT\+1)/);
+  assert.match(panel._sourceHealthStyles(), /health-timeline-observed-marker/);
+  assert.match(panel._sourceHealthStyles(), /health-timeline-restart-unknown/);
 });
 
 test("diagnostic CSV export sends the active state and source-epoch filters", async () => {

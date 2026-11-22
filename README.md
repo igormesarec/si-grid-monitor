@@ -8,10 +8,10 @@ contracted-power target, and preserves auditable quarter history. It is useful
 for homes and small sites with heat pumps, EV charging, solar PV or other loads
 that need clearer visibility into quarter-hour grid import.
 
-**Release status:** V1.0.6 is a draft maintenance release candidate based on
-V1.0.5. It adds durable, event-based source-health diagnostics and separates
-quarter completeness from measured-time coverage. Real Home Assistant and
-Android acceptance is still required.
+**Release status:** V1.0.6.1 is a draft live-acceptance hotfix candidate based on
+V1.0.6. It improves the responsive Source Health and historical-contract views
+and separates observed source interruptions from integration lifecycle events.
+Real Home Assistant and Android acceptance is still required.
 
 This is monitoring and decision-support software—not a distributor-certified
 meter, guaranteed bill calculation, physical protection device or automatic
