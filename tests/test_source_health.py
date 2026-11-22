@@ -1,4 +1,4 @@
-"""V1.0.6 durable source-health and quality-report regressions."""
+"""V1.0.6.1 durable source-health and quality-report regressions."""
 
 from __future__ import annotations
 
@@ -208,6 +208,95 @@ def test_source_health_summary_is_complete_beyond_first_200_transitions(tmp_path
     assert report["summary"]["unavailable_observed_seconds"] == 102 * 60
     assert report["summary"]["metrics_complete"] is True
     assert report["summary"]["metrics_truncated"] is False
+
+
+def test_source_interruptions_and_lifecycle_events_are_reported_separately(tmp_path) -> None:
+    archive = _archive(tmp_path)
+    start = datetime(2026, 11, 22, 10, 0, tzinfo=UTC)
+    transitions = (
+        ("healthy", "valid_measurement", start),
+        ("runtime_restarting", "runtime_starting", start + timedelta(seconds=10)),
+        ("runtime_stopped", "clean_runtime_shutdown", start + timedelta(seconds=20)),
+        ("unavailable", "source_state_unavailable", start + timedelta(seconds=30)),
+        ("healthy", "valid_measurement", start + timedelta(seconds=45)),
+        ("configuration_transition", "source_configuration_changed", start + timedelta(seconds=50)),
+        ("healthy", "valid_measurement", start + timedelta(seconds=55)),
+    )
+    for health_state, reason_code, observed in transitions:
+        archive.transition_source_health(
+            namespace="meter",
+            source_epoch=1,
+            source_id="sensor.grid",
+            health_state=health_state,
+            reason_code=reason_code,
+            observed_utc=observed,
+            last_valid_sample_utc=start if health_state != "healthy" else observed,
+        )
+
+    report = source_health_report(
+        archive,
+        "meter",
+        start,
+        start + timedelta(minutes=15),
+        now_utc=start + timedelta(minutes=15),
+    )
+    summary = report["summary"]
+    assert summary["matching_transition_count"] == 7
+    assert summary["source_interruption_count"] == 1
+    assert summary["incident_count"] == 1
+    assert summary["lifecycle_event_count"] == 3
+    assert summary["healthy_interval_count"] == 3
+    assert summary["affected_quarter_count"] == 1
+    assert summary["diagnostic_logging_started_utc"] == start.isoformat()
+    categories = {item["health_state"]: item["event_category"] for item in report["items"]}
+    assert categories["unavailable"] == "source_interruption"
+    assert categories["runtime_restarting"] == "lifecycle"
+    assert categories["healthy"] == "healthy"
+
+
+def test_source_health_status_distinguishes_open_closed_and_restart_unknown(tmp_path) -> None:
+    archive = _archive(tmp_path)
+    start = datetime(2026, 11, 22, 10, 0, tzinfo=UTC)
+    archive.transition_source_health(
+        namespace="meter",
+        source_epoch=1,
+        source_id="sensor.grid",
+        health_state="unavailable",
+        reason_code="source_state_unavailable",
+        observed_utc=start,
+        last_valid_sample_utc=start - timedelta(seconds=1),
+    )
+    archive.transition_source_health(
+        namespace="meter",
+        source_epoch=1,
+        source_id="sensor.grid",
+        health_state="healthy",
+        reason_code="valid_measurement",
+        observed_utc=start + timedelta(seconds=12, microseconds=345000),
+        last_valid_sample_utc=start + timedelta(seconds=12, microseconds=345000),
+    )
+    archive.transition_source_health(
+        namespace="meter",
+        source_epoch=1,
+        source_id="sensor.grid",
+        health_state="runtime_restarting",
+        reason_code="runtime_starting",
+        observed_utc=start + timedelta(seconds=20),
+        last_valid_sample_utc=start + timedelta(seconds=12, microseconds=345000),
+        recovery_code="end_unknown_at_restart",
+    )
+    report = source_health_report(
+        archive,
+        "meter",
+        start,
+        start + timedelta(minutes=1),
+        now_utc=start + timedelta(seconds=30),
+    )
+    by_state = {item["health_state"]: item for item in report["items"]}
+    assert by_state["unavailable"]["display_status"] == "completed_incident"
+    assert by_state["unavailable"]["duration_seconds"] == pytest.approx(12.345)
+    assert by_state["healthy"]["display_status"] == "unknown_termination_after_restart"
+    assert by_state["healthy"]["duration_seconds"] is None
 
 
 def test_incident_csv_pages_all_rows_and_applies_state_and_epoch_filters(tmp_path) -> None:

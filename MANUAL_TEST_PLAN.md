@@ -1,4 +1,4 @@
-# SI Grid Monitor V1.0.6 Release-Candidate Manual Test Plan
+# SI Grid Monitor V1.0.6.1 Release-Candidate Manual Test Plan
 
 ## Source-health acceptance
 
@@ -30,6 +30,24 @@
 12. Recover less than 60 seconds after explicit unavailability. Confirm actual
     and smoothed traces resume in a new segment while accumulated quarter energy
     and forecast calculations remain unchanged.
+13. Verify the Source Health summary shows source interruptions and integration
+    lifecycle events as separate counts. Restart, stop/reload and change a source
+    configuration; none may inflate the physical-source interruption count.
+14. Inspect an ongoing healthy interval, active interruption, completed incident
+    and restart-unknown termination. Start/end labels must include seconds and
+    CET/CEST, and displayed durations must be readable without losing the exact
+    backend seconds.
+15. Select periods before and after the first diagnostic event. Confirm the UI
+    states when diagnostic logging began and leaves unrecorded timeline areas
+    unknown rather than painting them healthy.
+16. At 320/360/390/430/768/1280 px, repeat in English/Slovenian and light/dark
+    themes. Confirm metric labels and values remain separated, long source entity
+    IDs wrap, timeline axis/legend remain readable and incident selection opens
+    the affected quarter without whole-page overflow.
+17. In Contracts, inspect historical configuration snapshots containing separate
+    2026 and 2027 assignments. Confirm effective timestamp, epoch, assignment
+    dates, B1–B5 limits, provenance and technical details are all readable and
+    unchanged.
 
 Real source timing, Android Companion rendering and restart behavior remain
 manual gates; automated tests do not constitute live Home Assistant acceptance.

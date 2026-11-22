@@ -24,6 +24,18 @@ from .tariffs.calendar import SlovenianTariffCalendar
 from .tariffs.models import RuleStatus, TariffClassification
 
 SCHEMA_VERSION = 8
+SOURCE_INTERRUPTION_STATES = frozenset(
+    {
+        "stale",
+        "unavailable",
+        "invalid_value",
+        "missing_source_entity",
+        "source_timestamp_mismatch",
+    }
+)
+SOURCE_LIFECYCLE_STATES = frozenset(
+    {"configuration_transition", "runtime_restarting", "runtime_stopped", "unknown"}
+)
 _QUALITY_RANK = {
     DataQuality.UNAVAILABLE.value: 0,
     DataQuality.INCOMPLETE.value: 1,
@@ -816,16 +828,21 @@ class QuarterArchive:
         with self._lock:
             summary = self._db.execute(
                 f"""SELECT COUNT(*) AS matching_transition_count,
-                           SUM(CASE WHEN health_state<>'healthy' THEN 1 ELSE 0 END)
-                               AS incident_count,
-                           SUM(CASE WHEN health_state<>'healthy' AND
-                               (ended_utc IS NULL OR recovery_code='end_unknown_at_restart')
-                               THEN 1 ELSE 0 END) AS unknown_duration_count,
                            MIN(started_utc) AS first_transition_utc,
                            MAX(started_utc) AS last_transition_utc
                     FROM source_health_incidents WHERE {clause}""",
                 params,
             ).fetchone()
+            state_counts = self._db.execute(
+                f"""SELECT health_state,COUNT(*) AS state_count,
+                           SUM(CASE WHEN ended_utc IS NULL
+                                     OR recovery_code='end_unknown_at_restart'
+                               THEN 1 ELSE 0 END) AS unknown_duration_count,
+                           MIN(started_utc) AS first_started_utc
+                    FROM source_health_incidents WHERE {clause}
+                    GROUP BY health_state""",
+                params,
+            ).fetchall()
             durations = self._db.execute(
                 f"""SELECT health_state,
                            COALESCE(SUM(CASE WHEN ended_utc IS NOT NULL
@@ -837,11 +854,39 @@ class QuarterArchive:
                     GROUP BY health_state""",
                 (end, start, *params),
             ).fetchall()
+        counts = {str(row["health_state"]): int(row["state_count"] or 0) for row in state_counts}
+        unknown_counts = {
+            str(row["health_state"]): int(row["unknown_duration_count"] or 0)
+            for row in state_counts
+        }
+        first_by_state = {
+            str(row["health_state"]): row["first_started_utc"] for row in state_counts
+        }
+        interruption_count = sum(counts.get(state, 0) for state in SOURCE_INTERRUPTION_STATES)
+        lifecycle_count = sum(counts.get(state, 0) for state in SOURCE_LIFECYCLE_STATES)
+        interruption_unknown = sum(
+            unknown_counts.get(state, 0) for state in SOURCE_INTERRUPTION_STATES
+        )
+        lifecycle_unknown = sum(unknown_counts.get(state, 0) for state in SOURCE_LIFECYCLE_STATES)
+        first_interruption = min(
+            (
+                str(first_by_state[state])
+                for state in SOURCE_INTERRUPTION_STATES
+                if first_by_state.get(state) is not None
+            ),
+            default=None,
+        )
         return {
             "matching_transition_count": int(summary["matching_transition_count"] or 0),
-            "incident_count": int(summary["incident_count"] or 0),
-            "unknown_duration_count": int(summary["unknown_duration_count"] or 0),
+            "incident_count": interruption_count,
+            "source_interruption_count": interruption_count,
+            "lifecycle_event_count": lifecycle_count,
+            "healthy_interval_count": counts.get("healthy", 0),
+            "unknown_duration_count": interruption_unknown,
+            "source_interruption_unknown_duration_count": interruption_unknown,
+            "lifecycle_unknown_duration_count": lifecycle_unknown,
             "first_transition_utc": summary["first_transition_utc"],
+            "first_source_interruption_utc": first_interruption,
             "last_transition_utc": summary["last_transition_utc"],
             "observed_seconds_by_state": {
                 str(row["health_state"]): float(row["observed_seconds"] or 0) for row in durations
@@ -863,13 +908,14 @@ class QuarterArchive:
             "namespace=?",
             "started_utc<?",
             "COALESCE(ended_utc,?)>?",
-            "health_state<>'healthy'",
+            f"health_state IN ({','.join('?' for _ in SOURCE_INTERRUPTION_STATES)})",
         ]
         params: list[Any] = [
             namespace,
             _utc_iso(end_utc),
             _utc_iso(end_utc),
             _utc_iso(start_utc),
+            *sorted(SOURCE_INTERRUPTION_STATES),
         ]
         if health_states:
             where.append(f"health_state IN ({','.join('?' for _ in health_states)})")
@@ -888,6 +934,16 @@ class QuarterArchive:
             {key: row[key] for key in row.keys()}  # noqa: SIM118
             for row in rows
         ]
+
+    def source_health_recording_started_utc(self, namespace: str) -> str | None:
+        """Return the first recorded health transition for one meter namespace."""
+
+        with self._lock:
+            row = self._db.execute(
+                "SELECT MIN(started_utc) AS started FROM source_health_incidents WHERE namespace=?",
+                (namespace,),
+            ).fetchone()
+        return str(row["started"]) if row is not None and row["started"] is not None else None
 
     def source_health_overlaps(
         self, namespace: str, start_utc: datetime, end_utc: datetime
